@@ -29,7 +29,6 @@ export type IconName =
   | "moon"
   | "monitor"
   | "paperclip"
-  | "stop"
   | "reply"
   | "reply-all"
   | "more";
@@ -66,7 +65,6 @@ const ICONS: Record<IconName, string[]> = {
   moon: ["M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"],
   monitor: ["M3.5 5.5h17v10h-17z", "M9 19.5h6M12 15.5v4"],
   paperclip: ["M17.5 8.5 9.9 16a2.5 2.5 0 0 1-3.5-3.5l7.6-7.6a4 4 0 0 1 5.6 5.6l-7.6 7.6a5.5 5.5 0 0 1-7.8-7.8l7-7"],
-  stop: ["M6.5 6.5h11v11h-11z"],
   reply: ["M9.5 5.5 4 11l5.5 5.5", "M4 11h9.5a6 6 0 0 1 6 6v1.5"],
   "reply-all": ["M8.5 5.5 3 11l5.5 5.5", "M14 5.5 8.5 11l5.5 5.5", "M8.5 11H15a6 6 0 0 1 6 6v1.5"],
   more: ["M6 12v.01M12 12v.01M18 12v.01"],
@@ -239,7 +237,10 @@ export function ModelPicker({
             （没有匹配的模型）
           </option>
         ) : null}
-        {allowEmpty !== true && !stale && options.length > 0 && value !== "" && !options.some((m) => modelKey(m) === value) ? (
+        {allowEmpty !== true &&
+        !stale &&
+        options.length > 0 &&
+        (value.length === 0 || !options.some((model) => modelKey(model) === value)) ? (
           <option value="" disabled>
             请选择模型
           </option>

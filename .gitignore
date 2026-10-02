@@ -12,6 +12,7 @@ data/
 # Smoke-run scratch data (recreated by tmp/smoke.mjs).
 tmp/smoke-data/
 tmp/smoke-work/
+tmp/smoke-outside/
 tmp/ui-*/
 
 # Emit runtime state when the data directory points inside the repository:

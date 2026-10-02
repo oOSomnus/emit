@@ -79,16 +79,16 @@ type Fixture = {
 /** One completion line, phrased by the request itself so no fixture state is needed. */
 function decide(messages: unknown): string {
   const text = JSON.stringify(messages ?? []);
-  if (text.includes("approval gate")) {
+  if (text.includes("context summarization assistant")) return "LOCAL SUMMARY";
+  if (text.includes("approval") || text.includes("notes.txt")) {
     return JSON.stringify({
-      recommendation: "approve",
+      outcome: "allow",
       risk: "low",
       rationale: "local fixture",
       readOnly: true,
       userAuthorization: "unknown",
     });
   }
-  if (text.includes("context summarization assistant")) return "LOCAL SUMMARY";
   return "OK";
 }
 
@@ -244,13 +244,16 @@ function selection() {
 
 function approvalCase(id: string): ApprovalCase {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id,
     toolTaskId: "tool-1",
     employee: { id: "emp_1", name: "员工", role: "助手" },
-    tool: { name: "read_file", kind: "other" },
+    tool: { name: "read_file", kind: "other", description: "Read a file from the current session." },
     argumentsPreview: '{"path":"notes.txt"}',
+    arguments: '{"path":"notes.txt"}',
     cwd: "/tmp",
+    directories: { roomId: "room-1", version: 1, paths: ["/tmp"], defaultPath: "/tmp" },
+    targetPaths: [],
     allowedTools: ["read_file"],
     userIntent: {
       text: "读取 notes.txt",
@@ -267,6 +270,15 @@ function approvalCase(id: string): ApprovalCase {
         truncated: false,
       },
     ],
+    executionContext: [
+      {
+        source: "execution-context",
+        role: "assistant",
+        text: "正在检查会话工作区",
+        truncated: false,
+      },
+    ],
+    contextBudget: { omittedEntries: 0, truncatedEntries: 0 },
     origin: { kind: "room", description: "dm" },
     configVersion: 1,
     policyVersion: 1,
@@ -277,8 +289,14 @@ const approvalConfig: ApprovalEvaluatorConfig = {
   kind: "llm",
   model: { providerId: PROVIDER_ID, modelId: MODEL_ID },
   effort: "low",
-  criteriaVersion: 2,
+  criteriaVersion: 3,
 };
+
+function evaluationContext(catalog: ModelCatalog, evaluationId: string) {
+  const model = catalog.chatModel({ providerId: PROVIDER_ID, modelId: MODEL_ID });
+  if (model === undefined) throw new Error(`Missing chat model ${MODEL_ID}`);
+  return { evaluationId, contextWindow: model.contextWindow };
+}
 
 describe("connection check", () => {
   it("sends a session and succeeds, and two checks never share one", async () => {
@@ -352,18 +370,28 @@ describe("approval evaluator", () => {
 
     const first = await evaluator.evaluate(
       approvalCase("eval-1"),
-      { ...approvalConfig, criteriaVersion: 1 },
-      { evaluationId: "eval-1" },
+      approvalConfig,
+      evaluationContext(catalog, "eval-1"),
     );
-    const retry = await evaluator.evaluate(approvalCase("eval-1"), approvalConfig, { evaluationId: "eval-1" });
-    const other = await evaluator.evaluate(approvalCase("eval-2"), approvalConfig, { evaluationId: "eval-2" });
+    const retry = await evaluator.evaluate(
+      approvalCase("eval-1"),
+      approvalConfig,
+      evaluationContext(catalog, "eval-1"),
+    );
+    const other = await evaluator.evaluate(
+      approvalCase("eval-2"),
+      approvalConfig,
+      evaluationContext(catalog, "eval-2"),
+    );
 
     expect(first.status).toBe("evaluated");
     expect(retry.status).toBe("evaluated");
     expect(other.status).toBe("evaluated");
 
     if (first.status === "evaluated" && first.evidence.kind === "llm") {
-      expect(first.evidence.criteriaVersion).toBe(2);
+      expect(first.evidence.criteriaVersion).toBe(3);
+      expect(first.evidence.outcome).toBe("allow");
+      expect(first.evidence.risk).toBe("low");
       expect(first.evidence.readOnly).toBe(true);
       expect(first.evidence.userAuthorization).toBe("unknown");
     }
@@ -378,24 +406,38 @@ describe("approval evaluator", () => {
   }, 20_000);
   it("rejects missing or wrongly typed readonly approval fields", async () => {
     const fixture = await startFixture();
-    const evaluator = createLlmEvaluator(await localCatalog(fixture));
+    const catalog = await localCatalog(fixture);
+    const evaluator = createLlmEvaluator(catalog);
 
-    fixture.setCompletion(JSON.stringify({ recommendation: "approve", risk: "low", rationale: "missing readOnly" }));
-    const missing = await evaluator.evaluate(approvalCase("missing"), approvalConfig, { evaluationId: "missing" });
+    fixture.setCompletion(
+      JSON.stringify({
+        outcome: "allow",
+        risk: "low",
+        rationale: "missing readOnly",
+        userAuthorization: "unknown",
+      }),
+    );
+    const missing = await evaluator.evaluate(
+      approvalCase("missing"),
+      approvalConfig,
+      evaluationContext(catalog, "missing"),
+    );
     expect(missing).toMatchObject({ status: "unavailable", reason: "invalid-output" });
 
     fixture.setCompletion(
       JSON.stringify({
-        recommendation: "approve",
+        outcome: "allow",
         risk: "low",
         rationale: "wrong field type",
         readOnly: "true",
         userAuthorization: "unknown",
       }),
     );
-    const wrongType = await evaluator.evaluate(approvalCase("wrong-type"), approvalConfig, {
-      evaluationId: "wrong-type",
-    });
+    const wrongType = await evaluator.evaluate(
+      approvalCase("wrong-type"),
+      approvalConfig,
+      evaluationContext(catalog, "wrong-type"),
+    );
     expect(wrongType).toMatchObject({ status: "unavailable", reason: "invalid-output" });
   }, 20_000);
 

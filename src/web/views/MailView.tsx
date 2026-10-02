@@ -12,7 +12,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { api } from "../api.ts";
 import { useApp } from "../state.tsx";
 import { Chip, Icon, IconButton, timeAgo } from "./ui.tsx";
-import type { MailboxItemDTO, MessageDTO } from "../../shared/contracts.ts";
+import { DirectoryFields, RoomDirectoryEditor } from "./RoomDirectories.tsx";
+import type { MailboxItemDTO, MessageDTO, RoomDirectoryDraftDTO } from "../../shared/contracts.ts";
 
 /** The user is an address on the envelope but never a recipient who works. */
 const USER_ID = "user";
@@ -108,10 +109,20 @@ type Compose = {
   subject: string;
   body: string;
   showCc: boolean;
+  directories: RoomDirectoryDraftDTO;
+  directoryVersion: number;
 };
 
 function snapshot(compose: Compose): string {
-  return JSON.stringify([compose.to, compose.cc, compose.extraTo, compose.extraCc, compose.subject, compose.body]);
+  return JSON.stringify([
+    compose.to,
+    compose.cc,
+    compose.extraTo,
+    compose.extraCc,
+    compose.subject,
+    compose.body,
+    compose.directories,
+  ]);
 }
 
 export function MailView(): ReactNode {
@@ -120,6 +131,7 @@ export function MailView(): ReactNode {
   const [query, setQuery] = useState("");
   const [mailbox, setMailbox] = useState<MailboxItemDTO[]>([]);
   const [reading, setReading] = useState(false);
+  const [editingRoomDirectories, setEditingRoomDirectories] = useState(false);
   const [reply, setReply] = useState("");
   const [compose, setCompose] = useState<Compose | undefined>(undefined);
   const [composeBase, setComposeBase] = useState("");
@@ -259,6 +271,7 @@ export function MailView(): ReactNode {
         try {
           const payload = await api.messages(roomId);
           if (seq !== requestSeq.current) return;
+          dispatch({ type: "room", room: payload.room });
           dispatch({ type: "activeRoom", roomId });
           dispatch({ type: "view", view: "mail" });
           dispatch({ type: "messages", messages: payload.messages });
@@ -315,42 +328,80 @@ export function MailView(): ReactNode {
       subject: "",
       body: "",
       showCc: false,
+      directories: { paths: [], defaultPath: "" },
+      directoryVersion: 1,
     };
     setCompose(next);
     setComposeBase(snapshot(next));
     setAskClose(false);
   };
 
-  const editDraft = (item: MailboxItemDTO) => {
-    const mail = item.message.mail;
-    const typed = (entries: { address: string }[] | undefined) =>
-      (entries ?? [])
-        .map((entry) => entry.address)
-        .filter((address) => !state.employees.some((employee) => employee.address === address))
-        .join(", ");
-    const next: Compose = {
-      roomId: item.roomId,
-      draftId: item.message.id,
-      to: [...(mail?.recipients ?? [])],
-      cc: [...(mail?.copies ?? [])],
-      extraTo: typed(mail?.to),
-      extraCc: typed(mail?.cc),
-      subject: mail?.subject ?? "",
-      body: item.message.body,
-      showCc: (mail?.copies.length ?? 0) > 0 || (mail?.cc.length ?? 0) > 0,
-    };
-    setCompose(next);
-    setComposeBase(snapshot(next));
-    setAskClose(false);
+  const editDraft = async (item: MailboxItemDTO): Promise<void> => {
+    let draftRoom = state.rooms.find((entry) => entry.id === item.roomId);
+    try {
+      if (draftRoom === undefined) {
+        draftRoom = (await api.messages(item.roomId)).room;
+        dispatch({ type: "room", room: draftRoom });
+      }
+      const mail = item.message.mail;
+      const typed = (entries: { address: string }[] | undefined) =>
+        (entries ?? [])
+          .map((entry) => entry.address)
+          .filter((address) => !state.employees.some((employee) => employee.address === address))
+          .join(", ");
+      const next: Compose = {
+        roomId: item.roomId,
+        draftId: item.message.id,
+        to: [...(mail?.recipients ?? [])],
+        cc: [...(mail?.copies ?? [])],
+        extraTo: typed(mail?.to),
+        extraCc: typed(mail?.cc),
+        subject: mail?.subject ?? "",
+        body: item.message.body,
+        showCc: (mail?.copies.length ?? 0) > 0 || (mail?.cc.length ?? 0) > 0,
+        directories: {
+          paths: [...draftRoom.directories.paths],
+          defaultPath: draftRoom.directories.defaultPath,
+        },
+        directoryVersion: draftRoom.directories.version,
+      };
+      setCompose(next);
+      setComposeBase(snapshot(next));
+      setAskClose(false);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
   };
 
-  /** The thread a composed mail belongs to: the edited draft's, or a fresh one. */
+  /** Persist the draft's exact session directories before appending or sending mail. */
   const threadForCompose = async (draft: Compose): Promise<string> => {
-    if (draft.roomId.length > 0) return draft.roomId;
-    const name = draft.subject.trim();
-    const created = await api.createRoom({ kind: "mail", name: name.length > 0 ? name : "（无主题）" });
-    dispatch({ type: "room", room: created });
-    return created.id;
+    if (draft.roomId.length === 0) {
+      const name = draft.subject.trim();
+      const created = await api.createRoom({
+        kind: "mail",
+        name: name.length > 0 ? name : "（无主题）",
+        directories: draft.directories,
+      });
+      dispatch({ type: "room", room: created });
+      setCompose((current) =>
+        current !== undefined && snapshot(current) === snapshot(draft) && current.roomId === draft.roomId
+          ? { ...current, roomId: created.id, directoryVersion: created.directories.version }
+          : current,
+      );
+      return created.id;
+    }
+
+    const updated = await api.updateRoomDirectories(draft.roomId, {
+      ...draft.directories,
+      expectedVersion: draft.directoryVersion,
+    });
+    dispatch({ type: "room", room: updated });
+    setCompose((current) =>
+      current !== undefined && snapshot(current) === snapshot(draft) && current.roomId === draft.roomId
+        ? { ...current, directoryVersion: updated.directories.version }
+        : current,
+    );
+    return draft.roomId;
   };
 
   const saveDraft = async (): Promise<boolean> => {
@@ -362,13 +413,17 @@ export function MailView(): ReactNode {
     setBusy(true);
     try {
       const roomId = await threadForCompose(compose);
-      await api.sendMessage(roomId, {
+      const result = await api.sendMessage(roomId, {
         body: compose.body.trim(),
         subject: compose.subject.trim(),
         to: [...compose.to, ...splitAddresses(compose.extraTo)],
         cc: [...compose.cc, ...splitAddresses(compose.extraCc)],
         draft: true,
       });
+      if (result.error !== undefined) {
+        setError(result.error);
+        return false;
+      }
       // An edited draft is retired, never rewritten: entries are immutable, so
       // the saved draft is a new entry and the old one stops being active.
       if (compose.draftId.length > 0) await api.mailFlag(roomId, compose.draftId, { active: false });
@@ -402,7 +457,10 @@ export function MailView(): ReactNode {
         to: [...compose.to, ...splitAddresses(compose.extraTo)],
         cc: [...compose.cc, ...splitAddresses(compose.extraCc)],
       });
-      if (result.error !== undefined) setError(result.error);
+      if (result.error !== undefined) {
+        setError(result.error);
+        return;
+      }
       if (compose.draftId.length > 0) await api.mailFlag(roomId, compose.draftId, { active: false });
       setCompose(undefined);
       setAskClose(false);
@@ -416,7 +474,7 @@ export function MailView(): ReactNode {
   };
 
   const closeCompose = () => {
-    if (compose === undefined) return;
+    if (busy || compose === undefined) return;
     if (snapshot(compose) !== composeBase) {
       setAskClose(true);
       return;
@@ -440,14 +498,27 @@ export function MailView(): ReactNode {
   const replyTo = async (all: boolean) => {
     if (room === undefined || reply.trim().length === 0) return;
     const last = [...thread].reverse().find((message) => message.mail !== undefined && message.mail.draft !== true);
-    const target = last?.author.id ?? USER_ID;
+    if (last === undefined) {
+      setError("无法确定当前邮件父节点，请指定当前会话内的 inReplyTo");
+      return;
+    }
+    const target = last.author.id;
     const copies =
-      all && last?.mail !== undefined
+      all && last.mail !== undefined
         ? [...new Set([...last.mail.recipients, ...last.mail.copies])].filter((id) => id !== target && id !== USER_ID)
         : [];
     try {
-      const result = await api.sendMessage(room.id, { body: reply.trim(), subject: threadSubject, to: [target], cc: copies });
-      if (result.error !== undefined) setError(result.error);
+      const result = await api.sendMessage(room.id, {
+        body: reply.trim(),
+        subject: threadSubject,
+        to: [target],
+        cc: copies,
+        inReplyTo: last.id,
+      });
+      if (result.error !== undefined) {
+        setError(result.error);
+        return;
+      }
       setReply("");
       await refreshMailbox();
     } catch (error) {
@@ -478,7 +549,7 @@ export function MailView(): ReactNode {
             onChange={(event) => setQuery(event.target.value)}
           />
           <IconButton icon="refresh" label="刷新" onClick={() => void refreshMailbox()} />
-          <button type="button" className="primary" onClick={() => (compose === undefined ? startCompose() : closeCompose())}>
+          <button type="button" className="primary" disabled={busy} onClick={() => (compose === undefined ? startCompose() : closeCompose())}>
             <Icon name="draft" />
             写邮件
           </button>
@@ -610,6 +681,9 @@ export function MailView(): ReactNode {
               <div className="mail-reader-head">
                 <IconButton icon="back" label="返回列表" className="mail-back" onClick={() => setReading(false)} />
                 <h2>{threadSubject.length > 0 ? threadSubject : "（无主题）"}</h2>
+                <button type="button" onClick={() => setEditingRoomDirectories(true)}>
+                  会话工作目录（{room.directories.paths.length}）
+                </button>
                 <IconButton
                   icon="archive"
                   label={newest?.mail?.archived === true ? "移出归档" : "归档"}
@@ -686,7 +760,7 @@ export function MailView(): ReactNode {
                       <Chip tone="info">{work.employeeName} 正在处理这封邮件</Chip>
                       {work.status === "waiting-approval" ? <Chip tone="warn">等待审批</Chip> : null}
                       <span className="time" />
-                      <IconButton icon="stop" label="停止" onClick={() => void api.stopWork(work.id)} />
+                      <IconButton icon="close" label="停止" onClick={() => void api.stopWork(work.id)} />
                     </div>
                     {work.progressText !== undefined && work.progressText.length > 0 ? (
                       <pre className="stream">{work.progressText}</pre>
@@ -720,7 +794,7 @@ export function MailView(): ReactNode {
         <section className="mail-compose" aria-label="写邮件">
           <div className="mail-compose-head">
             <span className="title">{compose.draftId.length > 0 ? "编辑草稿" : "新邮件"}</span>
-            <IconButton icon="close" label="关闭" onClick={closeCompose} />
+            <IconButton icon="close" label="关闭" disabled={busy} onClick={closeCompose} />
           </div>
           <div className="mail-compose-body">
             <div className="row recipients">
@@ -729,6 +803,7 @@ export function MailView(): ReactNode {
                 <button
                   key={candidate.id}
                   type="button"
+                  disabled={busy}
                   className={`chip-toggle${compose.to.includes(candidate.id) ? " on" : ""}`}
                   title={candidate.address}
                   onClick={() =>
@@ -745,6 +820,7 @@ export function MailView(): ReactNode {
               <input
                 placeholder="其他地址（逗号分隔，仅记录）"
                 aria-label="其他收件人地址"
+                disabled={busy}
                 value={compose.extraTo}
                 onChange={(event) => update({ extraTo: event.target.value })}
               />
@@ -757,6 +833,7 @@ export function MailView(): ReactNode {
                     <button
                       key={candidate.id}
                       type="button"
+                      disabled={busy}
                       className={`chip-toggle${compose.cc.includes(candidate.id) ? " on" : ""}`}
                       title={candidate.address}
                       onClick={() =>
@@ -773,12 +850,13 @@ export function MailView(): ReactNode {
                   <input
                     placeholder="其他抄送地址"
                     aria-label="其他抄送地址"
+                    disabled={busy}
                     value={compose.extraCc}
                     onChange={(event) => update({ extraCc: event.target.value })}
                   />
                 </div>
               ) : (
-                <button type="button" className="link" onClick={() => update({ showCc: true })}>
+                <button type="button" className="link" disabled={busy} onClick={() => update({ showCc: true })}>
                   添加抄送
                 </button>
               )}
@@ -786,12 +864,23 @@ export function MailView(): ReactNode {
             <input
               placeholder="主题"
               aria-label="主题"
+              disabled={busy}
               value={compose.subject}
               onChange={(event) => update({ subject: event.target.value })}
             />
+            <details className="compose-directories">
+              <summary>会话工作目录（{compose.directories.paths.length}）</summary>
+              <p className="hint">新邮件使用独立会话，不会复制其他邮件或聊天的目录配置。</p>
+              <DirectoryFields
+                value={compose.directories}
+                onChange={(directories) => update({ directories })}
+                disabled={busy}
+              />
+            </details>
             <textarea
               placeholder="正文…"
               aria-label="正文"
+              disabled={busy}
               value={compose.body}
               onChange={(event) => update({ body: event.target.value })}
             />
@@ -807,6 +896,7 @@ export function MailView(): ReactNode {
                 <button
                   type="button"
                   className="danger"
+                  disabled={busy}
                   onClick={() => {
                     setCompose(undefined);
                     setAskClose(false);
@@ -814,7 +904,7 @@ export function MailView(): ReactNode {
                 >
                   丢弃
                 </button>
-                <button type="button" onClick={() => setAskClose(false)}>
+                <button type="button" disabled={busy} onClick={() => setAskClose(false)}>
                   继续编辑
                 </button>
               </>
@@ -843,6 +933,9 @@ export function MailView(): ReactNode {
             )}
           </div>
         </section>
+      ) : null}
+      {editingRoomDirectories && room?.kind === "mail" ? (
+        <RoomDirectoryEditor key={room.id} room={room} onClose={() => setEditingRoomDirectories(false)} />
       ) : null}
     </div>
   );

@@ -1,10 +1,8 @@
 /**
  * Consumer-visible invariants that need no provider and no harness.
  *
- * These cover the parts where a wrong answer is invisible in normal use: the
- * identity of an approval, which tool calls are allowed through, how arguments
- * are redacted before a model sees them, and whether a tool path can escape the
- * employee's working directory.
+ * These cover approval identity, action policy, argument redaction, and whether
+ * a tool path can escape the session's authorized directories.
  */
 
 import { describe, expect, it } from "vitest";
@@ -15,21 +13,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   approvalId,
+  approvalVerdict,
   canonicalJson,
-  classifierAutoApproves,
-  describeClassifierEvidence,
-  llmAutoApproves,
-  toApprovalDTO,
 } from "../src/server/approval/state.ts";
 import { redactArguments } from "../src/server/approval/evaluators.ts";
 import { classifyTool, toThinkingLevel } from "../src/server/agents.ts";
-import { buildPrompt, assistantText } from "../src/server/work.ts";
+import { assistantText } from "../src/server/work.ts";
 import { ModelCatalog } from "../src/server/models.ts";
-import { resolveWithin } from "../src/server/tools.ts";
+import { resolveWithin } from "../src/server/work-directories.ts";
 import { allocateAddress, slugify } from "../src/server/workspace.ts";
 import { mailAddresses, mailEnvelope } from "../src/server/rooms.ts";
-import type { ApprovalRecord, EmployeeRecord } from "../src/server/documents.ts";
+import type { EmployeeRecord } from "../src/server/documents.ts";
 import type { ApprovalRequest } from "../src/server/approval/state.ts";
+import type { EvaluationOutcome } from "../src/server/approval/contracts.ts";
 
 function employee(overrides: Partial<EmployeeRecord> = {}): EmployeeRecord {
   return {
@@ -40,7 +36,6 @@ function employee(overrides: Partial<EmployeeRecord> = {}): EmployeeRecord {
     role: "助手",
     instructions: "",
     executionModel: { providerId: "p", modelId: "m", effort: "off" },
-    cwd: "/tmp",
     skillIds: [],
     mcpServerIds: [],
     allowedTools: ["read_file", "write_file"],
@@ -61,7 +56,33 @@ function request(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
     toolKind: "file-write",
     arguments: { path: "a.txt", content: "hello" },
     cwd: "/tmp",
+    directoryRoomId: "room1",
+    directoryVersion: 1,
+    directoryPaths: ["/tmp"],
+    targetPaths: ["/tmp/a.txt"],
     ...overrides,
+  };
+}
+
+function evaluated(
+  outcome: "allow" | "deny",
+  risk: "low" | "medium" | "high" | "critical" | "unknown",
+  userAuthorization: "high" | "medium" | "low" | "unknown" = "unknown",
+): EvaluationOutcome {
+  return {
+    status: "evaluated",
+    outcome,
+    risk,
+    evidence: {
+      kind: "llm",
+      criteriaVersion: 3,
+      outcome,
+      risk,
+      rationale: "fixture evidence",
+      readOnly: risk === "low",
+      userAuthorization,
+    },
+    model: { providerId: "reviewer", modelId: "test" },
   };
 }
 
@@ -76,6 +97,10 @@ describe("approval identity", () => {
     const base = approvalId(request(), 1, 1);
     expect(approvalId(request({ arguments: { path: "a.txt", content: "other" } }), 1, 1)).not.toBe(base);
     expect(approvalId(request({ cwd: "/tmp/other" }), 1, 1)).not.toBe(base);
+    expect(approvalId(request({ directoryRoomId: "room2" }), 1, 1)).not.toBe(base);
+    expect(approvalId(request({ directoryVersion: 2 }), 1, 1)).not.toBe(base);
+    expect(approvalId(request({ directoryPaths: ["/tmp", "/var/tmp"] }), 1, 1)).not.toBe(base);
+    expect(approvalId(request({ targetPaths: ["/tmp/other.txt"] }), 1, 1)).not.toBe(base);
     expect(approvalId(request(), 2, 1)).not.toBe(base);
     expect(approvalId(request(), 1, 2)).not.toBe(base);
   });
@@ -88,6 +113,7 @@ describe("approval identity", () => {
     expect(canonicalJson({ b: 1, a: [1, { d: 2, c: 3 }] })).toBe(canonicalJson({ a: [1, { c: 3, d: 2 }], b: 1 }));
   });
 });
+
 
 describe("tool policy", () => {
   it("lets a listed built-in through and blocks an unlisted one", () => {
@@ -123,30 +149,6 @@ describe("argument redaction", () => {
   });
 });
 
-describe("prompt assembly", () => {
-  it("carries the room history and then the request", () => {
-    const prompt = buildPrompt(
-      [
-        {
-          id: "1",
-          roomId: "r",
-          author: { type: "user", id: "user", name: "你" },
-          body: "先看看设计稿",
-          createdAt: 0,
-        },
-      ],
-      "现在实现它",
-      "message",
-    );
-    expect(prompt).toContain("先看看设计稿");
-    expect(prompt).toContain("现在实现它");
-    expect(prompt.indexOf("先看看设计稿")).toBeLessThan(prompt.indexOf("现在实现它"));
-  });
-
-  it("labels a delegated task as a handoff", () => {
-    expect(buildPrompt([], "把报表发我", "delegation")).toContain("交办");
-  });
-});
 
 describe("answer extraction", () => {
   it("keeps only the text parts of a final answer", () => {
@@ -207,30 +209,57 @@ describe("mailbox addresses", () => {
 describe("path containment", () => {
   const context = BACKGROUND_CONTEXT;
 
-  it("accepts a path inside the working directory", async () => {
+  it("accepts a path inside an authorized root", async () => {
     const root = mkdtempSync(join(tmpdir(), "emit-paths-"));
     const env = new NodeExecutionEnv({ cwd: root });
-    const resolved = await resolveWithin(env, context, "notes.txt", [root]);
+    const resolved = await resolveWithin(env, context, "notes.txt", [root], root);
     expect(resolved.ok).toBe(true);
   });
 
-  it("rejects a relative escape and an absolute path outside", async () => {
+  it("accepts an absolute target inside an authorized root without a default directory", async () => {
     const root = mkdtempSync(join(tmpdir(), "emit-paths-"));
     const env = new NodeExecutionEnv({ cwd: root });
-    const relative = await resolveWithin(env, context, "../outside.txt", [root]);
+    const target = join(root, "notes.txt");
+    const resolved = await resolveWithin(env, context, target, [root], "");
+    expect(resolved).toMatchObject({ ok: true, path: target });
+  });
+
+  it("rejects a relative escape and an absolute path outside every authorized root", async () => {
+    const root = mkdtempSync(join(tmpdir(), "emit-paths-"));
+    const env = new NodeExecutionEnv({ cwd: root });
+    const relative = await resolveWithin(env, context, "../outside.txt", [root], root);
+    expect(relative).toMatchObject({
+      ok: false,
+      message: expect.stringContaining("超出该会话允许的目录"),
+    });
     expect(relative.ok).toBe(false);
-    const absolute = await resolveWithin(env, context, "/etc/passwd", [root]);
+    const absolute = await resolveWithin(env, context, "/etc/passwd", [root], root);
     expect(absolute.ok).toBe(false);
   });
 
-  it("rejects a symlink that points outside the working directory", async () => {
+  it("accepts a target inside any one of multiple authorized roots", async () => {
+    const first = mkdtempSync(join(tmpdir(), "emit-paths-a-"));
+    const second = mkdtempSync(join(tmpdir(), "emit-paths-b-"));
+    const env = new NodeExecutionEnv({ cwd: first });
+    const resolved = await resolveWithin(env, context, "notes.txt", [first, second], second);
+    expect(resolved).toMatchObject({ ok: true, path: join(second, "notes.txt") });
+  });
+
+  it("rejects relative targets when the session has no default directory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "emit-paths-"));
+    const env = new NodeExecutionEnv({ cwd: root });
+    const resolved = await resolveWithin(env, context, "notes.txt", [], "");
+    expect(resolved.ok).toBe(false);
+  });
+
+  it("rejects a symlink that points outside the authorized roots", async () => {
     const root = mkdtempSync(join(tmpdir(), "emit-paths-"));
     const outside = mkdtempSync(join(tmpdir(), "emit-outside-"));
     writeFileSync(join(outside, "secret.txt"), "top secret");
     mkdirSync(join(root, "sub"));
     symlinkSync(join(outside, "secret.txt"), join(root, "sub", "link.txt"));
     const env = new NodeExecutionEnv({ cwd: root });
-    const resolved = await resolveWithin(env, context, "sub/link.txt", [root]);
+    const resolved = await resolveWithin(env, context, "sub/link.txt", [root], root);
     expect(resolved.ok).toBe(false);
   });
 });
@@ -280,209 +309,29 @@ describe("employee model selection", () => {
   });
 });
 
-describe("auto-approval thresholds", () => {
-  it("lets low-risk readonly LLM decisions through without per-argument authorization", () => {
-    expect(
-      llmAutoApproves({
-        recommendation: "approve",
-        risk: "low",
-        readOnly: true,
-        userAuthorization: "unknown",
-      }),
-    ).toBe(true);
-    expect(
-      llmAutoApproves({
-        recommendation: "approve",
-        risk: "high",
-        readOnly: true,
-        userAuthorization: "low",
-      }),
-    ).toBe(false);
-    expect(
-      llmAutoApproves({
-        recommendation: "deny",
-        risk: "low",
-        readOnly: true,
-        userAuthorization: "unknown",
-      }),
-    ).toBe(false);
-    expect(
-      llmAutoApproves({
-        recommendation: "approve",
-        risk: "unknown",
-        readOnly: false,
-        userAuthorization: "high",
-      }),
-    ).toBe(true);
-    expect(
-      llmAutoApproves({
-        recommendation: "approve",
-        risk: "high",
-        readOnly: false,
-        userAuthorization: "high",
-      }),
-    ).toBe(false);
-    expect(
-      llmAutoApproves({
-        recommendation: "approve",
-        risk: "medium",
-        readOnly: true,
-        userAuthorization: "unknown",
-      }),
-    ).toBe(true);
+describe("automatic approval verdict", () => {
+  it("approves low-readonly and medium-write calls without requiring strong authorization evidence", () => {
+    expect(approvalVerdict(evaluated("allow", "low")).action).toBe("approve");
+    expect(approvalVerdict(evaluated("allow", "medium", "low")).action).toBe("approve");
   });
 
-  it("allows low-risk readonly classifier decisions at both inclusive thresholds without authorization", () => {
-    const config = { minApproveProbability: 0.9, minAuthorizedProbability: 0.8, requireAuthorized: true };
-    expect(
-      classifierAutoApproves(
-        { choice: "approve", probability: 0.9, readOnlyProbability: 0.9, authorizedProbability: 0.1 },
-        config,
-      ),
-    ).toBe(true);
-    expect(
-      classifierAutoApproves(
-        { choice: "approve", probability: 0.8999, readOnlyProbability: 0.99, authorizedProbability: 0.99 },
-        config,
-      ),
-    ).toBe(false);
-    expect(
-      classifierAutoApproves(
-        { choice: "approve", probability: 0.99, readOnlyProbability: 0.8999, authorizedProbability: 0.99 },
-        config,
-      ),
-    ).toBe(true);
-    expect(
-      classifierAutoApproves(
-        { choice: "approve", probability: 0.99, readOnlyProbability: 0.99, authorizedProbability: 0.99 },
-        config,
-      ),
-    ).toBe(true);
+  it("routes high risk to a human reviewer", () => {
+    expect(approvalVerdict(evaluated("allow", "high")).action).toBe("human");
   });
 
-  it("never lets readonly probability override a deny decision", () => {
-    expect(
-      classifierAutoApproves(
-        { choice: "deny", probability: 0.99, readOnlyProbability: 0.99, authorizedProbability: 0.99 },
-        { minApproveProbability: 0.5, minAuthorizedProbability: 0.5, requireAuthorized: false },
-      ),
-    ).toBe(false);
+  it("rejects explicit denies and critical risk", () => {
+    expect(approvalVerdict(evaluated("deny", "low")).action).toBe("reject");
+    expect(approvalVerdict(evaluated("allow", "critical")).action).toBe("reject");
   });
 
-  it("does not let missing or invalid probabilities pass either classifier branch", () => {
-    const config = { minApproveProbability: 0.5, minAuthorizedProbability: 0.5, requireAuthorized: true };
+  it("blocks unknown risk and unavailable evaluations", () => {
+    expect(approvalVerdict(evaluated("allow", "unknown")).action).toBe("block");
     expect(
-      classifierAutoApproves({ choice: "approve", probability: Number.NaN, readOnlyProbability: 0.99 }, config),
-    ).toBe(false);
-    expect(classifierAutoApproves({ choice: "approve", probability: 0.99 }, config)).toBe(false);
-    expect(
-      classifierAutoApproves({ choice: "approve", probability: 0.99, readOnlyProbability: Number.NaN }, config),
-    ).toBe(false);
-    expect(
-      classifierAutoApproves({ choice: "approve", probability: 1.01, readOnlyProbability: 0.99 }, config),
-    ).toBe(false);
-    expect(
-      classifierAutoApproves({ choice: "approve", probability: 0.99, readOnlyProbability: -0.01 }, config),
-    ).toBe(false);
-    expect(
-      classifierAutoApproves(
-        { choice: "approve", probability: 0.99, readOnlyProbability: 0.1, authorizedProbability: Number.NaN },
-        config,
-      ),
-    ).toBe(false);
-  });
-
-  it("keeps authorization thresholds for non-readonly classifier calls", () => {
-    const config = { minApproveProbability: 0.5, minAuthorizedProbability: 0.8, requireAuthorized: true };
-    expect(
-      classifierAutoApproves(
-        { choice: "approve", probability: 0.99, readOnlyProbability: 0.1, authorizedProbability: 0.8 },
-        config,
-      ),
-    ).toBe(true);
-    expect(
-      classifierAutoApproves(
-        { choice: "approve", probability: 0.99, readOnlyProbability: 0.1, authorizedProbability: 0.7999 },
-        config,
-      ),
-    ).toBe(false);
-    expect(
-      classifierAutoApproves(
-        { choice: "approve", probability: 0.99, readOnlyProbability: 0.1 },
-        config,
-      ),
-    ).toBe(false);
-    expect(
-      classifierAutoApproves(
-        { choice: "approve", probability: 0.99, readOnlyProbability: 0.1 },
-        { ...config, requireAuthorized: false },
-      ),
-    ).toBe(true);
-  });
-  it("describes legacy classifier evidence without inventing missing probabilities", () => {
-    expect(describeClassifierEvidence({ choice: "review", probability: 0.4 })).toBe(
-      "分类器选择 review（概率 0.4000，只读概率 未记录，授权概率 未记录）",
-    );
-  });
-
-
-  it("keeps legacy evidence renderable without guessing readonly or authorization", () => {
-    const legacy: ApprovalRecord = {
-      id: "legacy",
-      toolTaskId: "task",
-      workId: "",
-      rootWorkId: "",
-      employeeId: "employee",
-      employeeName: "员工",
-      toolName: "run_shell",
-      argsHash: "",
-      argumentsPreview: "{}",
-      cwd: "/tmp",
-      risk: "unknown",
-      status: "pending-human",
-      executionState: "not-started",
-      executionDetail: "",
-      createdAt: 1,
-      updatedAt: 1,
-      decidedAt: 0,
-      decidedBy: "",
-      comment: "",
-      autoDecisionSource: "",
-      autoDecisionReason: "",
-      evidence: {
-        kind: "classifier",
-        criteriaVersion: 1,
-        choice: "approve",
-        questions: "{}",
-        probability: 0.9,
-        authorizedProbability: null,
-      },
-      originKind: "room",
-      originRoomId: "room",
-      originRoomName: "会话",
-      originEntryId: "1",
-      originParentWorkId: "",
-      configVersion: 1,
-      policyVersion: 1,
-      timeline: [],
-    };
-    const dto = toApprovalDTO(legacy);
-    expect(dto.evidence?.kind).toBe("classifier");
-    if (dto.evidence?.kind === "classifier") {
-      expect(dto.evidence.readOnlyProbability).toBeUndefined();
-      expect(dto.evidence.authorizedProbability).toBeUndefined();
-    }
-    const legacyLlm: ApprovalRecord = {
-      ...legacy,
-      id: "legacy-llm",
-      evidence: { kind: "llm", rationale: "旧依据", risk: "low", recommendation: "approve" },
-    };
-    const llmDto = toApprovalDTO(legacyLlm);
-    expect(llmDto.evidence?.kind).toBe("llm");
-    if (llmDto.evidence?.kind === "llm") {
-      expect(llmDto.evidence.criteriaVersion).toBeUndefined();
-      expect(llmDto.evidence.readOnly).toBeUndefined();
-      expect(llmDto.evidence.userAuthorization).toBeUndefined();
-    }
+      approvalVerdict({
+        status: "unavailable",
+        reason: "provider",
+        message: "reviewer unavailable",
+      }).action,
+    ).toBe("block");
   });
 });

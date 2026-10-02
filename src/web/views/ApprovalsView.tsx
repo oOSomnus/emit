@@ -18,6 +18,7 @@ const STATUS_LABELS: Record<ApprovalStatusDTO, string> = {
   "pending-human": "等待你的裁决",
   approved: "已批准",
   rejected: "已拒绝",
+  blocked: "自动审查受阻",
   cancelled: "已取消",
   invalidated: "已失效",
 };
@@ -27,6 +28,7 @@ const STATUS_TONES: Record<ApprovalStatusDTO, string> = {
   "pending-human": "warn",
   approved: "ok",
   rejected: "error",
+  blocked: "error",
   cancelled: "muted",
   invalidated: "muted",
 };
@@ -64,16 +66,25 @@ export function ApprovalsView(): ReactNode {
           </p>
         ) : null}
         <pre className="args">{approval.argumentsPreview}</pre>
-        {approval.cwd.length > 0 ? <p className="hint">工作目录：{approval.cwd}</p> : null}
-        {approval.origin.kind === "room" ? (
-          <p className="hint">
-            来自会话「{approval.origin.roomName}」
-            {approval.workId !== undefined ? ` · 工作 ${approval.workId}` : ""}
-          </p>
+        <p className="hint">风险判断：{approval.risk}</p>
+        <p className="hint">实际执行目录：{approval.cwd.length > 0 ? approval.cwd : "未记录"}</p>
+        <p className="hint">
+          会话目录来源：{approval.directoryRoomId || "未绑定会话"} · 版本 v{approval.directoryVersion}
+        </p>
+        {approval.directoryPaths.length > 0 ? (
+          <div>
+            <p className="hint">本会话授权目录</p>
+            <ul className="plain">{approval.directoryPaths.map((path) => <li key={path}><code>{path}</code></li>)}</ul>
+          </div>
         ) : (
-          <p className="hint">来自交办 · 上层工作 {approval.origin.parentWorkId}</p>
+          <p className="hint">本会话没有授权本地目录</p>
         )}
-
+        {approval.targetPaths.length > 0 ? (
+          <div>
+            <p className="hint">本次目标路径</p>
+            <ul className="plain">{approval.targetPaths.map((path) => <li key={path}><code>{path}</code></li>)}</ul>
+          </div>
+        ) : null}
         {approval.evidence !== undefined ? (
           <details>
             <summary>自动判断依据</summary>
@@ -86,29 +97,60 @@ export function ApprovalsView(): ReactNode {
             ) : null}
             {approval.evidence.kind === "llm" ? (
               <div className="evidence-grid">
-                <p>标准版本：{approval.evidence.criteriaVersion ?? "未记录"}</p>
-                <p>
-                  风险 {approval.evidence.risk} · 建议 {approval.evidence.recommendation} · {approval.evidence.rationale}
-                </p>
-                <p>只读：{approval.evidence.readOnly === undefined ? "未记录" : approval.evidence.readOnly ? "是" : "否"}</p>
-                <p>用户授权：{approval.evidence.userAuthorization ?? "未记录"}</p>
+                <p>标准版本：v{approval.evidence.criteriaVersion}</p>
+                <p>结果：{approval.evidence.outcome === "allow" ? "允许" : "拒绝"}</p>
+                <p>实际风险：{approval.evidence.risk}</p>
+                <p>理由：{approval.evidence.rationale}</p>
+                <p>只读：{approval.evidence.readOnly ? "是" : "否"}</p>
+                <p>用户授权：{approval.evidence.userAuthorization}</p>
               </div>
             ) : null}
             {approval.evidence.kind === "classifier" ? (
               <div>
                 <p>标准版本 v{approval.evidence.criteriaVersion}</p>
                 <div className="evidence-grid">
+                  <p>结果：{approval.evidence.outcome === "allow" ? "允许" : "拒绝"}</p>
+                  <p>实际风险：{approval.evidence.risk}</p>
                   <p>
-                    只读概率：
-                    {approval.evidence.readOnlyProbability === undefined
-                      ? "未记录"
-                      : approval.evidence.readOnlyProbability.toFixed(3)}
+                    结果概率：
+                    {typeof approval.evidence.outcomeProbability === "number"
+                      ? approval.evidence.outcomeProbability.toFixed(3)
+                      : "未记录"}
                   </p>
                   <p>
-                    用户授权概率：
-                    {approval.evidence.authorizedProbability === undefined
-                      ? "未记录"
-                      : approval.evidence.authorizedProbability.toFixed(3)}
+                    结果类别概率：
+                    {Object.entries(approval.evidence.outcomeProbabilities).map(([outcome, probability]) => (
+                      <span key={outcome}> {outcome}={probability.toFixed(3)}</span>
+                    ))}
+                  </p>
+                  <p>
+                    风险概率：
+                    {typeof approval.evidence.riskProbability === "number"
+                      ? approval.evidence.riskProbability.toFixed(3)
+                      : "未记录"}
+                  </p>
+                  <p>
+                    风险类别概率：
+                    {Object.entries(approval.evidence.riskProbabilities).map(([risk, probability]) => (
+                      <span key={risk}> {risk}={probability.toFixed(3)}</span>
+                    ))}
+                  </p>
+                  <p>
+                    只读：{approval.evidence.readOnly === null ? "未记录" : approval.evidence.readOnly ? "是" : "否"}
+                    {" · "}
+                    概率：
+                    {typeof approval.evidence.readOnlyProbability === "number"
+                      ? approval.evidence.readOnlyProbability.toFixed(3)
+                      : "未记录"}
+                  </p>
+                  <p>
+                    用户授权：
+                    {approval.evidence.authorized === null ? "未记录" : approval.evidence.authorized ? "是" : "否"}
+                    {" · "}
+                    概率：
+                    {typeof approval.evidence.authorizedProbability === "number"
+                      ? approval.evidence.authorizedProbability.toFixed(3)
+                      : "未记录"}
                   </p>
                 </div>
                 <ul>

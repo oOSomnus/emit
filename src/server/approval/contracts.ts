@@ -1,29 +1,30 @@
 /**
  * The approval judgment seam.
  *
- * Emit gates risky tool calls behind one structured question: may this exact
- * call run? Two real implementations answer it — a chat model returning a
- * recommendation, and a structured classifier (Jev and friends) returning
- * probabilities over versioned criteria. Everything downstream of this seam
- * sees the same `EvaluationOutcome`, so a new judgment technology is added by
- * implementing one interface, not by editing communications, the approval
- * page, or tool execution.
+ * A chat-model reviewer and a native probability classifier evaluate the same
+ * complete action and context. Every consumer receives one exact outcome/risk
+ * verdict and the same provenance-aware audit structure.
  *
- * An evaluator only ever recommends. It never grants permission, and it never
- * overrides an employee's hard tool or directory limits.
+ * Reviewers classify an action; they never bypass tool permissions, directory
+ * authorization, or the hard execution checks.
  */
 
 import type { ModelRefDTO } from "../../shared/contracts.ts";
+import type { WorkDirectoryScopeRecord } from "../documents.ts";
 
 /** Token and cost accounting of one evaluation call, when the provider reports it. */
 export type ModelUsage = { input: number; output: number; cost: number };
 
-/** Everything the judgment is allowed to see. */
-export type ApprovalContextSource = "room-message" | "work-intent" | "delegation";
+/** One bounded, provenance-labelled item shown to the reviewer. */
+export type ApprovalContextSource = "room-message" | "work-intent" | "delegation" | "execution-context";
 
 export type ApprovalContextEntry = {
   source: ApprovalContextSource;
   at?: number;
+  entryId?: string;
+  role?: "user" | "assistant" | "toolResult" | "meta";
+  toolCallId?: string;
+  toolName?: string;
   author?: { id: string; name: string; type: "user" | "employee" | "system" };
   text: string;
   truncated: boolean;
@@ -33,44 +34,48 @@ export type ApprovalUserIntent = {
   text: string;
   source: ApprovalContextSource | "unknown";
   truncated: boolean;
-  /** Only `user` is a verified human request; all derived intent is unknown. */
+  /** Only a verified, real user-authored source can be treated as authorization. */
   authorization: "user" | "unknown";
   at?: number;
   author?: { id: string; name: string; type: "user" | "employee" | "system" };
 };
 
-/** Everything the judgment is allowed to see. */
+export type RiskLevel = "low" | "medium" | "high" | "critical" | "unknown";
+export type ReviewOutcome = "allow" | "deny";
+export type UserAuthorizationLevel = "high" | "medium" | "low" | "unknown";
+
+/** Everything one reviewer may consider, with provenance retained. */
 export type ApprovalCase = {
-  schemaVersion: 2;
-  /** Stable identity of this evaluation; the same call always maps to it. */
+  schemaVersion: 3;
   id: string;
   toolTaskId: string;
   employee: { id: string; name: string; role: string };
   tool: {
     name: string;
-    /** Coarse category used by criteria text, never for the decision itself. */
     kind: "file-write" | "shell" | "mcp" | "other";
+    description: string;
   };
-  /** Canonical, redacted arguments; the model sees this text, not raw values. */
+  /** Complete redacted JSON passed to the tool; never a display-truncated preview. */
+  arguments: string;
+  /** Truncated only for the approval-page display. */
   argumentsPreview: string;
   cwd: string;
-  /** Tools the employee is allowed to call at all. */
+  directories: WorkDirectoryScopeRecord;
+  targetPaths: string[];
   allowedTools: string[];
-  /** Request text with its actual author/source, never inferred from employee output. */
   userIntent: ApprovalUserIntent;
-  /** At most twelve redacted, provenance-labelled messages or derived intents. */
   recentContext: ApprovalContextEntry[];
-  /** Where this work came from, for a human reader. */
+  executionContext: ApprovalContextEntry[];
+  contextBudget: { omittedEntries: number; truncatedEntries: number };
   origin: { kind: "room" | "delegation"; description: string };
   configVersion: number;
   policyVersion: number;
 };
 
-export type UserAuthorizationLevel = "high" | "medium" | "low" | "unknown";
-
 export type EvaluationContext = {
-  /** Correlation id for logs and audit; identical for every retry of one evaluation. */
   evaluationId: string;
+  /** Selected model context window, used to bound the serialized review input. */
+  contextWindow: number;
   signal?: AbortSignal;
 };
 
@@ -79,28 +84,32 @@ export type EvaluationEvidence =
       kind: "llm";
       criteriaVersion: number;
       rationale: string;
-      risk: "low" | "medium" | "high" | "unknown";
-      recommendation: "approve" | "review" | "deny";
+      risk: RiskLevel;
+      outcome: ReviewOutcome;
       readOnly: boolean;
       userAuthorization: UserAuthorizationLevel;
     }
   | {
       kind: "classifier";
       criteriaVersion: number;
-      /** The choice the classifier selected. */
-      choice: string;
-      /** Rendered questions and criteria, kept for the audit trail. */
       questions: string;
-      probability: number | null;
-      authorizedProbability?: number | null;
-      readOnlyProbability?: number | null;
+      outcome: ReviewOutcome;
+      risk: RiskLevel;
+      outcomeProbability: number;
+      outcomeProbabilities: Record<string, number>;
+      riskProbability: number;
+      riskProbabilities: Record<string, number>;
+      readOnly: boolean | null;
+      readOnlyProbability: number | null;
+      authorized: boolean | null;
+      authorizedProbability: number | null;
     };
 
 export type EvaluationOutcome =
   | {
       status: "evaluated";
-      recommendation: "approve" | "review" | "deny";
-      risk: "low" | "medium" | "high" | "unknown";
+      outcome: ReviewOutcome;
+      risk: RiskLevel;
       evidence: EvaluationEvidence;
       model: ModelRefDTO;
       usage?: ModelUsage;
@@ -115,14 +124,6 @@ export interface ApprovalEvaluator {
   ): Promise<EvaluationOutcome>;
 }
 
-/** Configuration of the active evaluator, as stored in the workspace config. */
 export type ApprovalEvaluatorConfig =
   | { kind: "llm"; model: ModelRefDTO; effort: string; criteriaVersion: number }
-  | {
-      kind: "classifier";
-      model: ModelRefDTO;
-      criteriaVersion: number;
-      minApproveProbability: number;
-      minAuthorizedProbability: number;
-      requireAuthorized: boolean;
-    };
+  | { kind: "classifier"; model: ModelRefDTO; criteriaVersion: number };

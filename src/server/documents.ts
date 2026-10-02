@@ -8,6 +8,7 @@
  */
 
 import { defineDoc, defineDocFamily, defineEntry } from "@earendil-works/pi-durable";
+import type { ReviewOutcome, RiskLevel, UserAuthorizationLevel } from "../shared/contracts.ts";
 
 /** Immutable public message written into a room conversation's transcript. */
 export type RoomMessageData = {
@@ -66,9 +67,6 @@ export type ApprovalRecordConfig = {
   modelId: string;
   effort: string;
   criteriaVersion: number;
-  minApproveProbability: number;
-  minAuthorizedProbability: number;
-  requireAuthorized: boolean;
 };
 
 export type EmployeeRecord = {
@@ -79,7 +77,6 @@ export type EmployeeRecord = {
   role: string;
   instructions: string;
   executionModel: ModelSelectionRecord;
-  cwd: string;
   skillIds: string[];
   mcpServerIds: string[];
   allowedTools: string[];
@@ -89,14 +86,28 @@ export type EmployeeRecord = {
   createdAt: number;
 };
 
+export type RoomDirectoriesRecord = {
+  paths: string[];
+  defaultPath: string;
+  version: number;
+};
+
+export type WorkDirectoryScopeRecord = {
+  roomId: string;
+  version: number;
+  paths: string[];
+  defaultPath: string;
+};
+
 export type RoomRecord = {
   id: string;
   kind: "channel" | "dm" | "mail";
   name: string;
   topic: string;
   memberIds: string[];
-  /** Employee id for DMs and mail threads addressed to one employee. */
+  /** Employee id used to identify a DM; it never determines directory scope. */
   employeeId: string;
+  directories: RoomDirectoriesRecord;
   createdAt: number;
   lastMessageAt: number;
   messageCount: number;
@@ -147,6 +158,8 @@ export type WorkRecord = {
   error: string;
   /** Employee execution conversation carrying this work. */
   conversationId: number;
+  /** Immutable room-directory snapshot bound to this run. */
+  directoryScope: WorkDirectoryScopeRecord;
   /** The plain-text request that started this work, for audit context. */
   intent: string;
   /** Answer text produced by the run. */
@@ -161,28 +174,35 @@ export type ApprovalStatus =
   | "pending-human"
   | "approved"
   | "rejected"
+  | "blocked"
   | "cancelled"
   | "invalidated";
 
 export type ApprovalEvidenceRecord =
   | {
       kind: "llm";
-      criteriaVersion?: number;
+      criteriaVersion: number;
       rationale: string;
-      risk: string;
-      recommendation: string;
-      readOnly?: boolean;
-      userAuthorization?: "high" | "medium" | "low" | "unknown";
+      risk: RiskLevel;
+      outcome: ReviewOutcome;
+      readOnly: boolean;
+      userAuthorization: UserAuthorizationLevel;
     }
   | {
       kind: "classifier";
       criteriaVersion: number;
-      choice: string;
+      outcome: ReviewOutcome;
+      risk: RiskLevel;
       /** Rendered questions and criteria snapshot at evaluation time. */
       questions: string;
-      probability: number | null;
+      outcomeProbability: number | null;
+      outcomeProbabilities: Record<string, number>;
+      riskProbability: number | null;
+      riskProbabilities: Record<string, number>;
+      readOnly: boolean | null;
+      readOnlyProbability: number | null;
+      authorized: boolean | null;
       authorizedProbability: number | null;
-      readOnlyProbability?: number | null;
     }
   | { kind: "policy"; rationale: string };
 
@@ -201,7 +221,11 @@ export type ApprovalRecord = {
   /** Redacted argument preview for humans. */
   argumentsPreview: string;
   cwd: string;
-  risk: string;
+  directoryRoomId: string;
+  directoryVersion: number;
+  directoryPaths: string[];
+  targetPaths: string[];
+  risk: RiskLevel;
   status: ApprovalStatus;
   executionState: "not-started" | "running" | "succeeded" | "failed" | "interrupted";
   executionDetail: string;
@@ -273,10 +297,7 @@ export const AppDoc = defineDoc<AppRecord>({
       providerId: "",
       modelId: "",
       effort: "off",
-      criteriaVersion: 2,
-      minApproveProbability: 0.99,
-      minAuthorizedProbability: 0.99,
-      requireAuthorized: true,
+      criteriaVersion: 3,
     },
     collaboration: { maxDepth: 3, maxCrossEmployeeWakes: 12, maxModelTurns: 40 },
     policyVersion: 1,
@@ -296,7 +317,6 @@ export const EmployeeDoc = defineDocFamily<EmployeeRecord, { id: string }>({
     role: "",
     instructions: "",
     executionModel: { providerId: "", modelId: "", effort: "off" },
-    cwd: "",
     skillIds: [],
     mcpServerIds: [],
     allowedTools: [],
@@ -319,6 +339,7 @@ export const RoomDoc = defineDocFamily<RoomRecord, { id: string }>({
     topic: "",
     memberIds: [],
     employeeId: "",
+    directories: { paths: [], defaultPath: "", version: 1 },
     createdAt: 0,
     lastMessageAt: 0,
     messageCount: 0,
@@ -386,6 +407,7 @@ export const WorkDoc = defineDocFamily<WorkRecord, { id: string }>({
     error: "",
     conversationId: 0,
     intent: "",
+    directoryScope: { roomId: "", version: 0, paths: [], defaultPath: "" },
     answer: "",
     inputTokens: 0,
     outputTokens: 0,
@@ -409,6 +431,10 @@ export const ApprovalDoc = defineDocFamily<ApprovalRecord, { id: string }>({
     argsHash: "",
     argumentsPreview: "",
     cwd: "",
+    directoryRoomId: "",
+    directoryVersion: 0,
+    directoryPaths: [],
+    targetPaths: [],
     risk: "unknown",
     status: "evaluating",
     executionState: "not-started",

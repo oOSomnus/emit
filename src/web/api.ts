@@ -20,6 +20,8 @@ import type {
   MessageDTO,
   ModelInfoDTO,
   ProviderStatusDTO,
+  RoomDirectoryDraftDTO,
+  RoomDirectoryPatchDTO,
   RoomDTO,
   ServerEvent,
   SkillDTO,
@@ -79,8 +81,16 @@ export const api = {
 
   rooms: () => request<RoomDTO[]>("/api/rooms"),
 
-  createRoom: (input: { kind: "channel" | "dm" | "mail"; name: string; topic?: string; employeeId?: string }) =>
-    request<RoomDTO>("/api/rooms", { method: "POST", body: JSON.stringify(input) }),
+  createRoom: (input: {
+    kind: "channel" | "dm" | "mail";
+    name: string;
+    topic?: string;
+    employeeId?: string;
+    directories?: RoomDirectoryDraftDTO;
+  }) => request<RoomDTO>("/api/rooms", { method: "POST", body: JSON.stringify(input) }),
+
+  updateRoomDirectories: (id: string, draft: RoomDirectoryPatchDTO) =>
+    request<RoomDTO>(`/api/rooms/${id}/directories`, { method: "PATCH", body: JSON.stringify(draft) }),
 
   messages: (roomId: string) => request<{ room: RoomDTO; messages: MessageDTO[] }>(`/api/rooms/${roomId}/messages`),
 
@@ -93,6 +103,7 @@ export const api = {
       to?: string[];
       cc?: string[];
       draft?: boolean;
+      inReplyTo?: string;
     },
   ) =>
     request<{ message: MessageDTO; workId?: string; workIds?: string[]; error?: string }>(

@@ -33,12 +33,6 @@ export type ApprovalEvaluatorConfigDTO =
       kind: "classifier";
       model: ModelRefDTO;
       criteriaVersion: number;
-      /** Minimum probability of the `approve` choice to auto-approve. */
-      minApproveProbability: number;
-      /** Minimum probability that the operation is user-authorized. */
-      minAuthorizedProbability: number;
-      /** When true, `authorized` must clear its threshold as well. */
-      requireAuthorized: boolean;
     };
 
 export type CollaborationLimitsDTO = {
@@ -118,7 +112,6 @@ export type EmployeeDTO = {
   role: string;
   instructions: string;
   executionModel: ChatSelectionDTO;
-  cwd: string;
   skillIds: string[];
   mcpServerIds: string[];
   toolPolicy: EmployeeToolPolicyDTO;
@@ -132,7 +125,6 @@ export type EmployeeDraftDTO = {
   role: string;
   instructions?: string;
   executionModel?: ChatSelectionDTO;
-  cwd?: string;
   skillIds?: string[];
   mcpServerIds?: string[];
   toolPolicy?: EmployeeToolPolicyDTO;
@@ -141,12 +133,26 @@ export type EmployeeDraftDTO = {
 
 export type RoomKind = "channel" | "dm" | "mail";
 
+export type RoomDirectoriesDTO = {
+  paths: string[];
+  defaultPath: string;
+  version: number;
+};
+
+export type RoomDirectoryDraftDTO = {
+  paths: string[];
+  defaultPath: string;
+};
+
+export type RoomDirectoryPatchDTO = RoomDirectoryDraftDTO & { expectedVersion: number };
+
 export type RoomDTO = {
   id: string;
   kind: RoomKind;
   name: string;
   topic: string;
   memberIds: string[];
+  directories: RoomDirectoriesDTO;
   /** Employee id for DMs; absent otherwise. */
   employeeId?: string;
   createdAt: number;
@@ -239,11 +245,16 @@ export type WorkDTO = {
   usage?: { input: number; output: number; cost: number };
 };
 
+export type RiskLevel = "low" | "medium" | "high" | "critical" | "unknown";
+export type ReviewOutcome = "allow" | "deny";
+export type UserAuthorizationLevel = "high" | "medium" | "low" | "unknown";
+
 export type ApprovalStatusDTO =
   | "evaluating"
   | "pending-human"
   | "approved"
   | "rejected"
+  | "blocked"
   | "cancelled"
   | "invalidated";
 
@@ -257,12 +268,12 @@ export type ApprovalDecisionSourceDTO = "llm" | "classifier" | "human" | "policy
 export type ApprovalEvidenceDTO =
   | {
       kind: "llm";
-      criteriaVersion?: number;
+      criteriaVersion: number;
       rationale: string;
-      risk: string;
-      recommendation: string;
-      readOnly?: boolean;
-      userAuthorization?: "high" | "medium" | "low" | "unknown";
+      risk: RiskLevel;
+      outcome: ReviewOutcome;
+      readOnly: boolean;
+      userAuthorization: UserAuthorizationLevel;
     }
   | {
       kind: "classifier";
@@ -273,9 +284,22 @@ export type ApprovalEvidenceDTO =
         instructions: string;
         criteria: { label: string; description: string }[];
       }[];
-      answers: { key: string; choice?: string; probability?: number; probabilities?: Record<string, number> }[];
-      readOnlyProbability?: number;
-      authorizedProbability?: number;
+      answers: {
+        key: string;
+        choice?: string;
+        probability?: number;
+        probabilities?: Record<string, number>;
+      }[];
+      outcome: ReviewOutcome;
+      risk: RiskLevel;
+      outcomeProbability: number | null;
+      outcomeProbabilities: Record<string, number>;
+      riskProbability: number | null;
+      riskProbabilities: Record<string, number>;
+      readOnly: boolean | null;
+      readOnlyProbability: number | null;
+      authorized: boolean | null;
+      authorizedProbability: number | null;
     }
   | { kind: "policy"; rationale: string };
 
@@ -294,7 +318,11 @@ export type ApprovalDTO = {
   /** Redacted, human-readable argument preview. */
   argumentsPreview: string;
   cwd: string;
-  risk: string;
+  directoryRoomId: string;
+  directoryVersion: number;
+  directoryPaths: string[];
+  targetPaths: string[];
+  risk: RiskLevel;
   status: ApprovalStatusDTO;
   execution: ApprovalExecutionDTO;
   createdAt: number;

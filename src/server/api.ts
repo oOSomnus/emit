@@ -10,7 +10,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
-import type { MailboxItemDTO, ServerEvent } from "../shared/contracts.ts";
+import type { MailboxItemDTO, ServerEvent, RoomDirectoryDraftDTO, RoomDirectoryPatchDTO } from "../shared/contracts.ts";
 import type { EmitRuntime } from "./runtime.ts";
 import type { McpManager } from "./mcp.ts";
 import {
@@ -40,6 +40,9 @@ import {
   setMailFlag,
   toRoomDTO,
   type MailAddress,
+  updateRoomDirectories,
+  RoomDirectoryError,
+  isSentMailEntry,
 } from "./rooms.ts";
 import {
   findWork,
@@ -50,7 +53,7 @@ import {
   stopWork,
   type Resume,
 } from "./work.ts";
-import { findApproval, invalidateStaleGrants, listApprovals, toApprovalDTO } from "./approval/state.ts";
+import { findApproval, invalidateStaleGrants, invalidateRoomDirectoryGrants, listApprovals, toApprovalDTO } from "./approval/state.ts";
 import { toWorkDTO } from "./dto.ts";
 import { ApprovalDoc, EmployeeDoc, type ApprovalRecord } from "./documents.ts";
 
@@ -72,6 +75,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   // A rejected input answers 400 with its reason; anything else stays a 500.
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ValidationError) return reply.code(400).send({ message: error.message });
+    if (error instanceof RoomDirectoryError) return reply.code(error.status).send({ message: error.message });
     if (error instanceof ProviderAuthError) return reply.code(error.status).send({ message: error.message });
     const message = error instanceof Error ? error.message : String(error);
     return reply.code(500).send({ message });
@@ -202,6 +206,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
       name?: string;
       topic?: string;
       employeeId?: string;
+      directories?: RoomDirectoryDraftDTO;
     };
     if (body?.kind !== "channel" && body?.kind !== "dm" && body?.kind !== "mail") {
       return reply.code(400).send({ message: "会话类型无效" });
@@ -212,10 +217,12 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
     if (body.employeeId !== undefined && body.employeeId.length > 0) {
       const employee = await findEmployee(runtime, body.employeeId);
       if (employee === undefined) return reply.code(404).send({ message: "员工不存在" });
-      const existing = (await listRoomDTOs(runtime, "user")).find(
-        (room) => room.employeeId === body.employeeId && room.kind === body.kind,
-      );
-      if (existing !== undefined) return existing;
+      if (body.kind === "dm") {
+        const existing = (await listRoomDTOs(runtime, "user")).find(
+          (room) => room.employeeId === body.employeeId && room.kind === "dm",
+        );
+        if (existing !== undefined) return existing;
+      }
       return toRoomDTO(
         await createRoom(runtime, {
           kind: body.kind,
@@ -223,10 +230,20 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
           topic: body.topic ?? "",
           employeeId: body.employeeId,
           memberIds: [body.employeeId],
+          directories: body.directories,
         }),
       );
     }
-    return toRoomDTO(await createRoom(runtime, { kind: body.kind, name: body.name, topic: body.topic ?? "" }));
+    return toRoomDTO(await createRoom(runtime, { kind: body.kind, name: body.name, topic: body.topic ?? "", directories: body.directories }));
+  });
+
+  app.patch("/api/rooms/:id/directories", async (request) => {
+    const { id } = request.params as { id: string };
+    const room = await updateRoomDirectories(runtime, id, request.body as RoomDirectoryPatchDTO);
+    await invalidateRoomDirectoryGrants(runtime, room.id, room.directories.version);
+    const dto = await roomDTOWithUnread(runtime, room, "user");
+    runtime.emit({ type: "room", room: dto });
+    return dto;
   });
 
   app.get("/api/rooms/:id/messages", async (request, reply) => {
@@ -254,6 +271,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
       to?: string[];
       cc?: string[];
       draft?: boolean;
+      inReplyTo?: string;
     };
     const text = typeof body?.body === "string" ? body.body.trim() : "";
     if (text.length === 0) return reply.code(400).send({ message: "消息内容为空" });
@@ -267,6 +285,10 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
     };
 
     if (room.kind === "mail") {
+      if (body.inReplyTo !== undefined && (typeof body.inReplyTo !== "string" ||
+        (body.inReplyTo.length > 0 && !(await isSentMailEntry(runtime, room, body.inReplyTo))))) {
+        return reply.code(400).send({ message: "inReplyTo 必须引用当前会话内的已发送邮件" });
+      }
       const addressed = await resolveMailAddresses(runtime, body?.to ?? [], body?.cc ?? []);
       if (typeof addressed === "string") return reply.code(400).send({ message: addressed });
       const subject = (typeof body.subject === "string" ? body.subject : "").trim();
@@ -281,6 +303,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
             ...addressed,
             sent: body?.draft !== true,
             draft: body?.draft === true,
+            inReplyTo: body.inReplyTo,
           }),
         }),
       );
@@ -338,7 +361,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
           address: appRecord.userAddress,
         },
         body: draft.body,
-        mail: mailEnvelope({ subject: draft.mail.subject, ...addressed, sent: true }),
+        mail: mailEnvelope({ subject: draft.mail.subject, ...addressed, sent: true, inReplyTo: draft.mail.inReplyTo }),
       }),
     );
     // The draft is retired rather than deleted: entries are immutable, so the

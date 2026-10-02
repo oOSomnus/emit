@@ -55,31 +55,26 @@ export function Onboarding(): ReactNode {
       setError("请选择一个可用的对话模型（先在上面的 Provider 列表中完成认证）");
       return;
     }
-    if (approvalModel.length > 0 && (selectedApproval === undefined || !selectedApproval.configured)) {
-      setError("审批判断模型不可用，请重新选择或清空");
+    if (selectedApproval === undefined || !selectedApproval.configured) {
+      setError("请选择一个可用的审批判断模型");
       return;
     }
     setBusy(true);
     setError(undefined);
     try {
-      const approval: ApprovalEvaluatorConfigDTO | null =
-        selectedApproval === undefined
-          ? null
-          : approvalKind === "llm"
-            ? {
-                kind: "llm",
-                model: { providerId: selectedApproval.providerId, modelId: selectedApproval.modelId },
-                effort: selectedApproval.efforts[0] ?? "off",
-                criteriaVersion: 2,
-              }
-            : {
-                kind: "classifier",
-                model: { providerId: selectedApproval.providerId, modelId: selectedApproval.modelId },
-                criteriaVersion: 2,
-                minApproveProbability: 0.85,
-                minAuthorizedProbability: 0.8,
-                requireAuthorized: true,
-              };
+      const approval: ApprovalEvaluatorConfigDTO =
+        approvalKind === "llm"
+          ? {
+              kind: "llm",
+              model: { providerId: selectedApproval.providerId, modelId: selectedApproval.modelId },
+              effort: selectedApproval.efforts[0] ?? "off",
+              criteriaVersion: 3,
+            }
+          : {
+              kind: "classifier",
+              model: { providerId: selectedApproval.providerId, modelId: selectedApproval.modelId },
+              criteriaVersion: 3,
+            };
       await api.setup({
         workspaceName: workspaceName.trim().length > 0 ? workspaceName.trim() : "我的数字团队",
         userName: userName.trim(),
@@ -141,7 +136,8 @@ export function Onboarding(): ReactNode {
 
       <fieldset>
         <legend>审批判断者</legend>
-        <p className="hint">有风险的工具调用（写文件、执行命令、MCP 调用）先由它判断；它拿不准时转给你人工裁决。</p>
+        <p className="hint">低/中风险自动通过，高风险转人工裁决，禁止动作自动拒绝，判断失败阻止执行。</p>
+        <p className="hint">请为自动审查单独选择一个可用模型，不会自动沿用员工模型。</p>
         <div className="row">
           <label className="inline">
             <input
@@ -172,13 +168,12 @@ export function Onboarding(): ReactNode {
             models={approvalModels}
             value={approvalModel}
             onChange={setApprovalModel}
-            allowEmpty
             label="审批判断模型"
           />
         </label>
         {approvalModels.length === 0 ? (
           <p className="hint">
-            没有{approvalKind === "llm" ? "对话" : "分类"}模型可用；可以先不设置审批判断者，之后在设置页补充。
+            没有{approvalKind === "llm" ? "对话" : "分类"}模型可用；请先配置一个可用的 Provider 和判断模型，才能继续。
           </p>
         ) : null}
       </fieldset>

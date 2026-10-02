@@ -48,7 +48,7 @@ export function SettingsView(): ReactNode {
 
   // Saving an app config must not reopen the first room, so the response is
   // folded straight into state instead of going through `reload`.
-  const saveApproval = async (next: ApprovalEvaluatorConfigDTO | null) => {
+  const saveApproval = async (next: ApprovalEvaluatorConfigDTO) => {
     try {
       dispatch({ type: "app", app: await api.updateApp({ approval: next }) });
     } catch (error) {
@@ -149,6 +149,8 @@ export function SettingsView(): ReactNode {
           <p className="hint">
             修改审批配置会提升策略版本（当前 v{app.policyVersion}），此前获批但未执行的调用会失效，需要重新请求。
           </p>
+          <p className="hint">低/中风险自动通过，高风险转人工裁决，禁止动作自动拒绝，判断失败阻止执行。</p>
+          <p className="hint">审批判断模型单独配置；不会自动沿用员工模型。</p>
           <div className="row">
             <label className="inline">
               <input
@@ -164,7 +166,7 @@ export function SettingsView(): ReactNode {
                     kind: "llm",
                     model: { providerId: first.providerId, modelId: first.modelId },
                     effort: first.efforts[0] ?? "off",
-                    criteriaVersion: (approval?.criteriaVersion ?? 0) + 1,
+                    criteriaVersion: 3,
                   });
                 }}
               />
@@ -183,10 +185,7 @@ export function SettingsView(): ReactNode {
                   void saveApproval({
                     kind: "classifier",
                     model: { providerId: first.providerId, modelId: first.modelId },
-                    criteriaVersion: (approval?.criteriaVersion ?? 0) + 1,
-                    minApproveProbability: 0.85,
-                    minAuthorizedProbability: 0.8,
-                    requireAuthorized: true,
+                    criteriaVersion: 3,
                   });
                 }}
               />
@@ -226,47 +225,9 @@ export function SettingsView(): ReactNode {
                 ) : null}
                 <ConnectionCheckButton model={approval.model} kind={approval.kind === "llm" ? "chat" : "classifier"} />
               </div>
-              {approval.kind === "classifier" ? (
-                <div className="row">
-                  <label>
-                    approve 阈值
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      max="1"
-                      value={approval.minApproveProbability}
-                      onChange={(event) =>
-                        void saveApproval({ ...approval, minApproveProbability: Number(event.target.value) })
-                      }
-                    />
-                  </label>
-                  <label>
-                    authorized 阈值
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      max="1"
-                      value={approval.minAuthorizedProbability}
-                      onChange={(event) =>
-                        void saveApproval({ ...approval, minAuthorizedProbability: Number(event.target.value) })
-                      }
-                    />
-                  </label>
-                  <label className="inline">
-                    <input
-                      type="checkbox"
-                      checked={approval.requireAuthorized}
-                      onChange={(event) => void saveApproval({ ...approval, requireAuthorized: event.target.checked })}
-                    />
-                    必须同时通过 authorized
-                  </label>
-                </div>
-              ) : null}
             </>
           ) : (
-            <p className="hint">未配置审批判断者：所有有风险的调用都会直接转人工。</p>
+            <p className="hint">未配置审批判断者：自动审查不可用，有风险的调用会被阻止执行。</p>
           )}
         </section>
 

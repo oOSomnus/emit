@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api.ts";
 import { useApp } from "../state.tsx";
 import { Chip, Icon, IconButton, timeAgo } from "./ui.tsx";
+import { RoomDirectoryEditor } from "./RoomDirectories.tsx";
 
 /** The avatar initial: one grapheme, so a Chinese name does not render half a pair. */
 function initial(name: string): string {
@@ -17,10 +18,11 @@ function initial(name: string): string {
 }
 
 export function ChatView(): ReactNode {
-  const { state, dispatch, openRoom, setError } = useApp();
+  const { state, openRoom, setError } = useApp();
   const [draft, setDraft] = useState("");
   const [target, setTarget] = useState("");
   const [sending, setSending] = useState(false);
+  const [editingDirectories, setEditingDirectories] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const room = state.rooms.find((entry) => entry.id === state.activeRoomId);
 
@@ -74,6 +76,9 @@ export function ChatView(): ReactNode {
           {room.topic.length > 0 ? <p className="topic">{room.topic}</p> : null}
         </div>
         <div className="pane-header-actions">
+          <button type="button" onClick={() => setEditingDirectories(true)}>
+            工作目录（{room.directories.paths.length}）
+          </button>
           <IconButton icon="refresh" label="刷新" onClick={() => void openRoom(room.id)} />
         </div>
       </header>
@@ -100,7 +105,7 @@ export function ChatView(): ReactNode {
               <Chip tone="info">{work.employeeName} 正在工作</Chip>
               <Chip tone={work.status === "waiting-approval" ? "warn" : "info"}>{work.status === "waiting-approval" ? "等待审批" : "进行中"}</Chip>
               <span className="time" />
-              <IconButton icon="stop" label="停止" onClick={() => void api.stopWork(work.id)} />
+              <IconButton icon="close" label="停止" onClick={() => void api.stopWork(work.id)} />
             </div>
             {work.tools !== undefined && work.tools.length > 0 ? (
               <ul className="tools">
@@ -151,6 +156,9 @@ export function ChatView(): ReactNode {
           发送
         </button>
       </footer>
+      {editingDirectories ? (
+        <RoomDirectoryEditor key={room.id} room={room} onClose={() => setEditingDirectories(false)} />
+      ) : null}
     </div>
   );
 }

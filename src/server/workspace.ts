@@ -80,7 +80,6 @@ export function toEmployeeDTO(record: EmployeeRecord): EmployeeDTO {
       model: { providerId: record.executionModel.providerId, modelId: record.executionModel.modelId },
       effort: record.executionModel.effort,
     },
-    cwd: record.cwd,
     skillIds: [...record.skillIds],
     mcpServerIds: [...record.mcpServerIds],
     toolPolicy: {
@@ -117,9 +116,6 @@ export function toAppDTO(app: AppRecord): AppConfigDTO {
               kind: "classifier",
               model: { providerId: app.approval.providerId, modelId: app.approval.modelId },
               criteriaVersion: CLASSIFIER_CRITERIA_VERSION,
-              minApproveProbability: app.approval.minApproveProbability,
-              minAuthorizedProbability: app.approval.minAuthorizedProbability,
-              requireAuthorized: app.approval.requireAuthorized,
             },
     collaboration: { ...app.collaboration },
     policyVersion: app.policyVersion,
@@ -236,6 +232,10 @@ export type SetupInput = {
 export class ValidationError extends Error {}
 
 export async function setupWorkspace(runtime: EmitRuntime, input: SetupInput): Promise<AppRecord> {
+  if (input.approval === null) throw new ValidationError("请选择一个可用的审批判断模型");
+  assertChatSelection(runtime, input.defaultExecutionModel, "默认执行模型");
+  assertApproval(runtime, input.approval);
+  const approval = input.approval;
   const workspaceSlug = slugify(input.workspaceName);
   const app = await runtime.updateSession(AppDoc, (draft) => {
     draft.workspaceName = input.workspaceName;
@@ -249,24 +249,15 @@ export async function setupWorkspace(runtime: EmitRuntime, input: SetupInput): P
             modelId: input.defaultExecutionModel.model.modelId,
             effort: input.defaultExecutionModel.effort,
           };
-    if (input.approval !== null) {
-      draft.approval = {
-        kind: input.approval.kind,
-        providerId: input.approval.model.providerId,
-        modelId: input.approval.model.modelId,
-        effort: input.approval.kind === "llm" ? input.approval.effort : "off",
-        criteriaVersion: input.approval.kind === "llm" ? LLM_CRITERIA_VERSION : CLASSIFIER_CRITERIA_VERSION,
-        minApproveProbability:
-          input.approval.kind === "classifier" ? input.approval.minApproveProbability : 0.99,
-        minAuthorizedProbability:
-          input.approval.kind === "classifier" ? input.approval.minAuthorizedProbability : 0.99,
-        requireAuthorized: input.approval.kind === "classifier" ? input.approval.requireAuthorized : true,
-      };
-    }
+    draft.approval = {
+      kind: approval.kind,
+      providerId: approval.model.providerId,
+      modelId: approval.model.modelId,
+      effort: approval.kind === "llm" ? approval.effort : "off",
+      criteriaVersion: approval.kind === "llm" ? LLM_CRITERIA_VERSION : CLASSIFIER_CRITERIA_VERSION,
+    };
     draft.onboarded = true;
   });
-  assertChatSelection(runtime, input.defaultExecutionModel, "默认执行模型");
-  assertApproval(runtime, input.approval);
   const domain = workspaceDomain(app);
   const taken = new Set<string>();
   for (const employee of await listEmployees(runtime)) taken.add(employee.address);
@@ -297,6 +288,9 @@ export type AppPatch = {
  * policy their evaluator never saw; they are marked stale on the next read.
  */
 export async function updateAppConfig(runtime: EmitRuntime, patch: AppPatch): Promise<AppRecord> {
+  const approval = patch.approval;
+  if (approval === null) throw new ValidationError("审批判断模型不能为空");
+  if (approval !== undefined) assertApproval(runtime, approval);
   const saved = await runtime.updateSession(AppDoc, (draft) => {
     if (patch.workspaceName !== undefined && patch.workspaceName.length > 0) {
       draft.workspaceName = patch.workspaceName;
@@ -320,17 +314,13 @@ export async function updateAppConfig(runtime: EmitRuntime, patch: AppPatch): Pr
         maxModelTurns: Math.max(1, Math.floor(patch.collaboration.maxModelTurns)),
       };
     }
-    if (patch.approval !== undefined && patch.approval !== null) {
-      const approval = patch.approval;
+    if (approval !== undefined) {
       draft.approval = {
         kind: approval.kind,
         providerId: approval.model.providerId,
         modelId: approval.model.modelId,
         effort: approval.kind === "llm" ? approval.effort : "off",
         criteriaVersion: approval.kind === "llm" ? LLM_CRITERIA_VERSION : CLASSIFIER_CRITERIA_VERSION,
-        minApproveProbability: approval.kind === "classifier" ? approval.minApproveProbability : 0.99,
-        minAuthorizedProbability: approval.kind === "classifier" ? approval.minAuthorizedProbability : 0.99,
-        requireAuthorized: approval.kind === "classifier" ? approval.requireAuthorized : true,
       };
       draft.policyVersion += 1;
     }
@@ -382,7 +372,6 @@ export async function createEmployee(runtime: EmitRuntime, draft: EmployeeDraftD
     role: draft.role,
     instructions: draft.instructions ?? "",
     executionModel,
-    cwd: draft.cwd ?? "",
     skillIds: [...(draft.skillIds ?? [])],
     mcpServerIds: [...(draft.mcpServerIds ?? [])],
     allowedTools: [...policy.allowedTools],
@@ -403,7 +392,6 @@ export type EmployeePatch = {
   role?: string;
   instructions?: string;
   executionModel?: ChatSelectionDTO;
-  cwd?: string;
   skillIds?: string[];
   mcpServerIds?: string[];
   toolPolicy?: EmployeeToolPolicyDTO;
@@ -445,7 +433,6 @@ export async function updateEmployee(
         effort: patch.executionModel.effort,
       };
     }
-    if (patch.cwd !== undefined) doc.cwd = patch.cwd;
     if (patch.skillIds !== undefined) doc.skillIds = [...patch.skillIds];
     if (patch.mcpServerIds !== undefined) doc.mcpServerIds = [...patch.mcpServerIds];
     if (patch.toolPolicy !== undefined) {
@@ -502,7 +489,7 @@ function assertChatSelection(
 }
 
 function assertApproval(runtime: EmitRuntime, config: ApprovalEvaluatorConfigDTO | null): void {
-  if (config === null) return;
+  if (config === null) throw new ValidationError("请选择一个可用的审批判断模型");
   const problem = runtime.catalog.approvalProblem({
     kind: config.kind,
     providerId: config.model.providerId,

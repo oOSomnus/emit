@@ -2,48 +2,65 @@
  * The approval lifecycle.
  *
  * One approval case is created per gated tool call, keyed deterministically by
- * the tool task, the employee, the normalized arguments, the working directory,
- * and the configuration versions in force. That key is what makes the whole
- * path durable:
+ * the tool task, employee, complete arguments, canonical session directory
+ * scope and targets, and configuration versions in force. That key is what makes
+ * the whole path durable:
  *
  *  - the gate runs before the harness records the tool intent, so a process
  *    that dies while a human is deciding has recorded no side effect at all;
  *  - a restarted call recomputes the same key and finds the same case, so a
  *    decision is never asked for twice;
- *  - a grant is bound to the arguments, directory, and configuration versions
- *    it was issued for, so it cannot be reused for a different call.
+ *  - a grant is bound to the arguments, directory scope, target paths, and
+ *    configuration versions it was issued for, so it cannot be reused for a
+ *    different call.
  *
- * The gate waits for a human by polling the committed document rather than by
- * holding an in-process promise, because that is the only state a new process
- * can see.
+ * The gate waits for a human only for a high-risk verdict, polling the committed
+ * document rather than holding an in-process promise, because that is the only
+ * state a new process can see.
  */
 
 import { createHash } from "node:crypto";
+import type { ConversationId, EntryId, TaskId as HarnessTaskId } from "@earendil-works/pi-durable";
 import type { ApprovalDTO, ApprovalEvidenceDTO } from "../../shared/contracts.ts";
-import { AppDoc, ApprovalDoc, ConversationContextDoc, EmployeeDoc, RoomDoc, WorkDoc } from "../documents.ts";
 import {
-  type ApprovalRecord,
-  type AppRecord,
-  type ConversationContextRecord,
-  type EmployeeRecord,
-  type RoomRecord,
-  type WorkRecord,
+  AppDoc,
+  ApprovalDoc,
+  ConversationContextDoc,
+  EmployeeDoc,
+  MailFlagDoc,
+  RoomDoc,
+  RoomMessageEntry,
+  WorkDoc,
 } from "../documents.ts";
-import { ROOM_PAGE_SIZE, listRoomMessages } from "../rooms.ts";
+import type {
+  ApprovalRecord,
+  AppRecord,
+  ConversationContextRecord,
+  EmployeeRecord,
+  RoomRecord,
+  WorkDirectoryScopeRecord,
+  WorkRecord,
+} from "../documents.ts";
+import { toMessageDTO } from "../rooms.ts";
+import type { MessageDTO } from "../../shared/contracts.ts";
 import type { EmitRuntime } from "../runtime.ts";
-
-/** The harness brands task ids; this app carries them as plain strings. */
-type HarnessTaskId = Parameters<EmitRuntime["harness"]["getTask"]>[0];
-import type { ApprovalCase, ApprovalEvaluatorConfig, ApprovalUserIntent, EvaluationOutcome } from "./contracts.ts";
+import type {
+  ApprovalCase,
+  ApprovalContextEntry,
+  ApprovalEvaluatorConfig,
+  ApprovalUserIntent,
+  EvaluationOutcome,
+} from "./contracts.ts";
 import {
-  CLASSIFIER_CRITERIA_VERSION,
-  LLM_CRITERIA_VERSION,
+  argumentsPreview,
   createClassifierEvaluator,
   createLlmEvaluator,
+  describeClassifierEvidence,
   redactApprovalText,
   redactArguments,
 } from "./evaluators.ts";
 import { parseJsonObject } from "../llm.ts";
+import { resolveToolDirectoryScope } from "../work-directories.ts";
 
 /** How a tool call is classified for the gate. */
 export type ToolRisk =
@@ -56,9 +73,13 @@ export type ApprovalRequest = {
   employeeName: string;
   toolName: string;
   toolKind: "file-write" | "shell" | "mcp" | "other";
-  /** Canonical normalized arguments; hashed, never sent raw to a model. */
+  /** Raw validated arguments are hashed; only their redacted JSON reaches review. */
   arguments: unknown;
   cwd: string;
+  directoryRoomId: string;
+  directoryVersion: number;
+  directoryPaths: string[];
+  targetPaths: string[];
 };
 
 /** Stable JSON with sorted object keys, so equal arguments hash equally. */
@@ -87,6 +108,10 @@ export function approvalId(request: ApprovalRequest, configVersion: number, poli
     request.toolName,
     hashArguments(request.arguments),
     request.cwd,
+    request.directoryRoomId,
+    String(request.directoryVersion),
+    canonicalJson(request.directoryPaths),
+    canonicalJson(request.targetPaths),
     String(configVersion),
     String(policyVersion),
   ].join("\u0000");
@@ -102,6 +127,10 @@ export function toApprovalDTO(record: ApprovalRecord): ApprovalDTO {
     toolName: record.toolName,
     argumentsPreview: record.argumentsPreview,
     cwd: record.cwd,
+    directoryRoomId: record.directoryRoomId,
+    directoryVersion: record.directoryVersion,
+    directoryPaths: [...record.directoryPaths],
+    targetPaths: [...record.targetPaths],
     risk: record.risk,
     status: record.status,
     execution: {
@@ -138,45 +167,46 @@ function toEvidenceDTO(record: ApprovalRecord): ApprovalEvidenceDTO | undefined 
   const evidence = record.evidence;
   if (evidence === null) return undefined;
   if (evidence.kind === "policy") return { kind: "policy", rationale: evidence.rationale };
-  if (evidence.kind === "llm") {
-    return {
-      kind: "llm",
-      ...(evidence.criteriaVersion !== undefined ? { criteriaVersion: evidence.criteriaVersion } : {}),
-      rationale: evidence.rationale,
-      risk: evidence.risk,
-      recommendation: evidence.recommendation,
-      ...(typeof evidence.readOnly === "boolean" ? { readOnly: evidence.readOnly } : {}),
-      ...(evidence.userAuthorization !== undefined ? { userAuthorization: evidence.userAuthorization } : {}),
-    };
-  }
-  const answer: Extract<ApprovalEvidenceDTO, { kind: "classifier" }> = {
+  if (evidence.kind === "llm") return { ...evidence };
+  return {
     kind: "classifier",
     criteriaVersion: evidence.criteriaVersion,
     questions: parseStoredQuestions(evidence.questions),
-    answers: [],
+    answers: [
+      {
+        key: "outcome",
+        choice: evidence.outcome,
+        probability: evidence.outcomeProbability ?? undefined,
+        probabilities: { ...evidence.outcomeProbabilities },
+      },
+      {
+        key: "risk",
+        choice: evidence.risk,
+        probability: evidence.riskProbability ?? undefined,
+        probabilities: { ...evidence.riskProbabilities },
+      },
+      {
+        key: "read_only",
+        ...(evidence.readOnly !== null ? { choice: String(evidence.readOnly) } : {}),
+        ...(evidence.readOnlyProbability !== null ? { probability: evidence.readOnlyProbability } : {}),
+      },
+      {
+        key: "authorized",
+        ...(evidence.authorized !== null ? { choice: String(evidence.authorized) } : {}),
+        ...(evidence.authorizedProbability !== null ? { probability: evidence.authorizedProbability } : {}),
+      },
+    ],
+    outcome: evidence.outcome,
+    risk: evidence.risk,
+    outcomeProbability: evidence.outcomeProbability,
+    outcomeProbabilities: { ...evidence.outcomeProbabilities },
+    riskProbability: evidence.riskProbability,
+    riskProbabilities: { ...evidence.riskProbabilities },
+    readOnly: evidence.readOnly,
+    readOnlyProbability: evidence.readOnlyProbability,
+    authorized: evidence.authorized,
+    authorizedProbability: evidence.authorizedProbability,
   };
-  if (evidence.probability !== null && Number.isFinite(evidence.probability)) {
-    answer.answers.push({
-      key: "decision",
-      choice: evidence.choice,
-      probabilities: { [evidence.choice]: evidence.probability },
-    });
-  } else {
-    answer.answers.push({ key: "decision", choice: evidence.choice });
-  }
-  if (
-    evidence.readOnlyProbability !== null &&
-    evidence.readOnlyProbability !== undefined &&
-    Number.isFinite(evidence.readOnlyProbability)
-  ) {
-    answer.readOnlyProbability = evidence.readOnlyProbability;
-    answer.answers.push({ key: "read_only", probability: evidence.readOnlyProbability });
-  }
-  if (evidence.authorizedProbability !== null && Number.isFinite(evidence.authorizedProbability)) {
-    answer.authorizedProbability = evidence.authorizedProbability;
-    answer.answers.push({ key: "authorized", probability: evidence.authorizedProbability });
-  }
-  return answer;
 }
 
 /** Re-parse the criteria snapshot stored at evaluation time, for display only. */
@@ -217,23 +247,20 @@ export async function findApproval(runtime: EmitRuntime, id: string): Promise<Ap
 
 export type GateInput = {
   runtime: EmitRuntime;
-  /** Tool task that asked; the approval key is derived from it. */
+  /** Execution tool registry description, labelled untrusted for review. */
+  toolDescription: string;
   toolTaskId: string;
-  /** Execution conversation the tool call belongs to. */
   conversationId: number;
   toolName: string;
   toolKind: "file-write" | "shell" | "mcp" | "other";
-  /** Raw validated arguments, hashed but never sent to a model. */
   arguments: unknown;
   signal: AbortSignal | undefined;
 };
-
 export type GateDecision = { allow: true; record: ApprovalRecord } | { allow: false; message: string };
 
 /**
  * The complete gate: create or find the case, run the configured evaluator when
- * it has not been answered yet, and wait for a human when the evaluator
- * declines to decide.
+ * it has not been answered yet, and wait for a human only for a high-risk verdict.
  */
 export async function gateToolCall(input: GateInput): Promise<GateDecision> {
   const { runtime } = input;
@@ -242,6 +269,15 @@ export async function gateToolCall(input: GateInput): Promise<GateDecision> {
   if (binding === undefined || binding.workId.length === 0) {
     return { allow: false, message: "该会话没有绑定工作上下文，已阻止工具调用" };
   }
+  const scopeResult = await resolveToolDirectoryScope(
+    runtime,
+    input.conversationId,
+    input.toolName,
+    input.arguments,
+    runtime.ctx,
+  );
+  if (!scopeResult.ok) return { allow: false, message: scopeResult.message };
+  const { scope } = scopeResult;
   const employee = await runtime.readFamily(EmployeeDoc, binding.employeeId, { id: binding.employeeId });
   if (employee === undefined) return { allow: false, message: "找不到员工记录，已阻止工具调用" };
   const work = await runtime.readFamily(WorkDoc, binding.workId, { id: binding.workId });
@@ -255,7 +291,11 @@ export async function gateToolCall(input: GateInput): Promise<GateDecision> {
     toolName: input.toolName,
     toolKind: input.toolKind,
     arguments: input.arguments,
-    cwd: employee.cwd,
+    cwd: scopeResult.cwd,
+    directoryRoomId: scope.roomId,
+    directoryVersion: scope.version,
+    directoryPaths: [...scope.paths],
+    targetPaths: [...scopeResult.targetPaths],
   };
   const id = approvalId(request, employee.configVersion, app.policyVersion);
 
@@ -270,9 +310,13 @@ export async function gateToolCall(input: GateInput): Promise<GateDecision> {
     doc.employeeName = employee.name;
     doc.toolName = request.toolName;
     doc.argsHash = hashArguments(request.arguments);
-    doc.argumentsPreview = redactArguments(request.arguments as Record<string, unknown>);
+    doc.argumentsPreview = argumentsPreview(request.arguments);
     doc.cwd = request.cwd;
-    doc.risk = request.toolKind;
+    doc.directoryRoomId = request.directoryRoomId;
+    doc.directoryVersion = request.directoryVersion;
+    doc.directoryPaths = [...request.directoryPaths];
+    doc.targetPaths = [...request.targetPaths];
+    doc.risk = "unknown";
     doc.status = "evaluating";
     doc.createdAt = now;
     doc.updatedAt = now;
@@ -299,9 +343,12 @@ export async function gateToolCall(input: GateInput): Promise<GateDecision> {
     employee,
     app,
     request,
+    toolDescription: input.toolDescription,
+    conversationId: input.conversationId,
     binding,
     room,
     work,
+    directoryScope: scope,
     signal: input.signal,
   };
 
@@ -313,14 +360,16 @@ export async function gateToolCall(input: GateInput): Promise<GateDecision> {
     if (record.status !== "pending-human") return { allow: false, message: blockedMessage(record) };
   }
 
-  // An approval that already exists as pending-human is one this exact call is
-  // supposed to keep waiting on, not one it may treat as a refusal. That is
-  // what makes a crash during the wait survivable: the recovered tool call
-  // re-enters here, finds its own pending approval, and waits again.
   await setWorkStatus(runtime, binding.workId, "waiting-approval");
   runtime.emit({ type: "notice", text: `审批 ${record.id} 等待你的裁决（${request.toolName}）` });
 
-  const finalStatus = await waitForHuman(runtime, id, binding.workId, input.toolTaskId as unknown as HarnessTaskId);
+  const finalStatus = await waitForHuman(
+    runtime,
+    id,
+    binding.workId,
+    input.toolTaskId as unknown as HarnessTaskId,
+    request,
+  );
   const latest = (await runtime.readFamily(ApprovalDoc, id, { id })) ?? record;
   if (finalStatus === "approved") {
     await setWorkStatus(runtime, binding.workId, "running");
@@ -364,20 +413,36 @@ type GateContext = {
   employee: EmployeeRecord;
   app: AppRecord;
   request: ApprovalRequest;
+  toolDescription: string;
+  conversationId: number;
   binding: { workId: string; rootWorkId: string; roomId: string; depth: number };
   room: RoomRecord | undefined;
   work: WorkRecord | undefined;
+  directoryScope: WorkDirectoryScopeRecord;
   signal: AbortSignal | undefined;
 };
+
+type ApprovalContextEvidence = {
+  userIntent: ApprovalUserIntent;
+  recentContext: ApprovalContextEntry[];
+  executionContext: ApprovalContextEntry[];
+  contextBudget: { omittedEntries: number; truncatedEntries: number };
+};
+
+type ApprovalContextResult =
+  | { ok: true; evidence: ApprovalContextEvidence; originRoom: RoomRecord | undefined }
+  | { ok: false; message: string };
 
 function blockedMessage(record: ApprovalRecord): string {
   switch (record.status) {
     case "rejected":
-      return `工具调用被拒绝（审批 ${record.id}）${record.comment.length > 0 ? `：${record.comment}` : ""}`;
+      return `工具调用被自动拒绝（审批 ${record.id}）${record.comment || record.autoDecisionReason ? `：${record.comment || record.autoDecisionReason}` : ""}`;
+    case "blocked":
+      return `自动审查阻止了工具调用（审批 ${record.id}）${record.autoDecisionReason.length > 0 ? `：${record.autoDecisionReason}` : ""}`;
     case "cancelled":
       return `工具调用已取消：所属工作已停止（审批 ${record.id}）`;
     case "invalidated":
-      return `之前的批准已失效，请重新请求（审批 ${record.id}）`;
+      return `会话工作目录已变更，旧审批失效；请停止并重新发送任务（审批 ${record.id}）`;
     case "pending-human":
       return `等待人工审批（审批 ${record.id}），在“审批”页面批准或拒绝后该调用才会执行`;
     default:
@@ -385,114 +450,394 @@ function blockedMessage(record: ApprovalRecord): string {
   }
 }
 
-function boundedContextText(value: string): { text: string; truncated: boolean } {
-  const redacted = redactApprovalText(value);
+type OmittedContext = { count: number };
+
+function textFromParts(parts: readonly { type: string; text?: string }[], omitted: OmittedContext): string {
+  const text: string[] = [];
+  for (const part of parts) {
+    if (part.type === "text" && typeof part.text === "string") text.push(part.text);
+    else if (part.type === "image" || part.type === "thinking") omitted.count += 1;
+  }
+  return text.join("\n");
+}
+
+type RoomMessageWindow = {
+  messages: MessageDTO[];
+  trigger?: MessageDTO;
+  omittedBeforeTrigger: number;
+};
+
+async function roomMessageWindow(
+  runtime: EmitRuntime,
+  room: RoomRecord,
+  sourceEntryId: string,
+): Promise<RoomMessageWindow> {
+  const conversation = await runtime.harness.conversation(room.conversationId as ConversationId, runtime.ctx);
+  if (conversation === undefined) return { messages: [], omittedBeforeTrigger: 0 };
+  const sourceId = sourceEntryId.length > 0 ? (Number(sourceEntryId) as EntryId) : undefined;
+  const page = await conversation.entries(
+    sourceId !== undefined ? { maxEntryId: sourceId } : {},
+    sourceId !== undefined ? 42 : 40,
+    undefined,
+    runtime.ctx,
+  );
+  const messages: MessageDTO[] = [];
+  for (const entry of page.items) {
+    if (!RoomMessageEntry.is(entry) || entry.data.mail?.draft === true) continue;
+    const entryId = String(entry.id);
+    const flagKey = `${room.id}|${entryId}`;
+    const flags = await runtime.readFamily(MailFlagDoc, flagKey, { key: flagKey });
+    if (flags?.active === false) continue;
+    const message = toMessageDTO(entry, flags);
+    if (message === undefined) continue;
+    message.roomId = room.id;
+    messages.push(message);
+  }
+  messages.reverse();
+  if (sourceId === undefined) {
+    return {
+      messages: messages.slice(-40),
+      omittedBeforeTrigger: Math.max(0, messages.length - 40),
+    };
+  }
+  const triggerIndex = messages.findIndex((message) => message.id === sourceEntryId);
+  if (triggerIndex < 0) return { messages: [], omittedBeforeTrigger: 0 };
+  const previousStart = Math.max(0, triggerIndex - 40);
   return {
-    text: redacted.slice(0, 2_000),
-    truncated: redacted.length > 2_000,
+    messages: [...messages.slice(previousStart, triggerIndex), messages[triggerIndex]!],
+    trigger: messages[triggerIndex],
+    omittedBeforeTrigger: previousStart,
   };
 }
 
-async function approvalContext(input: GateContext): Promise<{
-  userIntent: ApprovalUserIntent;
-  recentContext: ApprovalCase["recentContext"];
-}> {
-  const messages =
-    input.room !== undefined ? await listRoomMessages(input.runtime, input.room, ROOM_PAGE_SIZE) : [];
-  const sourceMessage =
-    input.work?.sourceEntryId.length
-      ? messages.find((message) => message.id === input.work?.sourceEntryId)
-      : undefined;
-  const directUserMessage = sourceMessage?.author.type === "user" ? sourceMessage : undefined;
-  const derivedText = input.work?.intent ?? "";
-  const userIntentText = directUserMessage?.body ?? derivedText;
-  const intentSource = directUserMessage !== undefined
-    ? "room-message"
-    : input.work?.kind === "delegation"
-      ? "delegation"
-      : input.work !== undefined
-        ? "work-intent"
-        : "unknown";
-  const boundedIntent = boundedContextText(userIntentText);
+async function approvalContext(input: GateContext): Promise<ApprovalContextResult> {
+  const conversation = await input.runtime.harness
+    .conversation(input.conversationId as ConversationId, input.runtime.ctx)
+    .catch(() => undefined);
+  if (conversation === undefined) {
+    return { ok: false, message: "缺少当前执行上下文，已阻止工具调用" };
+  }
+  const active = await conversation.context(input.runtime.ctx).catch(() => undefined);
+  if (active === undefined || active.entries.length === 0) {
+    return { ok: false, message: "当前执行会话没有可用上下文，已阻止工具调用" };
+  }
+
+  const omitted: OmittedContext = { count: 0 };
+  const executionContext: ApprovalContextEntry[] = [];
+  const firstActive = Math.max(0, active.entries.length - 40);
+  for (let index = 0; index < firstActive; index += 1) {
+    const contribution = active.contributions[index] ?? [];
+    if (contribution.length === 0) {
+      omitted.count += 1;
+      continue;
+    }
+    for (const message of contribution) {
+      if (message.role === "system") {
+        omitted.count += Math.max(
+          1,
+          Object.keys(message.sections ?? {}).length +
+            (message.toolsAdded?.length ?? 0) +
+            (message.toolsRemoved?.length ?? 0),
+        );
+      } else {
+        omitted.count += 1;
+      }
+    }
+  }
+  for (let index = firstActive; index < active.entries.length; index += 1) {
+    const entry = active.entries[index]!;
+    const contribution = active.contributions[index] ?? [];
+    if (contribution.length === 0 && entry.kind !== "pi.compaction" && entry.kind !== "pi.reset") {
+      omitted.count += 1;
+      continue;
+    }
+    if (entry.kind === "pi.compaction" || entry.kind === "pi.reset") {
+      const fragments: string[] = [];
+      for (const message of contribution) {
+        if (message.role === "system") {
+          omitted.count += Math.max(
+            1,
+            Object.keys(message.sections ?? {}).length +
+              (message.toolsAdded?.length ?? 0) +
+              (message.toolsRemoved?.length ?? 0),
+          );
+          continue;
+        }
+        if (message.role === "user") {
+          fragments.push(
+            typeof message.content === "string"
+              ? message.content
+              : textFromParts(message.content, omitted),
+          );
+        } else if (message.role === "assistant") {
+          const text: string[] = [];
+          for (const part of message.content) {
+            if (part.type === "text") text.push(part.text);
+            else if (part.type === "thinking") omitted.count += 1;
+          }
+          fragments.push(...text);
+        } else {
+          fragments.push(textFromParts(message.content, omitted));
+        }
+      }
+      const marker =
+        entry.kind === "pi.compaction"
+          ? "上下文压缩摘要"
+          : "上下文重置标记（其中的交接文本不是人类授权）";
+      const summary = fragments.map(redactApprovalText).filter((text) => text.length > 0).join("\n");
+      executionContext.push({
+        source: "execution-context",
+        role: "meta",
+        entryId: String(entry.id),
+        text: summary.length > 0 ? `${marker}：\n${summary}` : marker,
+        truncated: false,
+      });
+      continue;
+    }
+
+    for (const message of contribution) {
+      if (message.role === "system") {
+        omitted.count += Math.max(
+          1,
+          Object.keys(message.sections ?? {}).length +
+            (message.toolsAdded?.length ?? 0) +
+            (message.toolsRemoved?.length ?? 0),
+        );
+        continue;
+      }
+      if (message.role === "user") {
+        if (typeof message.content === "string") {
+          if (message.content.length > 0) {
+            executionContext.push({
+              source: "execution-context",
+              role: "user",
+              at: message.timestamp,
+              entryId: String(entry.id),
+              text: redactApprovalText(message.content),
+              truncated: false,
+            });
+          }
+        } else {
+          const text = textFromParts(message.content, omitted);
+          if (text.length > 0) {
+            executionContext.push({
+              source: "execution-context",
+              role: "user",
+              at: message.timestamp,
+              entryId: String(entry.id),
+              text: redactApprovalText(text),
+              truncated: false,
+            });
+          }
+        }
+      } else if (message.role === "assistant") {
+        for (const part of message.content) {
+          if (part.type === "text") {
+            executionContext.push({
+              source: "execution-context",
+              role: "assistant",
+              at: message.timestamp,
+              entryId: String(entry.id),
+              text: redactApprovalText(part.text),
+              truncated: false,
+            });
+          } else if (part.type === "thinking") {
+            omitted.count += 1;
+          } else if (part.type === "toolCall") {
+            executionContext.push({
+              source: "execution-context",
+              role: "assistant",
+              at: message.timestamp,
+              entryId: String(entry.id),
+              toolCallId: part.id,
+              toolName: part.name,
+              text: `工具调用 ${part.name}（${part.id}）：${redactArguments(part.arguments)}`,
+              truncated: false,
+            });
+          }
+        }
+      } else {
+        const text = textFromParts(message.content, omitted);
+        executionContext.push({
+          source: "execution-context",
+          role: "toolResult",
+          at: message.timestamp,
+          entryId: String(entry.id),
+          toolCallId: message.toolCallId,
+          toolName: message.toolName,
+          text: `工具结果（${message.toolName}${message.isError ? "；错误" : ""}）：${redactApprovalText(text)}`,
+          truncated: false,
+        });
+      }
+    }
+  }
+
+  let current: WorkRecord | undefined = input.work;
+  const lineage: WorkRecord[] = [];
+  const seen = new Set<string>();
+  let verifiedUserMessage: MessageDTO | undefined;
+  let triggerMessage: MessageDTO | undefined;
+  let originRoom: RoomRecord | undefined;
+  const maximumWorks = input.app.collaboration.maxDepth + 1;
+  while (current !== undefined && lineage.length < maximumWorks) {
+    if (seen.has(current.id)) {
+      omitted.count += 1;
+      break;
+    }
+    seen.add(current.id);
+    lineage.push(current);
+    if (current.roomId.length > 0 && current.sourceEntryId.length > 0) {
+      const room =
+        input.room?.id === current.roomId
+          ? input.room
+          : await input.runtime.readFamily(RoomDoc, current.roomId, { id: current.roomId });
+      if (room !== undefined) {
+        const window = await roomMessageWindow(input.runtime, room, current.sourceEntryId);
+        if (triggerMessage === undefined && window.trigger !== undefined) {
+          triggerMessage = window.trigger;
+          originRoom = room;
+        }
+        if (verifiedUserMessage === undefined && window.trigger?.author.type === "user") {
+          verifiedUserMessage = window.trigger;
+        }
+
+      }
+    }
+    if (current.parentWorkId.length === 0) break;
+    if (lineage.length >= maximumWorks) {
+      omitted.count += 1;
+      break;
+    }
+    const parent = await input.runtime.readFamily(WorkDoc, current.parentWorkId, { id: current.parentWorkId });
+    if (parent === undefined) {
+      omitted.count += 1;
+      break;
+    }
+    current = parent;
+  }
+
+
+  const derivedIntent = input.work?.intent ?? "";
+  const userText = verifiedUserMessage?.body ?? derivedIntent;
   const userIntent: ApprovalUserIntent = {
-    ...boundedIntent,
-    source: intentSource,
-    authorization: directUserMessage !== undefined ? "user" : "unknown",
-    ...(directUserMessage !== undefined
+    text: redactApprovalText(userText),
+    source:
+      verifiedUserMessage !== undefined
+        ? "room-message"
+        : input.work?.kind === "delegation"
+          ? "delegation"
+          : input.work === undefined
+            ? "unknown"
+            : "work-intent",
+    truncated: false,
+    authorization: verifiedUserMessage !== undefined ? "user" : "unknown",
+    ...(verifiedUserMessage !== undefined
       ? {
-          at: directUserMessage.createdAt,
+          at: verifiedUserMessage.createdAt,
           author: {
-            id: directUserMessage.author.id,
-            name: directUserMessage.author.name,
-            type: directUserMessage.author.type,
+            id: verifiedUserMessage.author.id,
+            name: verifiedUserMessage.author.name,
+            type: verifiedUserMessage.author.type,
           },
         }
-      : sourceMessage !== undefined
+      : triggerMessage !== undefined
         ? {
-            at: sourceMessage.createdAt,
+            at: triggerMessage.createdAt,
             author: {
-              id: sourceMessage.author.id,
-              name: sourceMessage.author.name,
-              type: sourceMessage.author.type,
+              id: triggerMessage.author.id,
+              name: triggerMessage.author.name,
+              type: triggerMessage.author.type,
             },
           }
         : {}),
   };
 
-  const sourceIndex = sourceMessage === undefined ? -1 : messages.indexOf(sourceMessage);
-  const messagesBeforeSource = sourceIndex >= 0 ? messages.slice(0, sourceIndex + 1) : messages;
-  const hasDerivedContext = directUserMessage === undefined && derivedText.length > 0;
-  const recentMessages = messagesBeforeSource.slice(-(hasDerivedContext ? 11 : 12));
-  const recentContext: ApprovalCase["recentContext"] = recentMessages.map((message) => ({
-    source: "room-message",
-    at: message.createdAt,
-    author: {
-      id: message.author.id,
-      name: message.author.name,
-      type: message.author.type,
-    },
-    ...boundedContextText(message.body),
-  }));
-  if (hasDerivedContext) {
+  let recentContext: ApprovalContextEntry[] = [];
+  if (triggerMessage !== undefined && originRoom !== undefined) {
+    const window = await roomMessageWindow(input.runtime, originRoom, triggerMessage.id);
+    omitted.count += window.omittedBeforeTrigger;
+    recentContext = window.messages.map((message) => ({
+      source: "room-message",
+      at: message.createdAt,
+      entryId: message.id,
+      author: {
+        id: message.author.id,
+        name: message.author.name,
+        type: message.author.type,
+      },
+      text: redactApprovalText(message.body),
+      truncated: false,
+    }));
+  }
+  for (const work of [...lineage].reverse()) {
+    if (work.kind !== "delegation" || work.intent.length === 0) continue;
     recentContext.push({
-      source: input.work?.kind === "delegation" ? "delegation" : "work-intent",
-      ...boundedContextText(derivedText),
-      ...(sourceMessage !== undefined
-        ? {
-            at: sourceMessage.createdAt,
-            author: {
-              id: sourceMessage.author.id,
-              name: sourceMessage.author.name,
-              type: sourceMessage.author.type,
-            },
-          }
-        : {}),
+      source: "delegation",
+      author: { id: work.employeeId, name: work.employeeId, type: "employee" },
+      text: redactApprovalText(work.intent),
+      truncated: false,
     });
   }
-  return { userIntent, recentContext };
+
+  return {
+    ok: true,
+    evidence: {
+      userIntent,
+      recentContext,
+      executionContext,
+      contextBudget: { omittedEntries: omitted.count, truncatedEntries: 0 },
+    },
+    originRoom,
+  };
 }
 
-/** Run the configured evaluator and persist the resulting status. */
+/** Run the configured reviewer and atomically persist a result only for a current room scope. */
 async function evaluateAndPersist(input: GateContext, record: ApprovalRecord): Promise<ApprovalRecord> {
   const { runtime, employee, app, request, binding } = input;
   const config = toEvaluatorConfig(app);
-  const contextEvidence = await approvalContext(input);
+  const contextResult = await approvalContext(input).catch((error: unknown): ApprovalContextResult => ({
+    ok: false,
+    message: error instanceof Error ? error.message : String(error),
+  }));
+  if (!contextResult.ok) {
+    return persistOutcome(input, record, {
+      status: "unavailable",
+      reason: "invalid-output",
+      message: contextResult.message,
+    });
+  }
+  const selectedModel =
+    config.kind === "llm"
+      ? runtime.catalog.chatModel(config.model)
+      : runtime.catalog.classifierModel(config.model);
+  if (selectedModel === undefined) {
+    return persistOutcome(input, record, {
+      status: "unavailable",
+      reason: "configuration",
+      message: "自动审查不可用，请在设置中配置审批判断模型",
+    });
+  }
   const approvalCase: ApprovalCase = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: record.id,
     toolTaskId: request.toolTaskId,
     employee: { id: employee.id, name: employee.name, role: employee.role },
-    tool: { name: request.toolName, kind: request.toolKind },
+    tool: { name: request.toolName, kind: request.toolKind, description: input.toolDescription },
+    arguments: redactArguments(request.arguments),
     argumentsPreview: record.argumentsPreview,
     cwd: request.cwd,
+    directories: input.directoryScope,
+    targetPaths: [...request.targetPaths],
     allowedTools: [...employee.allowedTools],
-    userIntent: contextEvidence.userIntent,
-    recentContext: contextEvidence.recentContext,
+    userIntent: contextResult.evidence.userIntent,
+    recentContext: contextResult.evidence.recentContext,
+    executionContext: contextResult.evidence.executionContext,
+    contextBudget: contextResult.evidence.contextBudget,
     origin: {
       kind: binding.roomId.length > 0 ? "room" : "delegation",
       description:
-        binding.roomId.length > 0
-          ? `来自聊天室「${input.room?.name ?? binding.roomId}」的工作 ${binding.workId}`
+        contextResult.originRoom !== undefined
+          ? `来自会话「${contextResult.originRoom.name}」的工作 ${binding.workId}`
           : `来自上层工作 ${input.work?.parentWorkId ?? ""} 的交办`,
     },
     configVersion: employee.configVersion,
@@ -504,6 +849,7 @@ async function evaluateAndPersist(input: GateContext, record: ApprovalRecord): P
   const outcome = await evaluator
     .evaluate(approvalCase, config, {
       evaluationId: record.id,
+      contextWindow: selectedModel.contextWindow,
       ...(input.signal !== undefined ? { signal: input.signal } : {}),
     })
     .catch((error: unknown): EvaluationOutcome => ({
@@ -512,183 +858,229 @@ async function evaluateAndPersist(input: GateContext, record: ApprovalRecord): P
       message: error instanceof Error ? error.message : String(error),
     }));
 
-  return persistOutcome(input, record, config, outcome);
+  return persistOutcome(input, record, outcome);
 }
 
+export type ApprovalVerdict =
+  | { action: "approve" }
+  | { action: "human" }
+  | { action: "reject"; reason: string }
+  | { action: "block"; reason: string };
+
+/** The one policy seam shared by LLM and classifier decisions. */
+export function approvalVerdict(outcome: EvaluationOutcome): ApprovalVerdict {
+  if (outcome.status === "unavailable") {
+    return { action: "block", reason: `自动审查不可用：${outcome.message}` };
+  }
+  if (outcome.outcome === "deny") {
+    return { action: "reject", reason: "自动审查明确判定该动作不应执行" };
+  }
+  if (outcome.risk === "critical") {
+    return { action: "reject", reason: "自动审查判定该动作属于严重风险，已自动拒绝" };
+  }
+  if (outcome.risk === "high") return { action: "human" };
+  if (outcome.risk === "low" || outcome.risk === "medium") return { action: "approve" };
+  return { action: "block", reason: "自动审查无法确定具体风险等级，已阻止执行" };
+}
+
+function currentDirectoryVersion(
+  room: RoomRecord | undefined,
+  directoryRoomId: string,
+  directoryVersion: number,
+  directoryPaths: readonly string[],
+): boolean {
+  return (
+    room !== undefined &&
+    room.id === directoryRoomId &&
+    room.directories !== undefined &&
+    room.directories.version === directoryVersion &&
+    room.directories.paths.length === directoryPaths.length &&
+    room.directories.paths.every((path, index) => path === directoryPaths[index])
+  );
+}
+
+function invalidateApproval(doc: ApprovalRecord, currentVersion: number): void {
+  const now = Date.now();
+  doc.status = "invalidated";
+  doc.autoDecisionSource = "policy";
+  doc.autoDecisionReason = `会话工作目录已变更（当前版本 v${currentVersion}），旧审批失效；请停止并重新发送任务`;
+  doc.evidence = { kind: "policy", rationale: doc.autoDecisionReason };
+  doc.decidedAt = now;
+  doc.decidedBy = "policy";
+  doc.updatedAt = now;
+  doc.timeline.push({ at: now, actor: "system", text: doc.autoDecisionReason });
+}
+
+/** Persist only if the room's exact directory authorization is still current. */
 async function persistOutcome(
   input: GateContext,
   record: ApprovalRecord,
-  config: ApprovalEvaluatorConfig,
   outcome: EvaluationOutcome,
 ): Promise<ApprovalRecord> {
-  const { runtime } = input;
-  return runtime.updateFamily(ApprovalDoc, record.id, { id: record.id }, (doc) => {
-    if (doc.status !== "evaluating") return;
-    const now = Date.now();
+  const updated = await input.runtime.harness.commit(async (tx) => {
+    const doc = await tx.doc(ApprovalDoc, record.id, { id: record.id });
+    if (doc.status !== "evaluating") return snapshotApproval(doc);
+    let room: RoomRecord | undefined;
+    if (doc.directoryRoomId.length > 0) {
+      room = await tx.doc(RoomDoc, doc.directoryRoomId, { id: doc.directoryRoomId });
+    }
+    if (
+      !currentDirectoryVersion(room, doc.directoryRoomId, doc.directoryVersion, doc.directoryPaths)
+    ) {
+      invalidateApproval(doc, room?.directories?.version ?? 0);
+      return snapshotApproval(doc);
+    }
 
+    const now = Date.now();
     if (outcome.status === "unavailable") {
-      doc.status = "pending-human";
+      doc.risk = "unknown";
+      doc.status = "blocked";
       doc.autoDecisionSource = "policy";
-      doc.autoDecisionReason = `自动判断不可用：${outcome.message}`;
-      doc.evidence = { kind: "policy", rationale: `自动判断不可用（${outcome.reason}）：${outcome.message}` };
-      doc.timeline.push({ at: now, actor: "system", text: `自动判断不可用，转人工：${outcome.message}` });
-    } else if (outcome.evidence.kind === "llm") {
+      doc.autoDecisionReason =
+        outcome.message.includes("输入预算") || outcome.message.includes("执行上下文")
+          ? outcome.message
+          : `自动审查不可用，请在设置中配置审批判断模型：${outcome.message}`;
+      doc.evidence = {
+        kind: "policy",
+        rationale: `自动审查不可用（${outcome.reason}）：${outcome.message}`,
+      };
+      doc.decidedAt = now;
+      doc.decidedBy = "policy";
+      doc.timeline.push({ at: now, actor: "自动判断", text: `自动审查受阻：${doc.autoDecisionReason}` });
+      doc.updatedAt = now;
+      return snapshotApproval(doc);
+    }
+
+    doc.risk = outcome.risk;
+    doc.autoDecisionSource = outcome.evidence.kind;
+    if (outcome.evidence.kind === "llm") {
       doc.evidence = {
         kind: "llm",
         criteriaVersion: outcome.evidence.criteriaVersion,
         rationale: outcome.evidence.rationale,
         risk: outcome.evidence.risk,
-        recommendation: outcome.evidence.recommendation,
+        outcome: outcome.evidence.outcome,
         readOnly: outcome.evidence.readOnly,
         userAuthorization: outcome.evidence.userAuthorization,
       };
-      const autoApprove = llmAutoApproves(outcome.evidence);
-      doc.risk = outcome.risk;
-      doc.autoDecisionSource = "llm";
       doc.autoDecisionReason =
-        `LLM 建议 ${outcome.recommendation}（风险 ${outcome.risk}；只读 ${outcome.evidence.readOnly ? "是" : "否"}；用户授权 ${outcome.evidence.userAuthorization}）`;
-      if (autoApprove) {
-        doc.status = "approved";
-        doc.decidedAt = now;
-        doc.decidedBy = `llm:${outcome.model.providerId}/${outcome.model.modelId}`;
-        doc.timeline.push({ at: now, actor: "自动判断", text: `自动批准：${outcome.evidence.rationale}` });
-      } else {
-        doc.status = "pending-human";
-        doc.timeline.push({
-          at: now,
-          actor: "自动判断",
-          text: `转人工（${outcome.recommendation}，风险 ${outcome.risk}）：${outcome.evidence.rationale}`,
-        });
-      }
+        `LLM 判定 ${outcome.outcome}（风险 ${outcome.risk}；只读 ${outcome.evidence.readOnly ? "是" : "否"}；用户授权 ${outcome.evidence.userAuthorization}）：${outcome.evidence.rationale}`;
     } else {
       doc.evidence = {
         kind: "classifier",
-        criteriaVersion: CLASSIFIER_CRITERIA_VERSION,
-        choice: outcome.evidence.choice,
+        criteriaVersion: outcome.evidence.criteriaVersion,
         questions: outcome.evidence.questions,
-        probability: outcome.evidence.probability,
-        authorizedProbability: outcome.evidence.authorizedProbability ?? null,
-        readOnlyProbability: outcome.evidence.readOnlyProbability ?? null,
+        outcome: outcome.evidence.outcome,
+        risk: outcome.evidence.risk,
+        outcomeProbability: outcome.evidence.outcomeProbability,
+        outcomeProbabilities: { ...outcome.evidence.outcomeProbabilities },
+        riskProbability: outcome.evidence.riskProbability,
+        riskProbabilities: { ...outcome.evidence.riskProbabilities },
+        readOnly: outcome.evidence.readOnly,
+        readOnlyProbability: outcome.evidence.readOnlyProbability,
+        authorized: outcome.evidence.authorized,
+        authorizedProbability: outcome.evidence.authorizedProbability,
       };
-      const autoApprove =
-        config.kind === "classifier" &&
-        outcome.recommendation === "approve" &&
-        classifierAutoApproves(outcome.evidence, config);
-      const detail = describeClassifierEvidence(outcome.evidence);
-      doc.autoDecisionSource = "classifier";
-      doc.autoDecisionReason = detail;
-      if (autoApprove) {
-        doc.status = "approved";
-        doc.decidedAt = now;
-        doc.decidedBy = `classifier:${outcome.model.providerId}/${outcome.model.modelId}`;
-        doc.timeline.push({ at: now, actor: "自动判断", text: `自动批准：${detail}` });
-      } else {
-        doc.status = "pending-human";
-        doc.timeline.push({ at: now, actor: "自动判断", text: `转人工：${detail}` });
-      }
+      doc.autoDecisionReason = describeClassifierEvidence(outcome.evidence);
+    }
+
+    const verdict = approvalVerdict(outcome);
+    if (verdict.action === "approve") {
+      doc.status = "approved";
+      doc.decidedAt = now;
+      doc.decidedBy = `${outcome.evidence.kind}:${outcome.model.providerId}/${outcome.model.modelId}`;
+      doc.timeline.push({ at: now, actor: "自动判断", text: `自动批准：${doc.autoDecisionReason}` });
+    } else if (verdict.action === "human") {
+      doc.status = "pending-human";
+      doc.timeline.push({ at: now, actor: "自动判断", text: `高风险转人工：${doc.autoDecisionReason}` });
+    } else if (verdict.action === "reject") {
+      doc.status = "rejected";
+      doc.decidedAt = now;
+      doc.decidedBy = `${outcome.evidence.kind}:${outcome.model.providerId}/${outcome.model.modelId}`;
+      doc.autoDecisionReason = `${verdict.reason}；${doc.autoDecisionReason}`;
+      doc.timeline.push({ at: now, actor: "自动判断", text: `自动拒绝：${doc.autoDecisionReason}` });
+    } else {
+      doc.status = "blocked";
+      doc.decidedAt = now;
+      doc.decidedBy = "policy";
+      doc.autoDecisionReason = `${verdict.reason}；${doc.autoDecisionReason}`;
+      doc.timeline.push({ at: now, actor: "自动判断", text: `自动审查受阻：${doc.autoDecisionReason}` });
     }
     doc.updatedAt = now;
-  });
+    return snapshotApproval(doc);
+  }, input.runtime.ctx);
+  input.runtime.emit({ type: "approval", approval: toApprovalDTO(updated) });
+  return updated;
 }
 
-/**
- * Whether the evaluator's own answer approves the call.
- *
- * Kept as pure functions because these are the thresholds that decide whether a
- * risky call runs unattended; a wrong comparison here is invisible in normal
- * use, so it is tested directly rather than only through a run.
- */
-export function llmAutoApproves(evidence: {
-  recommendation: string;
-  risk: string;
-  readOnly: boolean;
-  userAuthorization: "high" | "medium" | "low" | "unknown";
-}): boolean {
-  if (evidence.recommendation !== "approve") return false;
-  if (evidence.readOnly && evidence.risk === "low") return true;
-  return evidence.risk !== "high";
-}
-
-export function classifierAutoApproves(
-  evidence: {
-    choice: string;
-    probability: number | null;
-    readOnlyProbability?: number | null;
-    authorizedProbability?: number | null;
-  },
-  config: { minApproveProbability: number; minAuthorizedProbability: number; requireAuthorized: boolean },
-): boolean {
-  if (
-    evidence.choice !== "approve" ||
-    typeof evidence.probability !== "number" ||
-    !Number.isFinite(evidence.probability) ||
-    evidence.probability < 0 ||
-    evidence.probability > 1 ||
-    typeof config.minApproveProbability !== "number" ||
-    !Number.isFinite(config.minApproveProbability) ||
-    config.minApproveProbability < 0 ||
-    config.minApproveProbability > 1 ||
-    typeof evidence.readOnlyProbability !== "number" ||
-    !Number.isFinite(evidence.readOnlyProbability) ||
-    evidence.readOnlyProbability < 0 ||
-    evidence.readOnlyProbability > 1
-  ) {
-    return false;
-  }
-  if (evidence.probability < config.minApproveProbability) return false;
-  if (evidence.readOnlyProbability >= config.minApproveProbability) return true;
-  if (!config.requireAuthorized) return true;
-  return (
-    typeof evidence.authorizedProbability === "number" &&
-    Number.isFinite(evidence.authorizedProbability) &&
-    evidence.authorizedProbability >= 0 &&
-    evidence.authorizedProbability <= 1 &&
-    Number.isFinite(config.minAuthorizedProbability) &&
-    config.minAuthorizedProbability >= 0 &&
-    config.minAuthorizedProbability <= 1 &&
-    evidence.authorizedProbability >= config.minAuthorizedProbability
-  );
-}
-
-/** The reason line shown next to a classifier decision. */
-export function describeClassifierEvidence(evidence: {
-  choice: string;
-  probability: number | null;
-  readOnlyProbability?: number | null;
-  authorizedProbability?: number | null;
-}): string {
-  const probability =
-    typeof evidence.probability === "number" && Number.isFinite(evidence.probability)
-      ? evidence.probability.toFixed(4)
-      : "未记录";
-  const readonlyProbability =
-    typeof evidence.readOnlyProbability === "number" && Number.isFinite(evidence.readOnlyProbability)
-      ? evidence.readOnlyProbability.toFixed(4)
-      : "未记录";
-  const authorizedProbability =
-    typeof evidence.authorizedProbability === "number" && Number.isFinite(evidence.authorizedProbability)
-      ? evidence.authorizedProbability.toFixed(4)
-      : "未记录";
-  return `分类器选择 ${evidence.choice}（概率 ${probability}，只读概率 ${readonlyProbability}，授权概率 ${authorizedProbability}）`;
+/** Draft overlays are settled after commit; never expose one to callers. */
+function snapshotApproval(record: ApprovalRecord): ApprovalRecord {
+  return JSON.parse(JSON.stringify(record)) as ApprovalRecord;
 }
 
 export function toEvaluatorConfig(app: AppRecord): ApprovalEvaluatorConfig {
+  const model = { providerId: app.approval.providerId, modelId: app.approval.modelId };
   if (app.approval.kind === "classifier") {
-    return {
-      kind: "classifier",
-      model: { providerId: app.approval.providerId, modelId: app.approval.modelId },
-      criteriaVersion: CLASSIFIER_CRITERIA_VERSION,
-      minApproveProbability: app.approval.minApproveProbability,
-      minAuthorizedProbability: app.approval.minAuthorizedProbability,
-      requireAuthorized: app.approval.requireAuthorized,
-    };
+    return { kind: "classifier", model, criteriaVersion: app.approval.criteriaVersion };
   }
   return {
     kind: "llm",
-    model: { providerId: app.approval.providerId, modelId: app.approval.modelId },
+    model,
     effort: app.approval.effort,
-    criteriaVersion: LLM_CRITERIA_VERSION,
+    criteriaVersion: app.approval.criteriaVersion,
   };
+}
+
+type ApprovalDirectoryBinding = Pick<ApprovalRequest, "directoryRoomId" | "directoryVersion" | "directoryPaths">;
+
+async function directoryScopeMatchesCurrentRoom(
+  runtime: EmitRuntime,
+  request: ApprovalDirectoryBinding,
+): Promise<{ matches: boolean; currentVersion: number }> {
+  if (request.directoryRoomId.length === 0) return { matches: false, currentVersion: 0 };
+  const room = await runtime.readFamily(RoomDoc, request.directoryRoomId, { id: request.directoryRoomId });
+  return {
+    matches: currentDirectoryVersion(
+      room,
+      request.directoryRoomId,
+      request.directoryVersion,
+      request.directoryPaths,
+    ),
+    currentVersion: room?.directories?.version ?? 0,
+  };
+}
+
+async function invalidateApprovalForDirectoryChange(
+  runtime: EmitRuntime,
+  id: string,
+): Promise<ApprovalRecord> {
+  const updated = await runtime.harness.commit(async (tx) => {
+    const approval = await tx.doc(ApprovalDoc, id, { id });
+    if (
+      !["evaluating", "pending-human", "approved"].includes(approval.status) ||
+      approval.executionState !== "not-started"
+    ) {
+      return snapshotApproval(approval);
+    }
+    const room =
+      approval.directoryRoomId.length > 0
+        ? await tx.doc(RoomDoc, approval.directoryRoomId, { id: approval.directoryRoomId })
+        : undefined;
+    if (
+      currentDirectoryVersion(
+        room,
+        approval.directoryRoomId,
+        approval.directoryVersion,
+        approval.directoryPaths,
+      )
+    ) {
+      return snapshotApproval(approval);
+    }
+    invalidateApproval(approval, room?.directories?.version ?? 0);
+    return snapshotApproval(approval);
+  }, runtime.ctx);
+  if (updated.status === "invalidated") runtime.emit({ type: "approval", approval: toApprovalDTO(updated) });
+  return updated;
 }
 
 /**
@@ -701,7 +1093,13 @@ export function toEvaluatorConfig(app: AppRecord): ApprovalEvaluatorConfig {
  * work's approvals, or by marking the task aborted, both of which this loop
  * observes as a terminal status.
  */
-async function waitForHuman(runtime: EmitRuntime, id: string, workId: string, toolTaskId: HarnessTaskId): Promise<string> {
+async function waitForHuman(
+  runtime: EmitRuntime,
+  id: string,
+  workId: string,
+  toolTaskId: HarnessTaskId,
+  request: ApprovalRequest,
+): Promise<string> {
   for (;;) {
     // A stop is a durable mark on the task itself. Waiting for the approval
     // document alone would deadlock the very call that has to finish before an
@@ -711,6 +1109,11 @@ async function waitForHuman(runtime: EmitRuntime, id: string, workId: string, to
     const snapshot = await runtime.readFamily(ApprovalDoc, id, { id });
     const status = snapshot?.status ?? "pending-human";
     if (status !== "pending-human" && status !== "evaluating") return status;
+    const directory = await directoryScopeMatchesCurrentRoom(runtime, request);
+    if (!directory.matches) {
+      const invalidated = await invalidateApprovalForDirectoryChange(runtime, id);
+      return invalidated.status;
+    }
     // A work that ended without cancelling its approvals must not trap the call
     // waiting for a decision nobody will make.
     const work = await runtime.readFamily(WorkDoc, workId, { id: workId });
@@ -734,6 +1137,13 @@ export async function decideApproval(
 ): Promise<DecisionResult> {
   const existing = await findApproval(runtime, id);
   if (existing === undefined) return { ok: false, message: `审批不存在: ${id}` };
+  if (existing.status === "pending-human") {
+    const directory = await directoryScopeMatchesCurrentRoom(runtime, existing);
+    if (!directory.matches) {
+      const invalidated = await invalidateApprovalForDirectoryChange(runtime, id);
+      return { ok: false, message: blockedMessage(invalidated) };
+    }
+  }
   const updated = await runtime.updateFamily(ApprovalDoc, id, { id }, (doc) => {
     if (doc.status !== "pending-human") return;
     const now = Date.now();
@@ -756,11 +1166,11 @@ export async function decideApproval(
   return { ok: true, record };
 }
 
-/** Record that the gated tool started, is done, or was interrupted. */
+/** Record the terminal execution state after a grant has been claimed. */
 export async function recordExecution(
   runtime: EmitRuntime,
   id: string,
-  state: ApprovalRecord["executionState"],
+  state: "succeeded" | "failed" | "interrupted",
   detail: string,
 ): Promise<void> {
   const updated = await runtime.updateFamily(ApprovalDoc, id, { id }, (doc) => {
@@ -772,10 +1182,10 @@ export async function recordExecution(
 }
 
 /**
- * The execute-time check, which is the one that survives recovery: the harness
- * does not re-run `beforeTool` when it resumes a recorded tool intent, so the
- * tool itself must verify that the grant it holds is still the grant that was
- * issued for these exact arguments and these configuration versions.
+ * Atomically validate and claim one grant immediately before execution. The
+ * running state is committed with the current room-directory check, so a
+ * concurrent directory change either invalidates this grant first or sees an
+ * already-started tool that is allowed to finish.
  */
 export async function verifyGrant(
   runtime: EmitRuntime,
@@ -784,23 +1194,77 @@ export async function verifyGrant(
   request: ApprovalRequest,
 ): Promise<GrantDecision> {
   const id = approvalId(request, employee.configVersion, app.policyVersion);
-  const record = await findApproval(runtime, id);
-  if (record === undefined) {
+  if ((await findApproval(runtime, id)) === undefined) {
     return { allow: false, message: "没有找到本次调用的批准记录，已阻止执行" };
   }
-  if (record.argsHash !== hashArguments(request.arguments)) {
-    return { allow: false, message: "批准记录与当前参数不一致，已阻止执行" };
+  if ((await runtime.readFamily(RoomDoc, request.directoryRoomId, { id: request.directoryRoomId })) === undefined) {
+    const invalidated = await invalidateApprovalForDirectoryChange(runtime, id);
+    return { allow: false, message: blockedMessage(invalidated) };
   }
-  if (record.status !== "approved") {
-    return { allow: false, message: blockedMessage(record) };
-  }
-  if (record.executionState !== "not-started") {
+
+  const claim = await runtime.harness.commit(async (tx) => {
+    const record = await tx.doc(ApprovalDoc, id, { id });
+    if (record.createdAt === 0) {
+      return { decision: { allow: false, message: "没有找到本次调用的批准记录，已阻止执行" } as GrantDecision };
+    }
+    if (
+      record.argsHash !== hashArguments(request.arguments) ||
+      record.cwd !== request.cwd ||
+      record.directoryRoomId !== request.directoryRoomId ||
+      record.directoryVersion !== request.directoryVersion ||
+      record.directoryPaths.length !== request.directoryPaths.length ||
+      record.directoryPaths.some((path, index) => path !== request.directoryPaths[index]) ||
+      record.targetPaths.length !== request.targetPaths.length ||
+      record.targetPaths.some((path, index) => path !== request.targetPaths[index])
+    ) {
+      return {
+        decision: {
+          allow: false,
+          message: "批准记录与当前参数或会话目录不一致，已阻止执行",
+        } as GrantDecision,
+      };
+    }
+    if (record.status !== "approved") {
+      return { decision: { allow: false, message: blockedMessage(record) } as GrantDecision };
+    }
+    if (record.executionState !== "not-started") {
+      return {
+        decision: {
+          allow: false,
+          message: `本次调用的批准已被使用（状态 ${record.executionState}）；如确需重试，请重新发起请求`,
+        } as GrantDecision,
+      };
+    }
+
+    const room = await tx.doc(RoomDoc, request.directoryRoomId, { id: request.directoryRoomId });
+    if (
+      !currentDirectoryVersion(
+        room,
+        request.directoryRoomId,
+        request.directoryVersion,
+        request.directoryPaths,
+      )
+    ) {
+      invalidateApproval(record, room.directories.version);
+      return {
+        decision: { allow: false, message: blockedMessage(record) } as GrantDecision,
+        updated: snapshotApproval(record),
+      };
+    }
+
+    record.executionState = "running";
+    record.executionDetail = `${request.toolName} 开始执行`;
+    record.updatedAt = Date.now();
+    const snapshot = snapshotApproval(record);
     return {
-      allow: false,
-      message: `本次调用的批准已被使用（状态 ${record.executionState}）；如确需重试，请重新发起请求`,
+      decision: { allow: true, record: snapshot } as GrantDecision,
+      updated: snapshot,
     };
+  }, runtime.ctx);
+  if (claim.updated !== undefined) {
+    runtime.emit({ type: "approval", approval: toApprovalDTO(claim.updated) });
   }
-  return { allow: true, record };
+  return claim.decision;
 }
 
 export type GrantDecision = { allow: true; record: ApprovalRecord } | { allow: false; message: string };
@@ -824,25 +1288,91 @@ export async function cancelApprovalsForWork(runtime: EmitRuntime, workId: strin
 }
 
 /**
- * Invalidate grants that were issued under an older policy and never consumed.
- * The key already includes the policy version, so such a grant can never be
- * found again; marking it keeps the approval page honest.
+ * Retire unconsumed approvals whose policy or room-directory snapshot is stale.
+ * This also repairs the brief gap between a directory save and its route-level
+ * grant-invalidation call after a process restart.
  */
 export async function invalidateStaleGrants(runtime: EmitRuntime, policyVersion: number): Promise<number> {
-  const stale = (await listApprovals(runtime)).filter(
-    (record) => record.status === "approved" && record.executionState === "not-started" && record.policyVersion < policyVersion,
+  const eligible = (await listApprovals(runtime)).filter(
+    (record) =>
+      ["approved", "pending-human", "evaluating"].includes(record.status) &&
+      record.executionState === "not-started",
   );
-  for (const record of stale) {
+  let invalidated = 0;
+  for (const record of eligible) {
+    const room =
+      record.directoryRoomId.length > 0
+        ? await runtime.readFamily(RoomDoc, record.directoryRoomId, { id: record.directoryRoomId })
+        : undefined;
+    const directoryIsCurrent = currentDirectoryVersion(
+      room,
+      record.directoryRoomId,
+      record.directoryVersion,
+      record.directoryPaths,
+    );
+    const stalePolicy = record.policyVersion < policyVersion;
+    if (directoryIsCurrent && !stalePolicy) continue;
     const updated = await runtime.updateFamily(ApprovalDoc, record.id, { id: record.id }, (doc) => {
-      if (doc.status !== "approved" || doc.executionState !== "not-started") return;
-      const now = Date.now();
-      doc.status = "invalidated";
-      doc.updatedAt = now;
-      doc.timeline.push({ at: now, actor: "system", text: `审批策略已更新（v${policyVersion}），旧批准失效` });
+      if (
+        !["approved", "pending-human", "evaluating"].includes(doc.status) ||
+        doc.executionState !== "not-started"
+      ) {
+        return;
+      }
+      if (!directoryIsCurrent) {
+        invalidateApproval(doc, room?.directories?.version ?? 0);
+      } else {
+        const now = Date.now();
+        doc.status = "invalidated";
+        doc.autoDecisionSource = "policy";
+        doc.autoDecisionReason = `审批策略已更新（v${policyVersion}），旧批准失效`;
+        doc.evidence = { kind: "policy", rationale: doc.autoDecisionReason };
+        doc.decidedAt = now;
+        doc.decidedBy = "policy";
+        doc.updatedAt = now;
+        doc.timeline.push({ at: now, actor: "system", text: doc.autoDecisionReason });
+      }
     });
-    runtime.emit({ type: "approval", approval: toApprovalDTO(updated) });
+    if (updated.status === "invalidated") {
+      invalidated += 1;
+      runtime.emit({ type: "approval", approval: toApprovalDTO(updated) });
+    }
   }
-  return stale.length;
+  return invalidated;
+}
+
+/** Invalidate every unconsumed approval tied to an older version of one room. */
+export async function invalidateRoomDirectoryGrants(
+  runtime: EmitRuntime,
+  roomId: string,
+  currentVersion: number,
+): Promise<number> {
+  const candidates = (await listApprovals(runtime)).filter(
+    (record) =>
+      record.directoryRoomId === roomId &&
+      record.directoryVersion < currentVersion &&
+      ["approved", "pending-human", "evaluating"].includes(record.status) &&
+      record.executionState === "not-started",
+  );
+  let invalidated = 0;
+  for (const record of candidates) {
+    const updated = await runtime.updateFamily(ApprovalDoc, record.id, { id: record.id }, (doc) => {
+      if (
+        doc.directoryRoomId !== roomId ||
+        doc.directoryVersion >= currentVersion ||
+        !["approved", "pending-human", "evaluating"].includes(doc.status) ||
+        doc.executionState !== "not-started"
+      ) {
+        return;
+      }
+      invalidateApproval(doc, currentVersion);
+    });
+    if (updated.status === "invalidated") {
+      invalidated += 1;
+      runtime.emit({ type: "approval", approval: toApprovalDTO(updated) });
+    }
+  }
+  return invalidated;
 }
 
 /** Read the work binding a tool or hook needs from its own conversation. */

@@ -70,7 +70,7 @@ export function WorkView(): ReactNode {
                     </td>
                     <td>
                       {work.status === "running" || work.status === "queued" || work.status === "waiting-approval" ? (
-                        <IconButton icon="stop" label="停止" onClick={() => stop(work.id)} />
+                        <IconButton icon="close" label="停止" onClick={() => stop(work.id)} />
                       ) : null}
                     </td>
                   </tr>

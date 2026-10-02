@@ -7,20 +7,24 @@
  * resumes that intent after a restart, so the check that survives a crash lives
  * inside `execute`.
  *
- * Every path is canonicalized before it is checked against the allowed roots,
- * so a symlink cannot walk an employee out of its working directory.
+ * File tools canonicalize targets before checking this session's authorized
+ * directory roots, so symlink escapes cannot target files outside them.
  */
-
-import { basename, dirname, join, sep } from "node:path";
+import { dirname } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
-import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { EmployeeRecord, SkillRecord } from "./documents.ts";
 import type { EmitRuntime } from "./runtime.ts";
 import { AppDoc } from "./documents.ts";
 import { findBoundSkill } from "./skills.ts";
 import { recordExecution, verifyGrant, type ApprovalRequest, type ToolRisk } from "./approval/state.ts";
+import {
+  readWorkDirectoryScope,
+  resolveToolDirectoryScope,
+  resolveWithin,
+  type ResolvedToolDirectoryScope,
+} from "./work-directories.ts";
 
 const MAX_READ_BYTES = 200_000;
 const MAX_READ_LINES = 2_000;
@@ -54,74 +58,41 @@ function textResult(text: string) {
   return { content: [{ type: "text" as const, text }] };
 }
 
-/** Canonicalize a path, tolerating a target that does not exist yet. */
-async function canonicalTarget(
-  env: ExecutionEnv,
-  context: Context,
-  absolute: string,
-): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
-  let current = absolute;
-  let suffix = "";
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    const resolved = await env.canonicalPath(current, context);
-    if (resolved.ok) {
-      return { ok: true, path: suffix.length === 0 ? resolved.value : join(resolved.value, suffix) };
-    }
-    const parent = dirname(current);
-    if (parent === current) return { ok: false, message: `无法解析路径: ${absolute}` };
-    suffix = suffix.length === 0 ? basename(current) : join(basename(current), suffix);
-    current = parent;
-  }
-  return { ok: false, message: `路径层级过深: ${absolute}` };
-}
-
-/** Resolve a tool path and require it to stay inside one of the allowed roots. */
-export async function resolveWithin(
-  env: ExecutionEnv,
-  context: Context,
-  target: string,
-  roots: readonly string[],
-): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
-  const absolute = await env.absolutePath(target, context);
-  if (!absolute.ok) return { ok: false, message: `无法解析路径 ${target}: ${absolute.error.message}` };
-  const canonical = await canonicalTarget(env, context, absolute.value);
-  if (!canonical.ok) return canonical;
-  const allowed: string[] = [];
-  for (const root of roots) {
-    if (root.length === 0) continue;
-    const resolved = await canonicalTarget(env, context, root);
-    if (resolved.ok) allowed.push(resolved.path);
-  }
-  const inside = allowed.some((root) => canonical.path === root || canonical.path.startsWith(root.endsWith(sep) ? root : `${root}${sep}`));
-  if (!inside) {
-    return {
-      ok: false,
-      message:
-        `路径 ${canonical.path} 超出该员工允许的目录。\n` +
-        `允许的目录：${allowed.length > 0 ? allowed.join(", ") : "(未配置工作目录)"}`,
-    };
-  }
-  return { ok: true, path: canonical.path };
-}
-
-function allowedRoots(employee: EmployeeRecord, skills: readonly SkillRecord[], forSkill: boolean): string[] {
-  const roots = [employee.cwd];
-  if (forSkill) for (const skill of skills) roots.push(skill.directory);
-  return roots;
-}
-
 /**
- * Wrap a gated tool so it verifies its grant immediately before the side
- * effect and records the execution state around it.
+ * Wrap a gated tool so it re-resolves this call's session directory scope,
+ * verifies its grant immediately before the side effect, and records execution.
  */
 export function gatedExecute<T>(
-  spec: { runtime: EmitRuntime; employee: EmployeeRecord; toolName: string; kind: "file-write" | "shell" | "mcp" | "other" },
-  run: (args: T, api: ToolExecutionApi, context: Context) => Promise<Awaited<ReturnType<ToolRegistration["execute"]>>>,
+  spec: {
+    runtime: EmitRuntime;
+    employee: EmployeeRecord;
+    toolName: string;
+    kind: "file-write" | "shell" | "mcp" | "other";
+  },
+  run: (
+    args: T,
+    api: ToolExecutionApi,
+    context: Context,
+    directory: ResolvedToolDirectoryScope,
+  ) => Promise<Awaited<ReturnType<ToolRegistration["execute"]>>>,
 ): (args: T, api: ToolExecutionApi, context: Context) => Promise<Awaited<ReturnType<ToolRegistration["execute"]>>> {
   return async (args, api, context) => {
+    const resolved = await resolveToolDirectoryScope(
+      spec.runtime,
+      api.conversationId,
+      spec.toolName,
+      args,
+      context,
+      api.env,
+    );
+    if (!resolved.ok) return errorResult(resolved.message);
+    const directory: ResolvedToolDirectoryScope = {
+      scope: resolved.scope,
+      cwd: resolved.cwd,
+      targetPaths: resolved.targetPaths,
+    };
     const app = await api.snapshot(AppDoc, context);
     if (app === undefined) return errorResult("无法读取 workspace 配置，已阻止执行");
-    const agent = await api.agent(context);
     const request: ApprovalRequest = {
       toolTaskId: String(api.taskId),
       employeeId: spec.employee.id,
@@ -129,13 +100,16 @@ export function gatedExecute<T>(
       toolName: spec.toolName,
       toolKind: spec.kind,
       arguments: args,
-      cwd: agent.cwd ?? "",
+      cwd: directory.cwd,
+      directoryRoomId: directory.scope.roomId,
+      directoryVersion: directory.scope.version,
+      directoryPaths: [...directory.scope.paths],
+      targetPaths: [...directory.targetPaths],
     };
     const grant = await verifyGrant(spec.runtime, spec.employee, app, request);
     if (!grant.allow) return errorResult(grant.message);
-    await recordExecution(spec.runtime, grant.record.id, "running", `${spec.toolName} 开始执行`);
     try {
-      const result = await run(args, api, context);
+      const result = await run(args, api, context, directory);
       await recordExecution(
         spec.runtime,
         grant.record.id,
@@ -144,7 +118,12 @@ export function gatedExecute<T>(
       );
       return result;
     } catch (error) {
-      await recordExecution(spec.runtime, grant.record.id, "failed", error instanceof Error ? error.message : String(error));
+      await recordExecution(
+        spec.runtime,
+        grant.record.id,
+        "failed",
+        error instanceof Error ? error.message : String(error),
+      );
       throw error;
     }
   };
@@ -156,10 +135,12 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
   const readFile = defineTool({
     name: "read_file",
     description:
-      "Read a UTF-8 text file inside your working directory or a skill directory. " +
+      "Read a UTF-8 text file inside a directory authorized for this session or a bound skill directory. " +
       "Returns the file with 1-based line numbers.",
     parameters: Type.Object({
-      path: Type.String({ description: "Path relative to your working directory, or absolute inside it" }),
+      path: Type.String({
+        description: "Relative to this session's default directory, or absolute inside an authorized or bound skill directory",
+      }),
       offset: Type.Optional(Type.Number({ description: "First 1-based line to return" })),
       limit: Type.Optional(Type.Number({ description: "Maximum number of lines" })),
     }),
@@ -167,7 +148,15 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
     execute: async (args, api, ctx) => {
       const env = api.env;
       if (env === undefined) return errorResult("没有可用的执行环境");
-      const resolved = await resolveWithin(env, ctx, args.path, allowedRoots(employee, skills, true));
+      const scope = await readWorkDirectoryScope(runtime, api.conversationId);
+      if (!scope.ok) return errorResult(scope.message);
+      const resolved = await resolveWithin(
+        env,
+        ctx,
+        args.path,
+        [...scope.scope.paths, ...skills.map((skill) => skill.directory)],
+        scope.scope.defaultPath,
+      );
       if (!resolved.ok) return errorResult(resolved.message);
       const read = await env.readTextFile(resolved.path, ctx);
       if (!read.ok) return errorResult(`读取失败 ${resolved.path}: ${read.error.message}`);
@@ -188,26 +177,28 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
 
   const writeFile = defineTool({
     name: "write_file",
-    description: "Write a UTF-8 text file inside your working directory, creating or replacing it.",
+    description: "Write a UTF-8 text file inside a directory authorized for this session, creating or replacing it.",
     parameters: Type.Object({
-      path: Type.String({ description: "Path relative to your working directory" }),
+      path: Type.String({
+        description: "Relative to this session's default directory, or absolute inside an authorized directory",
+      }),
       content: Type.String({ description: "Complete file content" }),
     }),
     execute: gatedExecute(
       { runtime, employee, toolName: "write_file", kind: "file-write" },
-      async (args, api, ctx) => {
+      async (args, api, ctx, directory) => {
         const env = api.env;
         if (env === undefined) return errorResult("没有可用的执行环境");
-        const resolved = await resolveWithin(env, ctx, args.path, allowedRoots(employee, skills, false));
-        if (!resolved.ok) return errorResult(resolved.message);
-        const parent = dirname(resolved.path);
+        const target = directory.targetPaths[0];
+        if (target === undefined) return errorResult("没有已验证的写入目标");
+        const parent = dirname(target);
         const created = await env.createDir(parent, { recursive: true }, ctx);
         if (!created.ok && !created.error.message.includes("exist")) {
           return errorResult(`无法创建目录 ${parent}: ${created.error.message}`);
         }
-        const written = await env.writeFile(resolved.path, args.content, ctx);
-        if (!written.ok) return errorResult(`写入失败 ${resolved.path}: ${written.error.message}`);
-        return textResult(`已写入 ${resolved.path}（${args.content.length} 字符）`);
+        const written = await env.writeFile(target, args.content, ctx);
+        if (!written.ok) return errorResult(`写入失败 ${target}: ${written.error.message}`);
+        return textResult(`已写入 ${target}（${args.content.length} 字符）`);
       },
     ),
   });
@@ -215,33 +206,38 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
   const editFile = defineTool({
     name: "edit_file",
     description:
-      "Replace an exact text snippet in a file inside your working directory. " +
+      "Replace an exact text snippet in a file inside a directory authorized for this session. " +
       "The old text must appear exactly once unless replaceAll is set.",
     parameters: Type.Object({
-      path: Type.String({ description: "Path relative to your working directory" }),
+      path: Type.String({
+        description: "Relative to this session's default directory, or absolute inside an authorized directory",
+      }),
       oldText: Type.String({ description: "Exact text to replace" }),
       newText: Type.String({ description: "Replacement text" }),
       replaceAll: Type.Optional(Type.Boolean({ description: "Replace every occurrence" })),
     }),
     execute: gatedExecute(
       { runtime, employee, toolName: "edit_file", kind: "file-write" },
-      async (args, api, ctx) => {
+      async (args, api, ctx, directory) => {
         const env = api.env;
         if (env === undefined) return errorResult("没有可用的执行环境");
         if (args.oldText.length === 0) return errorResult("oldText 不能为空");
-        const resolved = await resolveWithin(env, ctx, args.path, allowedRoots(employee, skills, false));
-        if (!resolved.ok) return errorResult(resolved.message);
-        const read = await env.readTextFile(resolved.path, ctx);
-        if (!read.ok) return errorResult(`读取失败 ${resolved.path}: ${read.error.message}`);
+        const target = directory.targetPaths[0];
+        if (target === undefined) return errorResult("没有已验证的编辑目标");
+        const read = await env.readTextFile(target, ctx);
+        if (!read.ok) return errorResult(`读取失败 ${target}: ${read.error.message}`);
         const occurrences = read.value.split(args.oldText).length - 1;
         if (occurrences === 0) return errorResult("文件中找不到 oldText");
         if (occurrences > 1 && args.replaceAll !== true) {
           return errorResult(`oldText 出现了 ${occurrences} 次；请提供更精确的片段或设置 replaceAll`);
         }
-        const updated = args.replaceAll === true ? read.value.split(args.oldText).join(args.newText) : read.value.replace(args.oldText, args.newText);
-        const written = await env.writeFile(resolved.path, updated, ctx);
-        if (!written.ok) return errorResult(`写入失败 ${resolved.path}: ${written.error.message}`);
-        return textResult(`已更新 ${resolved.path}（替换 ${args.replaceAll === true ? occurrences : 1} 处）`);
+        const updated =
+          args.replaceAll === true
+            ? read.value.split(args.oldText).join(args.newText)
+            : read.value.replace(args.oldText, args.newText);
+        const written = await env.writeFile(target, updated, ctx);
+        if (!written.ok) return errorResult(`写入失败 ${target}: ${written.error.message}`);
+        return textResult(`已更新 ${target}（替换 ${args.replaceAll === true ? occurrences : 1} 处）`);
       },
     ),
   });
@@ -249,32 +245,24 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
   const runShell = defineTool({
     name: "run_shell",
     description:
-      "Run a shell command inside your working directory. Output is streamed and truncated; " +
+      "Run a shell command with this session's default directory. Output is streamed and truncated; " +
       "a long-running command is stopped at the timeout.",
     parameters: Type.Object({
       command: Type.String({ description: "Shell command line" }),
-      cwd: Type.Optional(Type.String({ description: "Directory to run in; defaults to your working directory" })),
+      cwd: Type.Optional(
+        Type.String({ description: "Directory to run in; defaults to this session's authorized default directory" }),
+      ),
       timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds" })),
     }),
     execute: gatedExecute(
       { runtime, employee, toolName: "run_shell", kind: "shell" },
-      async (args, api, ctx) => {
+      async (args, api, ctx, directory) => {
         const env = api.env;
         if (env === undefined) return errorResult("没有可用的执行环境");
-        let cwd = employee.cwd;
-        if (args.cwd !== undefined && args.cwd.length > 0) {
-          const resolved = await resolveWithin(env, ctx, args.cwd, allowedRoots(employee, skills, false));
-          if (!resolved.ok) return errorResult(resolved.message);
-          cwd = resolved.path;
-        } else if (cwd.length > 0) {
-          const resolved = await resolveWithin(env, ctx, cwd, allowedRoots(employee, skills, false));
-          if (!resolved.ok) return errorResult(resolved.message);
-          cwd = resolved.path;
-        }
         const result = await env.exec(
           args.command,
           {
-            ...(cwd.length > 0 ? { cwd } : {}),
+            cwd: directory.cwd,
             timeout: args.timeoutMs !== undefined && args.timeoutMs > 0 ? args.timeoutMs : SHELL_TIMEOUT_MS,
             onOutput: (chunk) => api.output(chunk),
             spill: { afterBytes: SHELL_SPILL_BYTES, afterLines: 2_000 },
@@ -282,7 +270,9 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
           ctx,
         );
         if (!result.ok) {
-          return errorResult(`命令失败: ${result.error.message}${result.error.spillPath !== undefined ? `\n完整输出: ${result.error.spillPath}` : ""}`);
+          return errorResult(
+            `命令失败: ${result.error.message}${result.error.spillPath !== undefined ? `\n完整输出: ${result.error.spillPath}` : ""}`,
+          );
         }
         const spill = result.value.spillPath !== undefined ? `\n完整输出已写入 ${result.value.spillPath}` : "";
         if (result.value.exitCode !== 0) {
@@ -301,6 +291,8 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
     execute: async (args, api, ctx) => {
       const env = api.env;
       if (env === undefined) return errorResult("没有可用的执行环境");
+      const scope = await readWorkDirectoryScope(runtime, api.conversationId);
+      if (!scope.ok) return errorResult(scope.message);
       const skill = findBoundSkill(skills, employee.skillIds, args.name);
       if (skill === undefined) {
         const bound = skills.filter((entry) => employee.skillIds.includes(entry.id));
@@ -308,7 +300,7 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
           `没有名为 ${args.name} 的技能。已绑定：${bound.map((entry) => entry.name).join(", ") || "(无)"}`,
         );
       }
-      const resolved = await resolveWithin(env, ctx, skill.filePath, [skill.directory]);
+      const resolved = await resolveWithin(env, ctx, skill.filePath, [skill.directory], skill.directory);
       if (!resolved.ok) return errorResult(resolved.message);
       const read = await env.readTextFile(resolved.path, ctx);
       if (!read.ok) return errorResult(`读取失败 ${resolved.path}: ${read.error.message}`);

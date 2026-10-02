@@ -25,7 +25,8 @@ import type { McpServerDTO, McpServerDraftDTO } from "../shared/contracts.ts";
 import { McpDoc, type EmployeeRecord, type McpServerRecord } from "./documents.ts";
 import type { EmitRuntime } from "./runtime.ts";
 import { slugify } from "./workspace.ts";
-import { gatedExecute } from "./tools.ts";
+import { gatedExecute, toolError } from "./tools.ts";
+import { readWorkDirectoryScope } from "./work-directories.ts";
 
 const MCP_NAME_LIMIT = 64;
 
@@ -94,19 +95,22 @@ export function mcpToolReference(serverName: string, toolName: string): string {
 }
 
 /**
- * Gate one MCP tool.
- *
- * A tool the employee trusts as read-only runs as it is; the trust is a human
- * decision recorded on the employee, never a server's own `readOnlyHint`.
- * Everything else takes the same path as a shell command: the grant is
- * verified in `execute`, and the execution state is recorded around the call.
+ * A tool the employee trusts as read-only bypasses risk review, but not the
+ * current work's directory-version check. All other MCP calls use the normal
+ * approval gate; server readOnlyHint is never treated as human trust.
  */
 function gateMcpTool(
   spec: { runtime: EmitRuntime; employee: EmployeeRecord; toolName: string },
   trustedReadOnly: boolean,
   run: (args: never, api: ToolExecutionApi, context: Context) => Promise<Awaited<ReturnType<ToolRegistration["execute"]>>>,
 ): ToolRegistration["execute"] {
-  if (trustedReadOnly) return run as unknown as ToolRegistration["execute"];
+  if (trustedReadOnly) {
+    return (async (args: unknown, api: ToolExecutionApi, context: Context) => {
+      const directory = await readWorkDirectoryScope(spec.runtime, api.conversationId);
+      if (!directory.ok) return toolError(directory.message);
+      return run(args as never, api, context);
+    }) as unknown as ToolRegistration["execute"];
+  }
   return gatedExecute<never>(
     { runtime: spec.runtime, employee: spec.employee, toolName: spec.toolName, kind: "mcp" },
     run,

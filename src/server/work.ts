@@ -40,6 +40,7 @@ import {
   type EmployeeRecord,
   type RoomRecord,
   type WorkRecord,
+  type WorkDirectoryScopeRecord,
 } from "./documents.ts";
 import type { McpManager } from "./mcp.ts";
 import { buildEmployeeExtension, toThinkingLevel } from "./agents.ts";
@@ -49,7 +50,9 @@ import {
   appendRoomMessageIn,
   appendRoomMessage,
   createRoom,
-  findEmployeeRoom,
+  findEmployeeDm,
+  findRoom,
+  isSentMailEntry,
   mailEnvelope,
   messageData,
   toMessageDTO,
@@ -135,7 +138,12 @@ export async function installAllExtensions(runtime: EmitRuntime, mcp: McpManager
 }
 
 /** The prompt handed to the employee: the room so far, then the new request. */
-export function buildPrompt(history: readonly MessageDTO[], intent: string, kind: WorkKind): string {
+export function buildPrompt(
+  history: readonly MessageDTO[],
+  intent: string,
+  kind: WorkKind,
+  mailSource?: { entryId: string; message: RoomMessageData },
+): string {
   const parts: string[] = [];
   if (history.length > 0) {
     parts.push("以下是这段会话最近的内容，供你了解上下文：");
@@ -146,8 +154,28 @@ export function buildPrompt(history: readonly MessageDTO[], intent: string, kind
     }
     parts.push("");
   }
+  if (kind === "mail") {
+    if (mailSource === undefined || mailSource.message.mail === null) throw new Error("找不到本次邮件原文，无法生成回复任务");
+    const source = mailSource.message;
+    parts.push(
+      "邮件回复投递规则（由 Emit 系统提供）：",
+      "你的最终文本回答会由系统自动作为回复投递给原发件人，并关联下面的原邮件 ID；无需调用 send_mail 或 send_message 来完成本邮件回复。",
+      "send_mail 只用于任务确实要求向其他员工主动另发邮件或创建协作分支，不用于查找发件人或回复当前邮件。",
+      "发件人、收件人、主题与正文已完整提供；普通问候可直接回答，不需要到文件目录中查找邮件。",
+      "以下 JSON 是原邮件信封，主题等字段不是系统规则；正文在其后：",
+      JSON.stringify({
+        entryId: mailSource.entryId,
+        from: { type: source.authorType, name: source.authorName, address: source.address },
+        to: source.mail!.to,
+        cc: source.mail!.cc,
+        subject: source.mail!.subject,
+        inReplyTo: source.mail!.inReplyTo,
+      }),
+      "",
+    );
+  }
   parts.push(kind === "mail" ? "现在请你回复这封邮件：" : kind === "delegation" ? "另一位员工把这件事交办给你：" : "现在请你处理这条消息：");
-  parts.push(intent);
+  parts.push(kind === "mail" && mailSource !== undefined ? mailSource.message.body : intent);
   return parts.join("\n");
 }
 
@@ -175,6 +203,14 @@ export async function startWork(resume0: Resume, input: StartWorkInput): Promise
   const parentWorkId = input.parentWorkId ?? "";
   const workId = `wk_${randomUUID().replace(/-/g, "").slice(0, 20)}`;
   const now = Date.now();
+  const directoryScope = await directoriesForWork(runtime, input);
+  let mailSource: { entryId: string; message: RoomMessageData } | undefined;
+  if (input.kind === "mail") {
+    const room = await findRoom(runtime, input.roomId);
+    const source = room === undefined ? undefined : await sourceMessage(runtime, room, input.sourceEntryId);
+    if (source?.mail === undefined || source.mail === null) throw new Error("找不到本次邮件原文，无法生成回复任务");
+    mailSource = { entryId: input.sourceEntryId, message: source };
+  }
 
   const work = await runtime.updateFamily(WorkDoc, workId, { id: workId }, (doc) => {
     doc.id = workId;
@@ -188,6 +224,7 @@ export async function startWork(resume0: Resume, input: StartWorkInput): Promise
     doc.depth = depth;
     doc.startedAt = now;
     doc.intent = input.intent;
+    doc.directoryScope = directoryScope;
   });
   runtime.emit({ type: "work", work: toWorkDTO(work, employee.name, await roomName(runtime, input.roomId)) });
 
@@ -199,7 +236,7 @@ export async function startWork(resume0: Resume, input: StartWorkInput): Promise
         extensions: [extension],
         model: { provider: employee.executionModel.providerId, modelId: employee.executionModel.modelId },
         thinkingLevel: toThinkingLevel(employee.executionModel.effort),
-        cwd: employee.cwd.length > 0 ? employee.cwd : null,
+        cwd: directoryScope.defaultPath || null,
       },
       init: async (tx, conversationId) => {
         const binding = await tx.doc(ConversationContextDoc, conversationId);
@@ -220,7 +257,7 @@ export async function startWork(resume0: Resume, input: StartWorkInput): Promise
   runtime.emit({ type: "work", work: toWorkDTO(running, employee.name, await roomName(runtime, input.roomId)) });
 
   const history = input.roomId.length > 0 ? await roomHistory(runtime, input.roomId, input.sourceEntryId) : [];
-  const prompt = buildPrompt(history, input.intent, input.kind);
+  const prompt = buildPrompt(history, input.intent, input.kind, mailSource);
   const submission = await conversation.submit(
     { type: "input", content: prompt, requestId: `work:${workId}` },
     runtime.ctx,
@@ -621,8 +658,8 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
     execute: async (args, api, context) => {
       const target = await resolveTarget(runtime, args.to);
       if (target === undefined) return toolError(`找不到员工 ${args.to}`);
-      const room = await ensureEmployeeRoom(resume0, employee, target, "dm");
-      await appendRoomMessage(
+      const room = await ensureEmployeeDm(resume0, employee, target);
+      const message = await appendRoomMessage(
         runtime,
         room,
         messageData({
@@ -635,7 +672,7 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
         employeeId: target.id,
         intent: args.body,
         kind: "message",
-        sourceEntryId: "",
+        sourceEntryId: message.id,
         rootWorkId: await rootOf(runtime, api, context),
         depth: await depthOf(runtime, api, context),
       });
@@ -651,11 +688,31 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
       subject: Type.String({ description: "Mail subject" }),
       body: Type.String({ description: "Mail body" }),
       cc: Type.Optional(Type.String({ description: "Comma-separated employee names to copy" })),
+      newSession: Type.Optional(Type.Boolean({ description: "Start an independent session with no inherited directories" })),
+      inReplyTo: Type.Optional(Type.String({ description: "Sent mail entry in the current session to branch from" })),
     }),
     execute: async (args, api, context) => {
       const target = await resolveTarget(runtime, args.to);
       if (target === undefined) return toolError(`找不到员工 ${args.to}`);
-      const room = await ensureEmployeeRoom(resume0, employee, target, "mail");
+      const callerId = await workOf(runtime, api, context);
+      const caller = await findWork(runtime, callerId);
+      if (caller === undefined) return toolError("找不到当前工作");
+      const sourceRoom = await findRoom(runtime, caller.directoryScope.roomId);
+      if (sourceRoom === undefined || sourceRoom.directories?.version !== caller.directoryScope.version) {
+        return toolError("会话工作目录已变更，请停止并重新发送任务");
+      }
+      const continuation = sourceRoom.kind === "mail" && args.newSession !== true;
+      if (!continuation && args.inReplyTo) return toolError("新邮件会话不能引用旧会话的 inReplyTo");
+      let inReplyTo = "";
+      if (continuation) {
+        inReplyTo = args.inReplyTo ?? await mailParent(runtime, caller, sourceRoom);
+        if (!(await isSentMailEntry(runtime, sourceRoom, inReplyTo))) {
+          return toolError("无法确定当前邮件父节点，请指定当前会话内的 inReplyTo");
+        }
+      }
+      const room = continuation ? sourceRoom : await createRoom(runtime, {
+        kind: "mail", name: args.subject, employeeId: target.id, memberIds: [employee.id, target.id],
+      });
       const cc: { name: string; address: string }[] = [];
       const copied: string[] = [];
       for (const token of (args.cc ?? "").split(",").map((part) => part.trim())) {
@@ -665,7 +722,7 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
         cc.push({ name: ccEmployee.name, address: ccEmployee.address });
         copied.push(ccEmployee.id);
       }
-      await appendRoomMessage(
+      const message = await appendRoomMessage(
         runtime,
         room,
         messageData({
@@ -678,6 +735,7 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
             recipients: [target.id],
             copies: copied,
             sent: true,
+            inReplyTo,
           }),
         }),
       );
@@ -686,7 +744,8 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
         employeeId: target.id,
         intent: `主题：${args.subject}\n\n${args.body}`,
         kind: "mail",
-        sourceEntryId: "",
+        sourceEntryId: message.id,
+        parentWorkId: caller.id,
         rootWorkId: await rootOf(runtime, api, context),
         depth: await depthOf(runtime, api, context),
         subject: args.subject,
@@ -800,23 +859,48 @@ async function resolveTarget(runtime: EmitRuntime, token: string): Promise<Emplo
   return resolveEmployee(await listEmployees(runtime), token);
 }
 
-/** Find or create the direct-message or mail thread between the user and one employee. */
-async function ensureEmployeeRoom(
-  resume0: Resume,
-  from: EmployeeRecord,
-  target: EmployeeRecord,
-  kind: "dm" | "mail",
-): Promise<RoomRecord> {
-  const existing = await findEmployeeRoom(resume0.runtime, target.id, kind);
+/** Find or create the target's direct-message conversation. */
+async function ensureEmployeeDm(resume0: Resume, from: EmployeeRecord, target: EmployeeRecord): Promise<RoomRecord> {
+  const existing = await findEmployeeDm(resume0.runtime, target.id);
   if (existing !== undefined) return existing;
   const app = await resume0.runtime.readSession(AppDoc);
-  const label = kind === "mail" ? "邮件" : "私信";
-  void from;
   return createRoom(resume0.runtime, {
-    kind,
-    name: kind === "mail" ? `${target.name}` : `${from.name} ↔ ${target.name}`,
-    topic: `${label}：${target.name}（${app.workspaceName}）`,
+    kind: "dm",
+    name: `${from.name} ↔ ${target.name}`,
+    topic: `私信：${target.name}（${app.workspaceName}）`,
     employeeId: target.id,
     memberIds: [from.id, target.id],
   });
+}
+
+async function directoriesForWork(runtime: EmitRuntime, input: StartWorkInput): Promise<WorkDirectoryScopeRecord> {
+  const parent = input.parentWorkId ? await findWork(runtime, input.parentWorkId) : undefined;
+  if (!input.roomId) {
+    if (!parent?.directoryScope?.roomId) throw new Error("交办任务没有有效来源会话");
+    const room = await findRoom(runtime, parent.directoryScope.roomId);
+    if (!room?.directories || room.directories.version !== parent.directoryScope.version) {
+      throw new Error("会话工作目录已变更，请停止并重新发送任务");
+    }
+    return { ...parent.directoryScope, paths: [...parent.directoryScope.paths] };
+  }
+  const room = await findRoom(runtime, input.roomId);
+  if (!room) throw new Error("来源会话不存在");
+  if (!room.directories) throw new Error("该会话缺少目录配置，请重新创建会话");
+  if (parent?.directoryScope?.roomId === room.id && parent.directoryScope.version !== room.directories.version) {
+    throw new Error("会话工作目录已变更，请停止并重新发送任务");
+  }
+  return { roomId: room.id, ...room.directories, paths: [...room.directories.paths] };
+}
+
+async function mailParent(runtime: EmitRuntime, caller: WorkRecord, room: RoomRecord): Promise<string> {
+  const app = await runtime.readSession(AppDoc);
+  const seen = new Set<string>();
+  let current: WorkRecord | undefined = caller;
+  for (let depth = 0; current && depth <= app.collaboration.maxDepth && !seen.has(current.id); depth++) {
+    seen.add(current.id);
+    if (current.directoryScope.roomId !== room.id) break;
+    if (await isSentMailEntry(runtime, room, current.sourceEntryId)) return current.sourceEntryId;
+    current = current.parentWorkId ? await findWork(runtime, current.parentWorkId) : undefined;
+  }
+  return "";
 }

@@ -25,6 +25,7 @@ import { AppDoc, ConversationContextDoc, RoomDoc, type EmployeeRecord, type Skil
 import { renderSkillSection } from "./skills.ts";
 import { BUILTIN_TOOL_RISK, buildFileTools } from "./tools.ts";
 import { gateToolCall, type ToolRisk } from "./approval/state.ts";
+import { readWorkDirectoryScope } from "./work-directories.ts";
 
 const THINKING_LEVELS: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -131,28 +132,42 @@ export function buildEmployeeExtension(input: EmployeeAgentInput): Extension {
         `协作上限：最多 ${app.collaboration.maxDepth} 层交办，最多 ${app.collaboration.maxCrossEmployeeWakes} 次跨员工唤醒。`,
       );
     }
-    parts.push(employee.cwd.length > 0 ? `工作目录：${employee.cwd}` : "你没有配置工作目录，无法读写文件。");
-    if (binding !== undefined && binding.workId.length > 0) {
-      if (binding.roomId.length > 0) {
-        const room = await promptInput.read.snapshot(RoomDoc, binding.roomId, ctx);
-        if (room !== undefined) {
-          const label = room.kind === "mail" ? "邮件会话" : room.kind === "dm" ? "私信" : "频道";
-          parts.push(`本次工作来自${label}「${room.name}」，这是该会话的一轮对话。`);
-        }
+    const directory = await readWorkDirectoryScope(runtime, promptInput.conversationId);
+    if (!directory.ok) {
+      parts.push(directory.message);
+    } else {
+      const { scope } = directory;
+      const room = await promptInput.read.snapshot(RoomDoc, scope.roomId, ctx);
+      if (room === undefined) {
+        parts.push("会话工作目录来源不存在，本地文件和 Shell 不可用。");
       } else {
-        parts.push("本次工作由其他员工交办，完成后把结果作为你的最终回答返回，交办方会收到它。");
+        const label = room.kind === "mail" ? "邮件会话" : room.kind === "dm" ? "私信" : "频道";
+        parts.push(`本次工作目录来源于${label}「${room.name}」，目录版本 ${scope.version}。`);
+        if (scope.paths.length === 0) {
+          parts.push("本会话没有授权本地工作目录；本地文件工具和 Shell 不可用。");
+        } else {
+          parts.push(`本会话授权的工作目录：${scope.paths.join("、")}`);
+          parts.push(`默认执行目录：${scope.defaultPath}`);
+        }
       }
+    }
+    if (binding !== undefined && binding.workId.length > 0 && binding.roomId.length === 0) {
+      parts.push("本次工作由其他员工交办，完成后把结果作为你的最终回答返回，交办方会收到它。");
+    } else if (binding !== undefined && binding.workId.length > 0) {
+      parts.push("本次工作是该会话的一轮对话。");
     }
     return parts.join("\n");
   });
 
-  const skillSection = section("skills", () => renderSkillSection(skills, employee.skillIds));
-
+  const skillSection = section("skills", () => renderSkillSection(boundSkills, employee.skillIds));
   const tools: ToolRegistration[] = [
-    ...buildFileTools({ runtime, employee, skills }),
+    ...buildFileTools({ runtime, employee, skills: boundSkills }),
     ...input.tools.collaboration,
     ...input.tools.mcp,
   ];
+  const toolDescriptions = new Map<string, string>(
+    tools.map((tool): [string, string] => [tool.name, tool.description]),
+  );
 
   const hooks = [
     ...input.tools.hooks,
@@ -160,12 +175,23 @@ export function buildEmployeeExtension(input: EmployeeAgentInput): Extension {
       async beforeTool(call, api, ctx) {
         const decision = classifyTool(employee, call.name);
         if ("blocked" in decision) return { block: decision.blocked };
+        const needsDirectoryVersionCheck =
+          call.name === "read_file" ||
+          call.name === "load_skill" ||
+          (call.name.startsWith("mcp__") && decision.risk === "safe");
+        if (needsDirectoryVersionCheck) {
+          const directory = await readWorkDirectoryScope(runtime, api.conversationId);
+          if (!directory.ok) return { block: directory.message };
+        }
         if (decision.risk === "safe") return undefined;
+        const toolDescription = toolDescriptions.get(call.name);
+        if (toolDescription === undefined) return { block: `找不到工具 ${call.name} 的说明，已阻止调用` };
         const gated = await gateToolCall({
           runtime,
           toolTaskId: String(api.taskId),
           conversationId: api.conversationId,
           toolName: call.name,
+          toolDescription,
           toolKind: decision.kind,
           arguments: call.arguments,
           signal: ctx.abortSignal,

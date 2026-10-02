@@ -1,10 +1,10 @@
 /**
  * The employee roster and the editor that defines one.
  *
- * Everything an employee is — role, instructions, model, working directory,
- * skills, MCP servers, allow list, and trusted read-only tools — is edited
- * here. Saving bumps the employee's configuration version, which is part of
- * every approval key, so a later change cannot silently inherit an old grant.
+ * Everything an employee is — role, instructions, model, skills, MCP servers,
+ * allow list, and trusted read-only tools — is edited here. Saving bumps the
+ * employee's configuration version, which is part of every approval key, so
+ * a later change cannot silently inherit an old grant.
  */
 
 import { useState, type ReactNode } from "react";
@@ -21,7 +21,6 @@ type Draft = {
   instructions: string;
   modelKey: string;
   effort: string;
-  cwd: string;
   skillIds: string[];
   mcpServerIds: string[];
   allowedTools: string[];
@@ -37,7 +36,6 @@ function draftFrom(employee: EmployeeDTO | undefined, models: readonly string[],
       instructions: "",
       modelKey: models[0] ?? "",
       effort: defaultEffort,
-      cwd: "",
       skillIds: [],
       mcpServerIds: [],
       allowedTools: [...BUILTIN_TOOLS],
@@ -51,7 +49,6 @@ function draftFrom(employee: EmployeeDTO | undefined, models: readonly string[],
     instructions: employee.instructions,
     modelKey: modelKey(employee.executionModel.model),
     effort: employee.executionModel.effort,
-    cwd: employee.cwd,
     skillIds: [...employee.skillIds],
     mcpServerIds: [...employee.mcpServerIds],
     allowedTools: [...employee.toolPolicy.allowedTools],
@@ -105,7 +102,6 @@ export function EmployeesView(): ReactNode {
         role: draft.role.trim(),
         instructions: draft.instructions,
         executionModel: { model: { providerId, modelId }, effort: draft.effort },
-        cwd: draft.cwd.trim(),
         skillIds: draft.skillIds,
         mcpServerIds: draft.mcpServerIds,
         toolPolicy: { allowedTools: draft.allowedTools, trustedReadOnlyTools: draft.trustedReadOnlyTools },
@@ -206,17 +202,6 @@ export function EmployeesView(): ReactNode {
               />
               <ConnectionCheckButton model={selectedModel} kind="chat" />
               </div>
-            </fieldset>
-            <fieldset>
-              <legend>工作目录</legend>
-            <label>
-              工作目录
-              <input
-                value={draft.cwd}
-                placeholder="留空表示不能读写文件；填写后文件与命令都限制在该目录内"
-                onChange={(event) => setDraft({ ...draft, cwd: event.target.value })}
-              />
-            </label>
             </fieldset>
             {editing === "new" ? (
               <label className="inline">

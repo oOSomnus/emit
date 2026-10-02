@@ -7,11 +7,28 @@
  * subscription drive all three views. Mail is only an envelope on a message.
  */
 
-import { RoomMessageEntry, type MailEnvelope, type RoomMessageData, type RoomRecord } from "./documents.ts";
+import { realpath, stat } from "node:fs/promises";
+import { isAbsolute } from "node:path";
+import {
+  AppDoc,
+  MailFlagDoc,
+  RoomDoc,
+  RoomMessageEntry,
+  type MailEnvelope,
+  type RoomDirectoriesRecord,
+  type RoomMessageData,
+  type RoomRecord,
+} from "./documents.ts";
 import type { ConversationId, EntryRecord, EntryId, Tx } from "@earendil-works/pi-durable";
 import type { EmitRuntime } from "./runtime.ts";
-import { AppDoc, RoomDoc, MailFlagDoc } from "./documents.ts";
-import type { MailMetaDTO, MessageAuthorDTO, MessageDTO, RoomDTO } from "../shared/contracts.ts";
+import type {
+  MailMetaDTO,
+  MessageAuthorDTO,
+  MessageDTO,
+  RoomDirectoryDraftDTO,
+  RoomDirectoryPatchDTO,
+  RoomDTO,
+} from "../shared/contracts.ts";
 
 /** One address on a mail envelope. */
 export type MailAddress = { name: string; address: string };
@@ -54,14 +71,79 @@ export function mailAddresses(envelope: MailEnvelope, address: string): boolean 
 }
 export const ROOM_PAGE_SIZE = 200;
 
+export class RoomDirectoryError extends Error {
+  constructor(
+    readonly status: 400 | 404 | 409,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function canonicalDirectoryPath(path: string): Promise<string> {
+  const trimmed = path.trim();
+  if (trimmed.length === 0 || !isAbsolute(trimmed)) {
+    throw new RoomDirectoryError(400, `工作目录必须是服务器本地绝对路径：${trimmed || "(空)"}`);
+  }
+  try {
+    const canonical = await realpath(trimmed);
+    const info = await stat(canonical);
+    if (!info.isDirectory()) throw new RoomDirectoryError(400, `工作目录不是目录：${trimmed}`);
+    return canonical;
+  } catch (error) {
+    if (error instanceof RoomDirectoryError) throw error;
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new RoomDirectoryError(400, `工作目录不存在或无法访问 ${trimmed}：${reason}`);
+  }
+}
+
+async function canonicalizeRoomDirectories(draft: unknown): Promise<RoomDirectoriesRecord> {
+  if (typeof draft !== "object" || draft === null || Array.isArray(draft)) {
+    throw new RoomDirectoryError(400, "工作目录配置必须是对象");
+  }
+  const value = draft as Record<string, unknown>;
+  if (!Array.isArray(value.paths)) throw new RoomDirectoryError(400, "工作目录 paths 必须是数组");
+  if (typeof value.defaultPath !== "string") throw new RoomDirectoryError(400, "默认工作目录必须是字符串");
+
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value.paths) {
+    if (typeof item !== "string") throw new RoomDirectoryError(400, "工作目录路径必须是字符串");
+    const path = await canonicalDirectoryPath(item);
+    if (seen.has(path)) continue;
+    seen.add(path);
+    paths.push(path);
+  }
+
+  const defaultInput = value.defaultPath.trim();
+  if (paths.length === 0) {
+    if (defaultInput.length > 0) {
+      throw new RoomDirectoryError(400, `默认工作目录不在授权目录列表中：${defaultInput}`);
+    }
+    return { paths, defaultPath: "", version: 1 };
+  }
+  if (defaultInput.length === 0) throw new RoomDirectoryError(400, "请从授权目录列表中选择默认工作目录");
+  const defaultPath = await canonicalDirectoryPath(defaultInput);
+  if (!seen.has(defaultPath)) {
+    throw new RoomDirectoryError(400, `默认工作目录不在授权目录列表中：${defaultPath}`);
+  }
+  return { paths, defaultPath, version: 1 };
+}
+
 export function toRoomDTO(record: RoomRecord, unread = 0): RoomDTO {
+  const directories = record.directories;
   return {
     id: record.id,
     kind: record.kind,
     name: record.name,
     topic: record.topic,
     memberIds: [...record.memberIds],
-    ...(record.employeeId.length > 0 ? { employeeId: record.employeeId } : {}),
+    directories: {
+      paths: Array.isArray(directories?.paths) ? [...directories.paths] : [],
+      defaultPath: typeof directories?.defaultPath === "string" ? directories.defaultPath : "",
+      version: typeof directories?.version === "number" ? directories.version : 0,
+    },
+    ...(record.kind === "dm" && record.employeeId.length > 0 ? { employeeId: record.employeeId } : {}),
     createdAt: record.createdAt,
     lastMessageAt: record.lastMessageAt,
     messageCount: record.messageCount,
@@ -274,14 +356,32 @@ export async function findRoom(runtime: EmitRuntime, id: string): Promise<RoomRe
   return runtime.readFamily(RoomDoc, id, { id });
 }
 
-/** The direct-message or mail thread addressed to one employee. */
-export async function findEmployeeRoom(
-  runtime: EmitRuntime,
-  employeeId: string,
-  kind: "dm" | "mail",
-): Promise<RoomRecord | undefined> {
+export async function isSentMailEntry(runtime: EmitRuntime, room: RoomRecord, entryId: string): Promise<boolean> {
+  if (room.kind !== "mail" || entryId.length === 0) return false;
+  if (!Number.isSafeInteger(Number(entryId)) || Number(entryId) <= 0) return false;
+  const conversation = await runtime.harness.conversation(room.conversationId as ConversationId, runtime.ctx);
+  if (conversation === undefined) return false;
+  const page = await conversation.entries(
+    { minEntryId: Number(entryId) as EntryId, maxEntryId: Number(entryId) as EntryId },
+    1,
+    undefined,
+    runtime.ctx,
+  );
+  const entry = page.items[0];
+  return (
+    entry !== undefined &&
+    RoomMessageEntry.is(entry) &&
+    String(entry.id) === entryId &&
+    entry.data.mail !== null &&
+    entry.data.mail.sent &&
+    !entry.data.mail.draft
+  );
+}
+
+/** The direct-message conversation addressed to one employee. */
+export async function findEmployeeDm(runtime: EmitRuntime, employeeId: string): Promise<RoomRecord | undefined> {
   const rooms = await listRooms(runtime);
-  return rooms.find((room) => room.employeeId === employeeId && room.kind === kind);
+  return rooms.find((room) => room.employeeId === employeeId && room.kind === "dm");
 }
 
 let roomCounter = 0;
@@ -295,8 +395,13 @@ export async function createRoom(
     topic?: string;
     employeeId?: string;
     memberIds?: string[];
+    directories?: RoomDirectoryDraftDTO;
   },
 ): Promise<RoomRecord> {
+  const directories =
+    init.directories === undefined
+      ? { paths: [], defaultPath: "", version: 1 }
+      : await canonicalizeRoomDirectories(init.directories);
   const id = `room_${Date.now().toString(36)}${(roomCounter++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const now = Date.now();
   const conversation = await runtime.harness.createConversation(
@@ -310,6 +415,7 @@ export async function createRoom(
     topic: init.topic ?? "",
     memberIds: init.memberIds ?? [],
     employeeId: init.employeeId ?? "",
+    directories,
     createdAt: now,
     lastMessageAt: now,
     messageCount: 0,
@@ -320,6 +426,55 @@ export async function createRoom(
   });
   runtime.emit({ type: "room", room: toRoomDTO(saved) });
   return saved;
+}
+
+export async function updateRoomDirectories(
+  runtime: EmitRuntime,
+  roomId: string,
+  draft: RoomDirectoryPatchDTO,
+): Promise<RoomRecord> {
+  if (typeof draft !== "object" || draft === null || !Number.isInteger(draft.expectedVersion)) {
+    throw new RoomDirectoryError(400, "expectedVersion 必须是整数");
+  }
+  const current = await findRoom(runtime, roomId);
+  if (current === undefined) throw new RoomDirectoryError(404, `会话不存在：${roomId}`);
+  if (
+    current.directories === undefined ||
+    !Number.isInteger(current.directories.version) ||
+    current.directories.version < 1 ||
+    !Array.isArray(current.directories.paths) ||
+    typeof current.directories.defaultPath !== "string"
+  ) {
+    throw new RoomDirectoryError(400, "该会话缺少目录配置，请重新创建会话");
+  }
+  if (current.directories.version !== draft.expectedVersion) {
+    throw new RoomDirectoryError(409, "会话工作目录已被其他更改，请重新载入");
+  }
+  const normalized = await canonicalizeRoomDirectories(draft);
+  return runtime.updateFamily(RoomDoc, roomId, { id: roomId }, (doc) => {
+    const directories = doc.directories;
+    if (
+      directories === undefined ||
+      !Number.isInteger(directories.version) ||
+      directories.version < 1 ||
+      !Array.isArray(directories.paths) ||
+      typeof directories.defaultPath !== "string"
+    ) {
+      throw new RoomDirectoryError(400, "该会话缺少目录配置，请重新创建会话");
+    }
+    if (directories.version !== draft.expectedVersion) {
+      throw new RoomDirectoryError(409, "会话工作目录已被其他更改，请重新载入");
+    }
+    const changed =
+      directories.defaultPath !== normalized.defaultPath ||
+      directories.paths.length !== normalized.paths.length ||
+      directories.paths.some((path, index) => path !== normalized.paths[index]);
+    doc.directories = {
+      paths: [...normalized.paths],
+      defaultPath: normalized.defaultPath,
+      version: changed ? directories.version + 1 : directories.version,
+    };
+  });
 }
 
 export async function setMailFlag(
