@@ -1,0 +1,349 @@
+/**
+ * Client state.
+ *
+ * One reducer holds the bootstrap snapshot; server events fold into it. Events
+ * that name a full record (a room, a work item, an approval) update in place,
+ * and the coarse events ("employees", "skills", …) refetch their surface, which
+ * keeps the reducer free of domain rules.
+ */
+
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, type ReactNode } from "react";
+import { createElement } from "react";
+import type {
+  ApprovalDTO,
+  AppConfigDTO,
+  CustomProviderConfigDTO,
+  EmployeeDTO,
+  MessageDTO,
+  ModelInfoDTO,
+  ProviderStatusDTO,
+  RoomDTO,
+  ServerEvent,
+  SkillDTO,
+  WorkDTO,
+} from "../shared/contracts.ts";
+import type { BootstrapDTO } from "../shared/contracts.ts";
+import { api, subscribeEvents } from "./api.ts";
+
+export type View = "chat" | "mail" | "approvals" | "employees" | "work" | "settings";
+
+export type State = {
+  ready: boolean;
+  connected: boolean;
+  error: string | undefined;
+  app: AppConfigDTO | undefined;
+  employees: EmployeeDTO[];
+  rooms: RoomDTO[];
+  work: WorkDTO[];
+  approvals: ApprovalDTO[];
+  skills: SkillDTO[];
+  models: ModelInfoDTO[];
+  providers: ProviderStatusDTO[];
+  customProviders: CustomProviderConfigDTO[];
+  mcpServers: BootstrapDTO["mcpServers"];
+  activeRoomId: string | undefined;
+  messages: MessageDTO[];
+  view: View;
+  notice: { id: number; text: string } | undefined;
+  storagePath: string;
+};
+
+const initialState: State = {
+  ready: false,
+  connected: false,
+  error: undefined,
+  app: undefined,
+  employees: [],
+  rooms: [],
+  work: [],
+  approvals: [],
+  skills: [],
+  models: [],
+  providers: [],
+  customProviders: [],
+  mcpServers: [],
+  activeRoomId: undefined,
+  messages: [],
+  view: "chat",
+  notice: undefined,
+  storagePath: "",
+};
+
+type Action =
+  | { type: "bootstrap"; payload: BootstrapDTO; models: ModelInfoDTO[] }
+  | { type: "connected"; value: boolean }
+  | { type: "error"; message: string | undefined }
+  | { type: "view"; view: View }
+  | { type: "app"; app: AppConfigDTO }
+  | { type: "employees"; employees: EmployeeDTO[] }
+  | { type: "rooms"; rooms: RoomDTO[] }
+  | { type: "room"; room: RoomDTO }
+  | { type: "work"; work: WorkDTO[] }
+  | { type: "workOne"; work: WorkDTO }
+  | { type: "workProgress"; workId: string; progressText: string; tools: WorkDTO["tools"] }
+  | { type: "approvals"; approvals: ApprovalDTO[] }
+  | { type: "approval"; approval: ApprovalDTO }
+  | { type: "skills"; skills: SkillDTO[] }
+  | { type: "mcp"; servers: BootstrapDTO["mcpServers"] }
+  | {
+      type: "models";
+      models: ModelInfoDTO[];
+      providers: ProviderStatusDTO[];
+      customProviders: CustomProviderConfigDTO[];
+    }
+  | { type: "activeRoom"; roomId: string | undefined }
+  | { type: "messages"; messages: MessageDTO[] }
+  | { type: "message"; roomId: string; message: MessageDTO }
+  | { type: "notice"; text: string };
+
+function upsert<T extends { id: string }>(list: readonly T[], item: T): T[] {
+  const index = list.findIndex((entry) => entry.id === item.id);
+  if (index < 0) return [item, ...list];
+  const copy = [...list];
+  copy[index] = item;
+  return copy;
+}
+
+function reducer(state: State, action: Action): State {
+  switch (action.type) {
+    case "bootstrap":
+      return {
+        ...state,
+        ready: true,
+        app: action.payload.app,
+        employees: action.payload.employees,
+        rooms: action.payload.rooms,
+        work: action.payload.work,
+        approvals: action.payload.approvals,
+        skills: action.payload.skills,
+        mcpServers: action.payload.mcpServers,
+        providers: action.payload.providers,
+        customProviders: action.payload.customProviders,
+        storagePath: action.payload.storagePath,
+        models: action.models,
+        activeRoomId: state.activeRoomId ?? action.payload.rooms[0]?.id,
+      };
+    case "connected":
+      return { ...state, connected: action.value };
+    case "error":
+      return { ...state, error: action.message };
+    case "view":
+      return { ...state, view: action.view };
+    case "app":
+      return { ...state, app: action.app };
+    case "employees":
+      return { ...state, employees: action.employees };
+    case "rooms":
+      return {
+        ...state,
+        rooms: action.rooms,
+        activeRoomId: state.activeRoomId ?? action.rooms[0]?.id,
+      };
+    case "room": {
+      const exists = state.rooms.some((room) => room.id === action.room.id);
+      return { ...state, rooms: exists ? upsert(state.rooms, action.room) : [action.room, ...state.rooms] };
+    }
+    case "work":
+      return { ...state, work: action.work };
+    case "workOne":
+      return { ...state, work: upsert(state.work, action.work) };
+    case "workProgress": {
+      const index = state.work.findIndex((item) => item.id === action.workId);
+      if (index < 0) return state;
+      const copy = [...state.work];
+      const current = copy[index]!;
+      copy[index] = {
+        ...current,
+        progressText: action.progressText,
+        ...(action.tools !== undefined ? { tools: action.tools } : {}),
+      };
+      return { ...state, work: copy };
+    }
+    case "approvals":
+      return { ...state, approvals: action.approvals };
+    case "approval":
+      return { ...state, approvals: upsert(state.approvals, action.approval) };
+    case "skills":
+      return { ...state, skills: action.skills };
+    case "mcp":
+      return { ...state, mcpServers: action.servers };
+    case "models":
+      return {
+        ...state,
+        models: action.models,
+        providers: action.providers,
+        customProviders: action.customProviders,
+      };
+    case "activeRoom":
+      return { ...state, activeRoomId: action.roomId, messages: action.roomId === state.activeRoomId ? state.messages : [] };
+    case "messages":
+      return { ...state, messages: action.messages };
+    case "message":
+      if (action.roomId !== state.activeRoomId) return state;
+      if (state.messages.some((message) => message.id === action.message.id)) return state;
+      return { ...state, messages: [...state.messages, action.message] };
+    case "notice":
+      return { ...state, notice: { id: Date.now(), text: action.text } };
+    default:
+      return state;
+  }
+}
+
+type ContextValue = {
+  state: State;
+  dispatch: (action: Action) => void;
+  refreshRooms: () => Promise<void>;
+  refreshEmployees: () => Promise<void>;
+  refreshWork: () => Promise<void>;
+  refreshApprovals: () => Promise<void>;
+  refreshModels: () => Promise<void>;
+  openRoom: (roomId: string) => Promise<void>;
+  reload: () => Promise<void>;
+  setError: (message: string | undefined) => void;
+};
+
+const AppContext = createContext<ContextValue | undefined>(undefined);
+
+export function AppProvider({ children }: { children: ReactNode }) {
+  const [state, dispatch] = useReducer(reducer, initialState);
+
+  const refreshRooms = useCallback(async () => {
+    dispatch({ type: "rooms", rooms: await api.rooms() });
+  }, []);
+
+  const refreshEmployees = useCallback(async () => {
+    const bootstrap = await api.bootstrap();
+    dispatch({ type: "employees", employees: bootstrap.employees });
+  }, []);
+
+  const refreshWork = useCallback(async () => {
+    dispatch({ type: "work", work: await api.works() });
+  }, []);
+
+  const refreshApprovals = useCallback(async () => {
+    const payload = await api.approvals();
+    dispatch({ type: "approvals", approvals: payload.approvals });
+  }, []);
+
+  /**
+   * Refresh only the model surfaces.
+   *
+   * `reload` reopens the first room, which would yank the user out of the page
+   * they are configuring; auth and custom-provider changes must not do that.
+   */
+  const refreshModels = useCallback(async () => {
+    const [catalog, custom] = await Promise.all([api.models(), api.customProviders()]);
+    dispatch({
+      type: "models",
+      models: catalog.models,
+      providers: catalog.providers,
+      customProviders: custom.providers,
+    });
+  }, []);
+
+  const openRoom = useCallback(async (roomId: string) => {
+    dispatch({ type: "activeRoom", roomId });
+    const payload = await api.messages(roomId);
+    dispatch({ type: "messages", messages: payload.messages });
+  }, []);
+
+  const reload = useCallback(async () => {
+    try {
+      const [bootstrap, models] = await Promise.all([api.bootstrap(), api.models()]);
+      dispatch({ type: "bootstrap", payload: bootstrap, models: models.models });
+      // The bootstrap snapshot carries the room list, not a transcript, so the
+      // pane has to open a room or the app starts on an empty conversation.
+      const room = bootstrap.rooms.find((entry) => entry.kind !== "mail") ?? bootstrap.rooms[0];
+      if (room === undefined) return;
+      if (room.kind === "mail") dispatch({ type: "view", view: "mail" });
+      await openRoom(room.id);
+    } catch (error) {
+      dispatch({ type: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  }, [openRoom]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  useEffect(() => {
+    const handle = (event: ServerEvent) => {
+      switch (event.type) {
+        case "message": {
+          dispatch({ type: "message", roomId: event.roomId, message: event.message });
+          void refreshRooms();
+          break;
+        }
+        case "room":
+          dispatch({ type: "room", room: event.room });
+          break;
+        case "work":
+          dispatch({ type: "workOne", work: event.work });
+          break;
+        case "work-progress":
+          dispatch({
+            type: "workProgress",
+            workId: event.workId,
+            progressText: event.progressText,
+            tools: event.tools,
+          });
+          break;
+        case "approval":
+          dispatch({ type: "approval", approval: event.approval });
+          void refreshWork();
+          break;
+        case "approvals":
+          // Approval changes move a work item between "running" and
+          // "waiting-approval", so both surfaces are refreshed together.
+          void refreshApprovals();
+          void refreshWork();
+          break;
+        case "employee":
+          void refreshEmployees();
+          break;
+        case "employees":
+          void refreshEmployees();
+          break;
+        case "skills":
+          void api.skills().then((payload) => dispatch({ type: "skills", skills: payload.skills }));
+          break;
+        case "mcp":
+          void api.mcpServers().then((payload) => dispatch({ type: "mcp", servers: payload.servers }));
+          break;
+        case "app":
+          void api.bootstrap().then((payload) => dispatch({ type: "app", app: payload.app }));
+          break;
+        case "notice":
+          dispatch({ type: "notice", text: event.text });
+          break;
+        default:
+          break;
+      }
+    };
+    return subscribeEvents(handle, (open) => dispatch({ type: "connected", value: open }));
+  }, [refreshApprovals, refreshEmployees, refreshRooms, refreshWork]);
+
+  const value = useMemo<ContextValue>(
+    () => ({
+      state,
+      dispatch,
+      refreshRooms,
+      refreshEmployees,
+      refreshWork,
+      refreshApprovals,
+      refreshModels,
+      openRoom,
+      reload,
+      setError: (message) => dispatch({ type: "error", message }),
+    }),
+    [state, refreshRooms, refreshEmployees, refreshWork, refreshApprovals, refreshModels, openRoom, reload],
+  );
+
+  return createElement(AppContext.Provider, { value }, children);
+}
+
+export function useApp(): ContextValue {
+  const value = useContext(AppContext);
+  if (value === undefined) throw new Error("useApp 必须在 AppProvider 内使用");
+  return value;
+}

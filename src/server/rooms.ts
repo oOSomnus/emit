@@ -1,0 +1,338 @@
+/**
+ * Rooms: the shared transcript.
+ *
+ * A room is a conversation whose entries are Emit's own `emit.message` entries,
+ * not model context. Every room — channel, direct message, and mail thread —
+ * uses the same shape, so one message list, one unread model, and one
+ * subscription drive all three views. Mail is only an envelope on a message.
+ */
+
+import { RoomMessageEntry, type MailEnvelope, type RoomMessageData, type RoomRecord } from "./documents.ts";
+import type { ConversationId, EntryRecord, EntryId, Tx } from "@earendil-works/pi-durable";
+import type { EmitRuntime } from "./runtime.ts";
+import { AppDoc, RoomDoc, MailFlagDoc } from "./documents.ts";
+import type { MailMetaDTO, MessageAuthorDTO, MessageDTO, RoomDTO } from "../shared/contracts.ts";
+
+/** One address on a mail envelope. */
+export type MailAddress = { name: string; address: string };
+
+/**
+ * Build a mail envelope.
+ *
+ * "recipients" and "copies" hold the employee ids the mail routes to: To is the
+ * wake set, CC is a copy that never starts work. Keeping the ids beside the
+ * addresses means routing never has to resolve an address back to an employee.
+ */
+export function mailEnvelope(input: {
+  subject: string;
+  to?: MailAddress[];
+  cc?: MailAddress[];
+  recipients?: string[];
+  copies?: string[];
+  inReplyTo?: string;
+  sent?: boolean;
+  draft?: boolean;
+}): MailEnvelope {
+  return {
+    subject: input.subject,
+    to: input.to ?? [],
+    cc: input.cc ?? [],
+    recipients: input.recipients ?? [],
+    copies: input.copies ?? [],
+    inReplyTo: input.inReplyTo ?? "",
+    sent: input.sent ?? true,
+    draft: input.draft ?? false,
+  };
+}
+
+/** Whether an address appears in the To or CC list of an envelope. */
+export function mailAddresses(envelope: MailEnvelope, address: string): boolean {
+  if (address.length === 0) return false;
+  return (
+    envelope.to.some((entry) => entry.address === address) || envelope.cc.some((entry) => entry.address === address)
+  );
+}
+export const ROOM_PAGE_SIZE = 200;
+
+export function toRoomDTO(record: RoomRecord, unread = 0): RoomDTO {
+  return {
+    id: record.id,
+    kind: record.kind,
+    name: record.name,
+    topic: record.topic,
+    memberIds: [...record.memberIds],
+    ...(record.employeeId.length > 0 ? { employeeId: record.employeeId } : {}),
+    createdAt: record.createdAt,
+    lastMessageAt: record.lastMessageAt,
+    messageCount: record.messageCount,
+    unread,
+  };
+}
+
+export function messageData(input: {
+  author: MessageAuthorDTO;
+  body: string;
+  workId?: string;
+  notice?: boolean;
+  mail?: MailEnvelope;
+}): RoomMessageData {
+  return {
+    authorType: input.author.type,
+    authorId: input.author.id,
+    authorName: input.author.name,
+    address: input.author.address ?? "",
+    body: input.body,
+    createdAt: Date.now(),
+    workId: input.workId ?? "",
+    notice: input.notice === true,
+    mail: input.mail ?? null,
+  };
+}
+
+function toMailMeta(envelope: MailEnvelope): MailMetaDTO {
+  const meta: MailMetaDTO = {
+    subject: envelope.subject,
+    to: envelope.to.map((entry) => ({ name: entry.name, address: entry.address })),
+    cc: envelope.cc.map((entry) => ({ name: entry.name, address: entry.address })),
+    recipients: [...envelope.recipients],
+    copies: [...envelope.copies],
+    read: false,
+    archived: false,
+    sent: envelope.sent,
+    draft: envelope.draft,
+  };
+  if (envelope.inReplyTo.length > 0) meta.inReplyTo = envelope.inReplyTo;
+  return meta;
+}
+
+export function toMessageDTO(
+  entry: EntryRecord,
+  flags?: { read: boolean; archived: boolean; active: boolean },
+): MessageDTO | undefined {
+  if (!RoomMessageEntry.is(entry)) return undefined;
+  const data = entry.data;
+  const dto: MessageDTO = {
+    id: String(entry.id),
+    roomId: "",
+    author: {
+      type: data.authorType,
+      id: data.authorId,
+      name: data.authorName,
+      ...(data.address.length > 0 ? { address: data.address } : {}),
+    },
+    body: data.body,
+    createdAt: data.createdAt,
+  };
+  if (data.workId.length > 0) dto.workId = data.workId;
+  if (data.notice) dto.notice = true;
+  if (data.mail !== null) {
+    const meta = toMailMeta(data.mail);
+    meta.read = flags?.read === true;
+    meta.archived = flags?.archived === true;
+    dto.mail = meta;
+  }
+  return dto;
+}
+
+/** Append one message to a room transcript inside an existing transaction. */
+export async function appendRoomMessageIn(tx: Tx, room: RoomRecord, data: RoomMessageData): Promise<EntryRecord> {
+  const entry = await tx.appendEntry(RoomMessageEntry, room.conversationId as ConversationId, { data });
+  const doc = await tx.doc(RoomDoc, room.id, { id: room.id });
+  doc.messageCount += 1;
+  doc.lastMessageAt = data.createdAt;
+  return entry;
+}
+
+/**
+ * A room DTO carrying the unread count the inbox would show.
+ *
+ * Every event that publishes a room must go through this: emitting a room with
+ * a default count of zero would silently clear the mailbox badge.
+ */
+export async function roomDTOWithUnread(
+  runtime: EmitRuntime,
+  room: RoomRecord,
+  userId = "user",
+): Promise<RoomDTO> {
+  const app = await runtime.readSession(AppDoc);
+  return toRoomDTO(room, await countMailUnread(runtime, room, userId, app.userAddress));
+}
+
+/** Append one message in its own commit, then publish it. */
+export async function appendRoomMessage(
+  runtime: EmitRuntime,
+  room: RoomRecord,
+  data: RoomMessageData,
+): Promise<MessageDTO> {
+  const entry = await runtime.harness.commit((tx) => appendRoomMessageIn(tx, room, data), runtime.ctx);
+  const dto = toMessageDTO(entry);
+  if (dto === undefined) throw new Error("写入的消息类型不正确");
+  dto.roomId = room.id;
+  runtime.emit({ type: "message", roomId: room.id, message: dto });
+  runtime.emit({
+    type: "room",
+    room: await roomDTOWithUnread(runtime, {
+      ...room,
+      messageCount: room.messageCount + 1,
+      lastMessageAt: data.createdAt,
+    }),
+  });
+  return dto;
+}
+
+/** Read a room's newest messages, oldest first. */
+export async function listRoomMessages(
+  runtime: EmitRuntime,
+  room: RoomRecord,
+  limit = ROOM_PAGE_SIZE,
+): Promise<MessageDTO[]> {
+  const conversation = await runtime.harness.conversation(room.conversationId as ConversationId, runtime.ctx);
+  if (conversation === undefined) return [];
+  const page = await conversation.entries({}, limit, undefined, runtime.ctx);
+  const messages: MessageDTO[] = [];
+  for (const entry of page.items) {
+    const flags = await readFlags(runtime, room.id, entry.id);
+    // A retired draft (already sent, or replaced by an edit) stays in storage
+    // but is no longer part of the thread.
+    if (RoomMessageEntry.is(entry) && entry.data.mail?.draft === true && flags?.active === false) continue;
+    const dto = toMessageDTO(entry, flags);
+    if (dto === undefined) continue;
+    dto.roomId = room.id;
+    messages.push(dto);
+  }
+  return messages.reverse();
+}
+
+async function readFlags(
+  runtime: EmitRuntime,
+  roomId: string,
+  entryId: EntryId,
+): Promise<{ read: boolean; archived: boolean; active: boolean } | undefined> {
+  const flag = await runtime.readFamily(MailFlagDoc, `${roomId}|${String(entryId)}`, {
+    key: `${roomId}|${String(entryId)}`,
+  });
+  if (flag === undefined) return undefined;
+  return { read: flag.read, archived: flag.archived, active: flag.active };
+}
+
+export async function listRooms(runtime: EmitRuntime): Promise<RoomRecord[]> {
+  const members = await runtime.listFamily(RoomDoc, (id) => ({ id }));
+  return members.map((member) => member.value).sort((a, b) => b.lastMessageAt - a.lastMessageAt);
+}
+
+/**
+ * Rooms with their unread mail count.
+ *
+ * Only mail threads can be unread: a channel or direct message is read by
+ * looking at it, while a mail carries a per-message flag the user controls.
+ */
+/**
+ * The unread mail count of one thread, as the inbox defines it.
+ *
+ * A message counts only when it is mail (not a channel post), was not written
+ * by the user, is not a draft, is addressed to the user in To or CC, is still
+ * part of the thread (an edited or sent draft is retired), is not archived, and
+ * has not been read. The sidebar badge and the inbox list therefore agree.
+ */
+export async function countMailUnread(
+  runtime: EmitRuntime,
+  room: RoomRecord,
+  userId: string,
+  userAddress: string,
+): Promise<number> {
+  if (room.kind !== "mail") return 0;
+  const conversation = await runtime.harness.conversation(room.conversationId as ConversationId, runtime.ctx);
+  if (conversation === undefined) return 0;
+  const page = await conversation.entries({}, ROOM_PAGE_SIZE, undefined, runtime.ctx);
+  let unread = 0;
+  for (const entry of page.items) {
+    if (!RoomMessageEntry.is(entry)) continue;
+    const mail = entry.data.mail;
+    if (mail === null || entry.data.authorId === userId) continue;
+    if (mail.draft === true) continue;
+    if (!mailAddresses(mail, userAddress)) continue;
+    const flag = await readFlags(runtime, room.id, entry.id);
+    if (flag?.active === false || flag?.archived === true) continue;
+    if (flag?.read === true) continue;
+    unread += 1;
+  }
+  return unread;
+}
+
+export async function listRoomDTOs(runtime: EmitRuntime, userId: string): Promise<RoomDTO[]> {
+  const rooms = await listRooms(runtime);
+  const app = await runtime.readSession(AppDoc);
+  const dtos: RoomDTO[] = [];
+  for (const room of rooms) {
+    const unread = await countMailUnread(runtime, room, userId, app.userAddress);
+    dtos.push(toRoomDTO(room, unread));
+  }
+  return dtos;
+}
+
+export async function findRoom(runtime: EmitRuntime, id: string): Promise<RoomRecord | undefined> {
+  return runtime.readFamily(RoomDoc, id, { id });
+}
+
+/** The direct-message or mail thread addressed to one employee. */
+export async function findEmployeeRoom(
+  runtime: EmitRuntime,
+  employeeId: string,
+  kind: "dm" | "mail",
+): Promise<RoomRecord | undefined> {
+  const rooms = await listRooms(runtime);
+  return rooms.find((room) => room.employeeId === employeeId && room.kind === kind);
+}
+
+let roomCounter = 0;
+
+/** Create a room and its transcript conversation in one commit. */
+export async function createRoom(
+  runtime: EmitRuntime,
+  init: {
+    kind: RoomRecord["kind"];
+    name: string;
+    topic?: string;
+    employeeId?: string;
+    memberIds?: string[];
+  },
+): Promise<RoomRecord> {
+  const id = `room_${Date.now().toString(36)}${(roomCounter++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const now = Date.now();
+  const conversation = await runtime.harness.createConversation(
+    { ownership: { kind: "ownerless" }, agent: { extensions: [] } },
+    runtime.ctx,
+  );
+  const record: RoomRecord = {
+    id,
+    kind: init.kind,
+    name: init.name,
+    topic: init.topic ?? "",
+    memberIds: init.memberIds ?? [],
+    employeeId: init.employeeId ?? "",
+    createdAt: now,
+    lastMessageAt: now,
+    messageCount: 0,
+    conversationId: Number(conversation.id),
+  };
+  const saved = await runtime.updateFamily(RoomDoc, id, { id }, (doc) => {
+    Object.assign(doc, record);
+  });
+  runtime.emit({ type: "room", room: toRoomDTO(saved) });
+  return saved;
+}
+
+export async function setMailFlag(
+  runtime: EmitRuntime,
+  roomId: string,
+  entryId: string,
+  change: { read?: boolean; archived?: boolean; active?: boolean },
+): Promise<void> {
+  const key = `${roomId}|${entryId}`;
+  await runtime.updateFamily(MailFlagDoc, key, { key }, (doc) => {
+    doc.key = key;
+    if (change.read !== undefined) doc.read = change.read;
+    if (change.archived !== undefined) doc.archived = change.archived;
+    if (change.active !== undefined) doc.active = change.active;
+  });
+}
