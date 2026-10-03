@@ -1,133 +1,65 @@
 # Emit
 
-本地运行的数字员工协作工作台：界面是 Slack 与邮箱的混合体，每个 agent 是一位有角色、技能、MCP 和工具权限的数字员工。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-后端是一个 Node 进程，独占一个 SQLite 数据库与一个 [Pi Durable](https://earendil.com/posts/pi-durable/) harness。消息、邮件、工具调用、审批和运行记录都是持久化的 durable task 与 document：关掉浏览器任务继续跑，进程被强杀后重启会恢复未完成的运行。
+Emit is a local digital-employee collaboration workspace: the interface mixes Slack and a mailbox, and every agent is a digital employee with a role, skills, MCP servers, and tool permissions.
 
-## 快速开始
+The backend is a single Node process that exclusively owns one SQLite database and one [Pi Durable](https://earendil.com/posts/pi-durable/) harness. Messages, mail, tool calls, approvals, and run records are durable tasks and documents: close the browser and work keeps running; after a hard kill or power loss, the process resumes unfinished runs on restart.
+
+## Features
+
+- Each employee has its own model, reasoning effort, skill bindings, MCP bindings, allowed tools, and an MCP read-only trust list. Employees can message each other, send mail, and delegate work, with depth, wake, and turn budgets that stop runaway loops.
+- Channels, direct messages, and asynchronous in-app mail. A channel wakes an employee only when you assign one in the "指派员工" dropdown; direct messages wake their employee by default. Delegated work's final answer is visible on the Work page and returns to the originating session.
+- Sessions own their working directories: channels, DMs, and mail threads each keep their own server-local directories and default execution directory, and every run snapshots them.
+- Mail is durable and asynchronous: sending commits the body, each recipient's queued work, and the dispatch tasks before the model runs, so nothing is lost when the browser closes or the process is killed.
+- Automatic risk review: low and medium risk are approved automatically, high risk goes to a manual queue, `deny`/`critical` is rejected, and unknown risk or a judge failure blocks execution.
+- Results and completion are committed atomically; a restart resumes live runs, marks unrecoverable work as failed, and never silently replays interrupted tools.
+
+## Quick start
+
+Requires Node.js >= 22.19.0.
 
 ```bash
 npm install
-npm run dev          # 构建前端并启动后端（tsx watch）
+npm run dev          # build the web UI and start the backend (tsx watch)
 ```
 
-打开 <http://127.0.0.1:8787>，按首次设置向导填写工作区名称、你的名字、默认模型，并粘贴一个 provider 的 API key。
+Open <http://127.0.0.1:8787> and complete the first-run setup: a workspace name (prefilled with a default), your name, a usable default chat model with a supported reasoning effort, and a separately configured approval judge (a chat model or a classifier). The judge never silently falls back to an employee model. Providers authenticate through their native flows: API key, OAuth/subscription, cloud credentials, or credentials already present in the process environment.
 
-生产启动：
+Production start:
 
 ```bash
 npm run build
-npm start            # 需要已构建的 dist/web
+npm start            # requires a built dist/web
 ```
 
-### 依赖补丁
+The default data directory is `~/.emit`, and one process owns it at a time; saved credentials never go back to the browser. [Operations](docs/operations.md) documents the files, precedence rules, and lock behavior.
 
-`npm install` 会运行 `postinstall`，用 [`patch-package`](https://github.com/ds300/patch-package) 把 `patches/@earendil-works+pi-durable+1.0.0.patch` 应用到 `node_modules`。补丁只给 pi-durable 的生成与压缩请求补上 OpenCode Go 必需的每会话标识；补丁应用失败时安装会以非零状态退出，不会带着未打补丁的依赖继续。
+## Safety boundaries
 
-命令行参数：
+- Session working directories are **not an OS sandbox**. Built-in file tools validate real paths and symlinks, and Shell validates its starting cwd, but arbitrary commands and stdio/remote MCP servers still run with their own process privileges, and a directory list does not guarantee they cannot see other paths.
+- Automatic risk review is **not a sandbox** either: it judges a redacted action with a budgeted context, so it cannot give kernel-level read-only guarantees and the model can misjudge. Unknown or failed evaluations block execution and high risk needs a human, but neither replaces process isolation.
+- The judge model is not a security guarantee and cannot audit history omitted by the budget.
+- Connecting a remote model sends the corresponding context to that provider; data leaves this machine only with local models.
+- Emit listens on loopback (`127.0.0.1`) by default, and it has no SMTP delivery: external mail addresses are recorded and displayed only.
 
-```
---data-dir <目录>   数据目录（默认 ~/.emit）
---host <地址>       监听地址（默认 127.0.0.1）
---port <端口>       监听端口（默认 8787）
---web-root <目录>   前端构建产物目录（默认 dist/web）
-```
+## Documentation
 
-## 数据与凭据
+| Topic | Document |
+| --- | --- |
+| Usage — employees, collaboration, sessions, mail, themes | [docs/usage.md](docs/usage.md) |
+| Operations — CLI, data files, credentials, recovery | [docs/operations.md](docs/operations.md) |
+| Security — approval model and safety properties | [docs/security.md](docs/security.md) |
+| Development — scripts, prompts, smoke test | [docs/development.md](docs/development.md) |
 
-- `~/.emit/emit.sqlite`：所有会话、文档、任务与审批。一个数据目录同一时间只允许一个进程打开，第二个进程会在等待约 20 秒后拒绝启动。上次是被强制结束（例如 SIGKILL 或断电）时，残存的锁会在 15 秒后被视为过期，新的进程会自动接管，不需要手工清理。
-- `~/.emit/credentials.json`（0600）：原生 provider 凭据、自定义 provider 配置、动态模型目录缓存与安装 id。首次设置与「设置 → 模型 Provider」直接管理这些内容：Pi 原生的全部 provider 都在界面上，认证走 provider 自己的登录流程（API Key、OAuth/订阅、云平台凭据），密钥不会回传给网页。环境变量仍是等价的 ambient 来源，例如 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENROUTER_API_KEY`、`TYPESAFE_API_KEY`；已保存的 provider 凭据优先于环境变量，未保存凭据的 provider 才回退到环境变量。
-- SQLite 使用 WAL + `synchronous=NORMAL`：进程崩溃可恢复，但不保证断电时不丢失最后一次提交。
+History: [CHANGELOG.md](CHANGELOG.md) (Chinese).
 
-## 员工模型与协作
-
-- 每位员工有自己的模型与推理强度、技能绑定、MCP 绑定、允许的工具，以及被信任为只读的 MCP 工具列表。工作目录不属于员工；修改员工配置会提升配置版本。
-- 员工的模型必须是目录里存在、且支持工具调用的对话模型，推理强度必须是该模型支持的等级；不满足时保存会直接失败并说明原因。模型之后从凭据里被移除时，新工作会明确报错，不会静默换成别的模型。
-- 员工可以互相发消息、发邮件、交办任务。协作受上限约束：交办层数、跨员工唤醒次数、模型轮次，以及把任务交办回自己的上级（会形成循环，直接拒绝）。达到上限会停下来并说明原因，不会静默继续。
-- 交办出去的工作在「工作」页能看到最终回答，结果也会回到发起会话。
-- 频道里只有显式指派或 `@` 员工才会唤醒他；私信默认唤醒那位员工。
-- 发给模型的全部提示词都是可审阅的文本资源，集中在 `src/server/prompts/`：`employee.md`（员工身份与准则骨架）、`work-input.md`（任务输入）、`context.md`（历史与压缩）、`approval-system.md`/`approval-user.md`（审查者）、`tool-results.md`、`skills.md`、`continuations.md`、`address-*.md` 等，`tools.json` 与 `classifier.json` 保存工具说明与判断规则。代码只负责填充参数，不内嵌大段提示词文本。
-
-## 会话工作目录
-
-- 频道、私信、邮件 session 各自保存多个服务器本地目录与一个默认执行目录。频道员工共享配置，私信只作用于当前对话；邮件同一 room 的回复链和 graph 分支共享配置，不同 session 独立。
-- 在聊天页「工作目录」或邮件阅读区「会话工作目录」编辑。新写信可在发送前配置目录，草稿保留自己的 session 与目录；新邮件不复制当前阅读会话的授权。
-- 路径必须绝对、存在且可访问，保存时解析真实路径、去重并验证默认目录。空配置不允许本地 Shell 或普通文件访问；已绑定技能目录仍可只读加载，远程 MCP 不依赖本地目录。
-- 每轮工作保存目录版本快照；交办继承来源会话，跨员工私信使用目标私信的配置。修改目录会立即作废本会话尚未执行的批准与等待审批；旧工作后续调用必须停止并重新发送，已经开始的工具可完成。
-- 此次采用干净切换，不迁移旧员工目录、不自动授予旧路径、不清空数据。缺少新目录配置的旧会话需重新创建。
-
-
-## 邮件
-
-- 邮箱页是 Gmail 的形状：左侧「收件箱 / 已发送 / 草稿 / 归档」，中间是紧凑的邮件行（未读加粗加点），右侧是阅读区。窗口够宽（≥1440px）时列表与阅读区并排，窄了以后阅读区替换列表并带返回按钮；≤760px 时文件夹收进一个下拉选择器。
-- 侧栏只有一个「邮箱」入口，带未读总数；未读口径是「非用户发送、To/CC 含用户地址、非草稿、未归档、未读」，收件箱、侧栏与实时的房间事件三处一致。
-- 搜索按参与者、主题和正文匹配；「没有匹配的邮件」和「这个文件夹是空的」是两种不同的提示。
-- 一封邮件自带收件人：To 里的每位员工各起一份异步工作，CC 只收到副本、不会启动任何工作；只发给用户自己的邮件也只是投递。回复写给原发件人，回复全部会把原邮件的其他收件人一起带上。
-- 发信就是排队：正文、每位收件人的工作与派发任务在同一个提交里落盘，之后才调用模型。关掉浏览器、甚至进程被强杀，收件人的工作都会在重启后继续，不会丢信。
-- 邮件是异步的，不假装成聊天：阅读区不显示员工正在生成的字，而是给出这封邮件的工作状态（排队中／处理中／等待回信／已完成／失败／已停止）与「查看执行」弹层，里面是真实的输入、工具调用、工具结果与回答，可翻页看更早的步骤。等待中的工作可以在弹层里停止。
-- 员工任务收到完整原邮件信封（发件人、To/CC、主题、父节点与正文）。员工的最终文本回答由系统自动投递为本邮件回复；普通回复无需调用 `send_mail`，也不需要工作目录。`send_mail` 用于主动另发邮件或创建协作分支。
-- `send_mail` 带 `awaitReply: true` 时是一次真正的求助：发起方的工作停在「等待回信」，等待期间写出的答案会被扣住不投递；对方回信后，发起方带着回信原文继续，只投递一份最终答复。等待中的工作被停止时，等待关联一并清除，迟到的回信仍作为普通邮件送达，但不会再被当成答案。
-- 草稿保存在线程里，不投递也不唤醒任何人。草稿按条目单独列出：同一线程里的多份草稿各自可以继续编辑、发送或丢弃，编辑后保存会退役旧版本、只留最新一版。
-- 写信是右下角的固定弹层（窄屏全屏），切换文件夹或翻看其他邮件不会丢掉没写完的内容；关闭时若还有未保存文本，会先问「保存草稿／丢弃／继续编辑」。
-- 已读与归档是每封邮件自己的 flag：可以在列表行上直接标记；打开一个线程只会把你收到的未读邮件标为已读，而且每个线程每次会话只自动做一次，手动改回未读不会被立刻改回来。
-- 收件人除了从员工目录里选，也可以直接填地址：目录之外的地址按原样记录，但不会唤醒任何员工（只有员工会开始工作）。
-- 地址形如 `名字@工作区.test`，只在本机使用，不会真的发出邮件；名字里的中文会保留在地址里，重名会加确定性后缀，用户的地址不会被员工占用。Emit 没有 SMTP 投递：外部地址只是记录与显示。
-- 员工在邮件中调用 `send_mail` 默认延续当前 session，并以当前邮件为 `inReplyTo` 建立分支；交办可回溯同一 session 的真实邮件父节点。显式 `newSession=true` 或非邮件来源会创建独立、空目录的 session；跨 session 父节点会被拒绝。
-
-## 界面与主题
-
-- 左栏是 240px 的导航：工作区名称、频道与私信（可以滚动，各自带「+」创建）、一个「邮箱」入口，底部固定「审批 / 工作 / 员工 / 设置」与外观选择器；计数徽标只显示数量，不再把按钮撑高。
-- 主题有浅色、深色、跟随系统三种选择，在侧栏底部、「设置 → 工作台」与首次设置里都能切换；选择存在浏览器本地，并在首帧之前应用，切换页面不会闪回旧配色。
-- 窄屏（≤760px）时左栏变成遮罩抽屉：顶栏 44px 有菜单按钮，按 Escape、点遮罩或选择任意导航都会关闭并把焦点还给菜单按钮；表单与列表都退成单列。
-- 每一页共用同一套间距、字号、圆角与语义颜色 token，浅深两套配色都来自 `src/web/styles.css` 顶部的变量，组件里不写死颜色。
-
-## Auto mode 与审批
-
-有风险的工具调用（写文件、编辑文件、执行 Shell、未信任的 MCP 调用）会先创建一条审批单：
-
-1. 首次设置必须单独选择一个可用审批判断模型（无工具的 chat 模型或 classifier），不会隐藏回退到员工模型；
-2. 判断者取得完整脱敏动作、canonical 目标路径、会话目录与版本、真实用户指令出处，以及当前执行的活动历史（含工具调用与结果）；
-3. `allow/low` 与 `allow/medium` 自动批准，普通查询和小范围可逆写入无需人工；仅 `allow/high` 进入人工队列。`deny` 或 `critical` 自动拒绝；未知风险、模型故障、缺字段或超预算显示「自动审查受阻」并阻止执行，不转人工；
-4. 批准只对那一次调用有效，执行前原子核验参数、目录快照、员工配置与策略版本并领取一次性 grant。
-
-安全相关的性质：
-
-- 审批标识绑定 `toolTaskId + employeeId + toolName + 参数哈希 + canonical cwd/目标路径 + 会话目录 ID/完整 roots/版本 + 配置版本 + 策略版本`；恢复时同一动作仍找回同一张单，跨会话、目录或参数变化不能复用批准。
-- 审批配置变化提升策略版本；会话目录变化只使该会话未执行的批准失效，不影响其他会话。
-- 只读文件的读取、读取已绑定技能的 `SKILL.md`、以及员工自己信任为只读的 MCP 工具不进入审批；其余一律进入，包括未被信任的 MCP 工具（判断者也可以直接批准这种调用）。
-- 判断针对完整动作而非命令前缀：普通 `ls/pwd/cat/rg/git status/diff/log` 通常低风险；重定向、写入、脚本和外发需要按实际效应判断。目录外本身不是高风险，正常认证不等于凭据探测，可能含凭据的读取不自动禁止；秘密外传或重大不可逆破坏仍拒绝。
-- 只读、授权强度与分类概率是证据，不额外构成保守阈值；明确 deny/恶意注入不会被只读结论覆盖。MCP 描述和 hint 只是工具声明。
-- 活动执行历史尊重 reset/compaction；历史按 UTF-8 预算保留并注明省略，调用与结果成组。完整动作不会截断后再批准，放不进预算就阻止执行。只有实际用户房间消息构成人类授权，员工交办、工具结果及 synthetic user role 不会升级授权。
-- MCP 工具永远不因为 server 自己声明的 `readOnlyHint` 被自动信任，必须由人在员工配置里标记。
-- 停止一次工作会取消它名下所有未裁决的审批，迟到的批准不会再启动任何东西。
-
-## 持久性与恢复
-
-- 每个工作开展一条独立的执行 conversation；房间的公开记录放在房间自己的 conversation 里，两者不互相污染。
-- 答案与「工作已完成」在同一个提交里写入，所以崩溃只会导致「两边都没写」，恢复后会重新投递，不会产生半截状态。
-- 进程重启时先 `resume()` 恢复运行中的任务，再对没有活任务、也没有未决提交的工作标记为失败并在原会话里说明原因。
-- 工具 intent 写入之后崩溃：执行阶段被中断的工具不会被自动重放；模型会看到调用被中断，并自行决定下一步。
-
-## 安全边界（请务必阅读）
-
-- 会话工作目录 **不是 OS 沙箱**。内置文件工具校验真实路径与符号链接；Shell 校验起始 cwd，但任意命令与 stdio/远程 MCP 仍以各自进程权限运行，目录列表不保证它们完全看不到其他路径。
-- **自动风险审查不是沙箱**。审查完整脱敏参数与有预算的真实上下文不能提供内核级只读保证；模型可能误判。未知/失败会阻止执行，高风险需要人工，均不能替代进程隔离。
-- 判断模型不是安全保证，也无法审计被预算省略的历史；普通低/中风险不因授权不足而升级为人工。
-- 连接远程模型会把相应上下文发送给该 provider；只有连接本地模型时数据才不离开这台机器。
-
-## 开发
+## Development
 
 ```bash
-npm run typecheck    # 服务端与前端类型检查
-npm run build        # typecheck + 构建前端
+npm run typecheck    # server and web type checks
+npm run build        # typecheck + build the front end
 npm test             # vitest
-node tmp/smoke.mjs   # 端到端冒烟：假 provider + 真实 harness，覆盖审批、人工裁决、拒绝、停止、邮件与 SIGKILL 恢复（自行清空并重建临时数据目录）
 ```
 
-`tmp/fake-provider.mjs` 是一个 OpenAI-compatible 的假模型，仅用于冒烟脚本。
-
-## 技术栈
-
-- 后端：Node ≥ 22.19、TypeScript、Fastify、`@earendil-works/pi-durable` / `pi-ai` / `pi-mcp` / `chord`
-- 前端：React 19 + Vite，一个 SSE 通道推送全部实时更新
-- 存储：SQLite（由 pi-durable 的 storage 打开）
+The end-to-end smoke test, prompt resources, dependency patch, and technology stack are in [docs/development.md](docs/development.md).
