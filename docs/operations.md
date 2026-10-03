@@ -12,9 +12,11 @@ CLI options, environment variables, data files, credentials, locking, and crash 
 | --- | --- | --- | --- |
 | `--data-dir <dir>` | Directory holding the database, credentials, and lock | `~/.emit` | `EMIT_DATA_DIR` |
 | `--host <address>` | Listen address | `127.0.0.1` | `EMIT_HOST` |
-| `--port <port>` | Listen port | `8787` | `EMIT_PORT` |
-| `--web-root <dir>` | Built front-end directory | `dist/web`, resolved from the source tree | — |
+| `--port <port>` | Listen port; `0` picks a free one | auto (`0`) | `EMIT_PORT` |
+| `--web-root <dir>` | Built front-end directory | `dist/web` from the source tree; the single-file binary serves its embedded frontend | — |
 | `--help`, `-h` | Print usage and exit | — | — |
+
+`make` builds `dist/emit`, a native single-file executable (Node SEA) that embeds the server, prompts, and web UI and accepts the same options; it needs no Node installation. The startup log prints the address the server actually bound.
 
 For data-dir, host, and port, the command-line option takes precedence over the environment variable. Example (replace the data-dir path with your own directory):
 
@@ -29,6 +31,7 @@ npm start -- --data-dir /absolute/path/to/data --port 8787
 - `<data-dir>/emit.sqlite` — all sessions, documents, tasks, and approvals.
 - `<data-dir>/credentials.json` (written with mode 0600) — native provider credentials, custom provider endpoints, the dynamic model catalog cache, and a stable installation id. The native credential store is the single source of truth for provider authentication; OAuth refreshes are persisted here, and values are never sent to the browser.
 - `<data-dir>/emit.lock` — the lock `proper-lockfile` uses to keep one process per data directory.
+- `<data-dir>/.emit-web/` — only for the single-file binary: a self-repairing copy of the embedded frontend, restored on startup. `--web-root` replaces it entirely, and deleting it is safe.
 
 ### Credential precedence
 

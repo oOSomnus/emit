@@ -24,7 +24,7 @@ npm install
 npm run dev          # build the web UI and start the backend (tsx watch)
 ```
 
-Open <http://127.0.0.1:8787> and complete the first-run setup: a workspace name (prefilled with a default), your name, a usable default chat model with a supported reasoning effort, and a separately configured approval judge (a chat model or a classifier). The judge never silently falls back to an employee model. Providers authenticate through their native flows: API key, OAuth/subscription, cloud credentials, or credentials already present in the process environment.
+Open the URL printed by the startup log (`Emit 已启动：…`); the server picks a free loopback port by default — pass `--port` or set `EMIT_PORT` to pin one. Complete the first-run setup: a workspace name (prefilled with a default), your name, a usable default chat model with a supported reasoning effort, and a separately configured approval judge (a chat model or a classifier). The judge never silently falls back to an employee model. Providers authenticate through their native flows: API key, OAuth/subscription, cloud credentials, or credentials already present in the process environment.
 
 Production start:
 
@@ -32,6 +32,15 @@ Production start:
 npm run build
 npm start            # requires a built dist/web
 ```
+
+Single-file build:
+
+```bash
+make                 # builds dist/emit (native single executable, Node SEA)
+make smoke           # rebuilds and runs the native-binary smoke suite
+```
+
+`dist/emit` is one file: it embeds the server, the prompt resources, and the web UI, so it runs without Node, npm, or the source tree, and it restores the embedded frontend under `<data-dir>/.emit-web`. It is native to the OS/architecture it was built on. `make` installs dependencies from the lockfile on first use.
 
 The default data directory is `~/.emit`, and one process owns it at a time; saved credentials never go back to the browser. [Operations](docs/operations.md) documents the files, precedence rules, and lock behavior.
 
@@ -60,6 +69,8 @@ History: [CHANGELOG.md](CHANGELOG.md) (English).
 npm run typecheck    # server and web type checks
 npm run build        # typecheck + build the front end
 npm test             # vitest
+make                 # native single-file build (dist/emit)
+make smoke           # native-binary smoke suite
 ```
 
 The end-to-end smoke test, prompt resources, dependency patch, and technology stack are in [docs/development.md](docs/development.md).

@@ -24,7 +24,7 @@ npm install
 npm run dev          # 构建前端并启动后端（tsx watch）
 ```
 
-打开 <http://127.0.0.1:8787> 完成首次设置：工作区名称（已有默认值）、你的名字、一个可用且推理强度受支持的默认对话模型，以及单独配置的审批判断模型（对话模型或 classifier）。审批判断不会暗中回退到员工模型。Provider 认证走各自的原生流程：API key、OAuth/订阅、云平台凭据，或进程环境中已有的凭据。
+打开启动日志打印的地址（`Emit 已启动：…`）完成首次设置：服务端默认自动挑选空闲回环端口，可用 `--port` 或 `EMIT_PORT` 固定端口。首次设置包括工作区名称（已有默认值）、你的名字、一个可用且推理强度受支持的默认对话模型，以及单独配置的审批判断模型（对话模型或 classifier）。审批判断不会暗中回退到员工模型。Provider 认证走各自的原生流程：API key、OAuth/订阅、云平台凭据，或进程环境中已有的凭据。
 
 生产启动：
 
@@ -32,6 +32,15 @@ npm run dev          # 构建前端并启动后端（tsx watch）
 npm run build
 npm start            # 需要已构建的 dist/web
 ```
+
+单文件构建：
+
+```bash
+make                 # 构建 dist/emit（原生单文件可执行程序，Node SEA）
+make smoke           # 重新构建并运行原生二进制冒烟测试
+```
+
+`dist/emit` 只有一个文件：内嵌服务端、提示词资源与前端，因此运行不依赖 Node、npm 或源码树，并把内嵌前端恢复到 `<数据目录>/.emit-web`。它只对构建所用的 OS/架构原生。首次 `make` 会按 lockfile 安装依赖。
 
 默认数据目录是 `~/.emit`，同一时间只允许一个进程打开；保存的凭据不会回传给网页。[运行维护](docs/operations.zh-CN.md) 记录了数据文件、优先级与锁的行为。
 
@@ -60,6 +69,8 @@ npm start            # 需要已构建的 dist/web
 npm run typecheck    # 服务端与前端类型检查
 npm run build        # typecheck + 构建前端
 npm test             # vitest
+make                 # 原生单文件构建（dist/emit）
+make smoke           # 原生二进制冒烟测试
 ```
 
 端到端冒烟测试、提示词资源、依赖补丁与技术栈见 [开发指南](docs/development.zh-CN.md)。

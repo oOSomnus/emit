@@ -11,6 +11,8 @@ npm run dev          # 构建前端，然后用 tsx watch 启动 src/server/main
 npm run typecheck    # 服务端与前端两个 tsconfig 的类型检查
 npm run build        # typecheck + vite build
 npm test             # vitest run
+make                 # 原生单文件构建（dist/emit，Node SEA）
+make smoke           # 重新构建并运行原生二进制冒烟测试
 node tmp/smoke.mjs   # 端到端冒烟测试
 ```
 
@@ -26,7 +28,13 @@ node tmp/smoke.mjs   # 端到端冒烟测试
 
 ## 依赖补丁
 
-`npm install` 会运行 `postinstall`，用 [`patch-package`](https://github.com/ds300/patch-package) 把 `patches/@earendil-works+pi-durable+1.0.0.patch` 应用到 `node_modules`。补丁只给 pi-durable 的生成与压缩请求补上 OpenCode Go 必需的每会话标识；补丁应用失败时安装会以非零状态退出，不会带着未打补丁的依赖继续。
+`npm install` 会运行 `postinstall`，执行 `scripts/apply-pi-durable-patch.mjs` 作用于已安装的 `@earendil-works/pi-durable`。补丁只给 pi-durable 的生成与压缩请求补上 OpenCode Go 必需的每会话标识。脚本会校验包名/版本，每个文件只接受"未打补丁锚点恰好一次"或"已打补丁"，其他状态（包括依赖版本变化）都会带着目标路径以非零状态退出，因此重装不会带着未打补丁或只打了一半的依赖继续。`node scripts/apply-pi-durable-patch.mjs` 可手动应用或校验，且是幂等的。构建脚本（`scripts/build-binary.mjs`）在打包前调用同一个函数，保证二进制不会内嵌未打补丁的依赖。
+
+## 原生单文件
+
+`make` 为当前 OS/架构生成 `dist/emit`（Windows 为 `dist/emit.exe`）——不做交叉编译，也没有发布矩阵。`scripts/build-binary.mjs` 用 esbuild 打包 `src/server/main.ts`（`platform: node`、`format: cjs`，除 Node 内建模块外全部内嵌），把 `import.meta.url`/`import.meta.dirname` 重写为可执行文件路径，只把 `@earendil-works/pi-coding-agent` 映射到技能加载器，并把该包自身的元数据固化进它的 config，使二进制不会去读自己旁边的 `package.json`。随后把 `src/server/prompts/**` 与 `dist/web` 的文件清单作为 SEA 资源嵌入，用与被复制进产物的同一个 `node` 生成 blob，再用 postject 注入。`src/server/pi-modules.ts` 在启动时注册 pi-ai 的静态 OAuth flow 与 Bedrock 模块，因为它们的变量说明符导入无法被打包。构建需要 Node >= 22.19（SEA 与内建 SQLite）和 GNU make；缺少前提会直接失败，而不是产出残缺产物。
+
+`test/native-binary.smoke.mjs`（由 `make smoke` 运行）在隔离环境中验证真实可执行文件：`--help`、默认与显式端口分配（含端口被占用）、内嵌前端与 SPA 回退、重启后的持久化与缓存修复、经打包 Pi loader 的技能导入、SSE 关闭，以及 `--web-root` 覆盖。它绝不触碰真实数据目录。
 
 ## 提示词资源
 
