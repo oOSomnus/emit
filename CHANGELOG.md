@@ -2,76 +2,78 @@
 
 ## Unreleased
 
-- 修复：设置里的模型搜索此前看不到结果——筛选（搜索词或 Provider）时模型列表展开为六行原生列表，并显示「N 个匹配模型」或「（没有匹配的模型）」；已选模型即使不匹配也保留并标注「当前选择，不匹配筛选」，筛选本身不会改写已保存的模型。
-- 提示词集中管理：发给模型的全部提示词从业务代码搬进 `src/server/prompts/`（`employee.md`、`work-input.md`、`context.md`、`approval-*.md`、`tool-results.md`、`skills.md`、`continuations.md`、`address-*.md`、`tools.json`、`classifier.json`），由一个 loader 读取与渲染；代码只装配参数。行为不变，阅读与修改提示词不再需要在 TypeScript 里找字符串。
-- 邮件成为真正的异步通信：发送即排队——正文、每位收件人的工作与派发任务在同一提交里落盘后才调用模型，浏览器关掉或进程被强杀后重启都会继续，不丢信也不重复投递。收件人的回复就是线程里的回信，`inReplyTo` 指向被回复的邮件。
-- 邮件阅读区不再假装成聊天：不显示正在生成的字，改为显示这封邮件的工作状态（排队中／处理中／等待回信／已完成／失败／已停止）与「查看执行」弹层，弹层里是真实的输入、工具调用、工具结果与回答，可翻页加载更早的步骤，等待中的工作可以直接停止。
-- 新增求助语义：`send_mail` 带 `awaitReply: true` 时发起方停在「等待回信」，等待期间写出的答案被扣住不投递；对方回信后带着回信原文继续，只投递一份最终答复。停止等待中的工作会清除等待关联，迟到的回信仍作为普通邮件送达但不再被当成答案。强杀重启后等待关系、扣住的答案与回信后的续跑都保留。
-- 修复邮件处理长时间不回复：任务此前只提供正文，缺少发件人和自动投递约定，模型可能误以为必须查文件或手动发信。现在携带完整原邮件信封并明确最终回答自动成为回复，不改变模型或目录权限。
-- 结束工作控件统一为可见 X，保留停止任务语义；窄屏导航关闭按钮置于遮罩之上，实际可见可点。
-- 工作目录改归频道、私信与邮件 session：支持多根、默认目录、真实路径验证、版本冲突与即时 grant 失效。交办继承来源，员工不再保存 cwd；不迁移旧记录或自动继承旧授权。
-- 邮件草稿与发送先保存本 session 目录；回复显式关联 inReplyTo，员工续发默认保持当前 graph session，显式新 session 独立且不继承目录。
-- 界面重做：全应用统一为语义 token 的商业风格（14px 正文、36px 控件、8/12px 圆角、弹层才有阴影），并支持浅色/深色/跟随系统三态主题；主题选择在侧栏、「设置 → 工作台」与首次设置里都能切换，选择保存在本地并在首帧前生效。
-- 修复：左下角「审批/工作/员工/设置」不再被纵向拉伸——房间列表与底部导航拆成各自明确的滚动/固定区域，按钮固定 36px、计数徽标固定 20px；房间再多也只滚动房间列表，底部导航始终可见。
-- 侧栏导航：邮箱收敛为一个入口并显示未读总数，逐封邮件线程不再占用侧栏；导航项带 `aria-current`，窄屏提供 44px 顶栏、遮罩抽屉导航，Escape／点遮罩／选择导航都会关闭并把焦点还回菜单按钮。
-- 邮箱参考 Gmail 重做：左侧文件夹（收件箱/已发送/草稿/归档）+ 紧凑邮件行 + 阅读区；宽窗口（≥1440px）列表与阅读区并排，窄窗口阅读区替换列表并带返回按钮。支持按参与者、主题与正文搜索（无结果与空文件夹是两种提示），草稿按条目单独列出，同一线程的多份草稿都能继续编辑、发送或丢弃。
-- 写信改为右下角固定弹层（窄屏全屏）：收件人 chip 加自由地址、可展开的抄送、主题与正文；关闭时若有未保存文本会先问「保存草稿／丢弃／继续编辑」，切换文件夹不会丢字。编辑草稿按草稿自己的线程保存，发送成功后退役旧草稿，收件人与抄送不丢失。
-- 邮件已读/归档按真实的每条邮件 flag 执行：在列表行上直接标记，打开线程只对「用户收到的未读非草稿邮件」标为已读且每个线程只自动执行一次（手动改回未读不会被同一次打开覆盖）；未读口径统一为「非用户发送、To/CC 含用户地址、非草稿、未归档、未读」，侧栏总数、收件箱与房间事件三处一致，标记动作不再把未读清零。
-- 自动审查升级 schema/criteria v3：完整脱敏动作、canonical 目录与目标、活动执行历史和真实用户授权出处进入审查；历史有 UTF-8 预算与省略标记，完整动作过大阻止执行。
-- LLM 与原生 classifier 共用风险策略：allow/low、allow/medium 自动批准，allow/high 人工；deny/critical 拒绝，unknown/模型故障/非法输出 blocked。移除只读与授权概率阈值，概率仅供审计；MCP readOnlyHint 不能自行授予信任。
-- 首次设置与设置页必须单独配置可用审批判断模型，不自动回退到员工模型。审批页展示实际风险、结果、会话 roots/版本与 canonical cwd/目标；受阻不是人工队列。
-- 可视化模型管理：首次设置与「设置 → 模型 Provider」列出 Pi 原生的全部 42 个 provider 与自定义 OpenAI-compatible 接口，支持搜索与「只看已配置」。
-- 原生认证：在界面里直接走 Pi 自己的登录流程——API Key、OAuth/订阅、云平台凭据（Azure endpoint/部署映射、Bedrock、Vertex、Cloudflare）；登录会话通过 HTTP 桥接，支持提示、授权链接、设备码、取消与刷新恢复，密钥不回传网页。
-- 认证持久化改用 Pi 原生 CredentialStore，OAuth 刷新结果不会被别处的缓存覆盖；删除 provider 或改为无需凭据时会一并移除其保存的凭据与目录缓存。
-- 自定义接口表单：可编辑 id/名称/base URL/三种 wire API/是否需要 API Key，以及模型 id、名称、contextWindow、maxTokens、reasoning、text/image 输入；无效提交整体拒绝。
-- 模型选择器改为可搜索（按模型与 provider），未配置凭据的模型可浏览但不可选，失效引用显示为「模型不可用」而不是静默改选；默认模型、审批判断者与员工编辑都带「检查连接」。
-- 修复：无 body 的 DELETE 请求不再声明 JSON content-type，之前会导致「Body cannot be empty」而无法取消认证或删除资源。
-- 修复：OpenCode Go 的每个请求现在都携带稳定的会话标识（`x-opencode-session`），连接检查每次用新会话，审批评估按 evaluationId、员工生成与压缩按持久化的 conversationId；同时保留 Pi 原生的非通用 User-Agent。为此通过 `patch-package` 给 pi-durable 打补丁（`patches/`），`npm install` 时自动应用，补丁不匹配会让安装以非零状态退出。
+- Added English and Simplified Chinese UI languages, with browser-language detection, a locally saved override, and translated application messages; user content, model replies, and third-party output stay unchanged.
+- Removed completed repository planning documents; maintained documentation now lives in the README and topic guides.
+- Fixed: model search in settings previously showed no results — while any filter (search term or provider) is active, the model list expands to six native rows and reports "N matching models" or "No matching models"; a selected model is kept and marked as the current selection outside the filter, and filtering itself never rewrites the saved model.
+- Prompts centralized: every prompt sent to a model moved out of business code into `src/server/prompts/` (`employee.md`, `work-input.md`, `context.md`, `approval-*.md`, `tool-results.md`, `skills.md`, `continuations.md`, `address-*.md`, `tools.json`, `classifier.json`), loaded and rendered by one loader; code only assembles arguments. Behavior unchanged, and reading or editing a prompt no longer means searching TypeScript for strings.
+- Mail is genuinely asynchronous: sending queues — the body, each recipient's work, and the dispatch tasks are committed together before the model is called, so closing the browser or a hard kill followed by a restart continues rather than losing or double-delivering mail. A recipient's answer is a reply in the thread, with `inReplyTo` pointing at the mail it answers.
+- The mail reading pane no longer pretends to be chat: it does not show text being generated, and instead shows the mail's work status (Queued / Running / Waiting for reply / Completed / Failed / Stopped) and a `View execution` panel with the real input, tool calls, tool results, and answer, paginated for earlier steps; waiting work can be stopped directly.
+- Help requests: `send_mail` with `awaitReply: true` pauses the initiator as `Waiting for reply`, and answers written while waiting are withheld from delivery. When the other employee replies, the initiator continues with the reply text and delivers only one final answer. Stopping waiting work clears the waiting link; a late reply still arrives as ordinary mail but is no longer treated as an answer. After a hard kill, the waiting link, withheld answers, and continuation on reply all survive.
+- Fixed mail handling going silent for a long time: the task previously received only the body, without the sender or the automatic-delivery contract, so the model could think it had to read files or send mail manually. It now receives the complete original envelope and is told the final answer becomes the reply, without changing models or directory permissions.
+- The end-work control is unified as a visible X while keeping the stop semantics; the narrow-screen navigation close button sits above the overlay and is actually visible and clickable.
+- Working directories moved to channels, DMs, and mail sessions: multiple roots, a default directory, real-path validation, version conflicts, and immediate grant invalidation. Delegation inherits the source; employees no longer store a cwd; old records are not migrated and old authorization is not inherited automatically.
+- Mail drafts and sends save this session's directories first; replies explicitly link `inReplyTo`, employee continuations keep the current graph session by default, and an explicit new session is independent and inherits no directories.
+- Interface rework: the whole app uses semantic-token styling (14px body text, 36px controls, 8/12px radii, shadows only on overlays) with light/dark/follow-system themes; the theme can be switched from the sidebar, `Settings → Workspace`, and first-run setup, stored locally and applied before the first frame.
+- Fixed: the bottom `Approvals / Work / Employees / Settings` items are no longer stretched vertically — the room list and bottom navigation are separate scrolling/fixed regions, buttons are fixed at 36px and count badges at 20px; no matter how many rooms exist, only the room list scrolls and the bottom navigation stays visible.
+- Sidebar navigation: the mailbox collapses to one entry showing the total unread count, and individual mail threads no longer occupy the sidebar; navigation items carry `aria-current`, and narrow screens get a 44px top bar and a modal overlay drawer where Escape, clicking the overlay, or choosing a navigation item closes it and returns focus to the menu button.
+- Mailbox reworked after Gmail: folders (Inbox/Sent/Drafts/Archived) on the left, compact mail rows in the middle, and a reading pane on the right; on wide windows (≥1440px) the list and reading pane sit side by side, and on narrow windows the reading pane replaces the list and offers a back button. Search by participant, subject, and body (no results and an empty folder are two distinct states); drafts are listed individually, and every draft in a thread can still be edited, sent, or discarded.
+- Compose moved to a fixed panel at the bottom right (full-screen on narrow screens): recipient chips plus free-form addresses, expandable CC, subject, and body; closing with unsaved text first asks `Save draft / Discard / Keep editing`, and switching folders does not lose the text. Editing a draft saves it in the draft's own thread; a successful send retires the old draft without losing recipients or CC.
+- Mail read/archive follows the real per-mail flags: mark directly on a list row; opening a thread marks only the unread non-draft mail the user received, and only once per thread per session (manually marking it unread again is not overridden by the same open). Unread means: not sent by the user, To/CC contains the user's address, not a draft, not archived, and not read — the sidebar total, the inbox, and room events all agree, and flagging no longer clears unread counts.
+- Automatic review upgraded to schema/criteria v3: the complete redacted action, canonical directories and targets, active execution history, and real user-authorization provenance enter the review; history has a UTF-8 budget with omission markers, and an oversized complete action blocks execution.
+- The LLM and the native classifier share one risk policy: allow/low and allow/medium are approved automatically, allow/high goes to a human; deny/critical is rejected, and unknown/model failure/invalid output is blocked. Read-only and authorization probability thresholds were removed — probabilities are audit evidence only; MCP `readOnlyHint` cannot grant trust by itself.
+- First-run setup and settings must configure a usable approval judge separately, never falling back to an employee model. The approvals page shows the actual risk, outcome, session roots/version, and canonical cwd/targets; a blocked review is not a human queue.
+- Visual model management: first-run setup and `Settings → Model providers` list all 42 native Pi providers plus custom OpenAI-compatible endpoints, with search and a configured-only filter.
+- Native authentication: run Pi's own login flows in the interface — API key, OAuth/subscription, cloud credentials (Azure endpoint/deployment mapping, Bedrock, Vertex, Cloudflare); login sessions are bridged over HTTP with prompts, authorization links, device codes, cancellation, and refresh recovery, and keys never go back to the page.
+- Credential persistence moved to Pi's native CredentialStore, so OAuth refresh results are no longer overwritten by another cache; deleting a provider or switching it to keyless also removes its stored credential and catalog cache.
+- Custom-endpoint form: editable id/name/base URL/three wire APIs/whether an API key is needed, plus model id, name, contextWindow, maxTokens, reasoning, and text/image input; an invalid submission is rejected as a whole.
+- The model picker is searchable (by model and provider), models without credentials are browsable but not selectable, a stale reference shows as `Model unavailable` instead of silently switching, and the default model, approval judge, and employee editor all offer `Check connection`.
+- Fixed: bodyless DELETE requests no longer claim a JSON content-type, which previously caused `Body cannot be empty` and made it impossible to cancel authentication or delete resources.
+- Fixed: every OpenCode Go request now carries a stable session identifier (`x-opencode-session`) — connection checks use a fresh session, approval evaluations use the evaluationId, and employee generations and compactions use the persisted conversationId — while keeping Pi's native non-generic User-Agent. A `patch-package` patch (`patches/`, applied on `npm install`) teaches pi-durable this; a mismatched patch makes the install exit nonzero.
 
 ## 0.1.0
 
-首个可用版本：本地单进程的数字员工协作工作台。
+The first usable release: a local, single-process digital-employee collaboration workspace.
 
-### 功能
+### Features
 
-- 首次设置向导：工作区名称、用户名称、默认执行模型、审批判断者与 provider 凭据。
-- 员工：创建/编辑/删除，独立的角色、工作准则、模型与推理强度、工作目录、技能绑定、MCP 绑定、允许的工具，以及被信任为只读的 MCP 工具。
-- 交流：频道、私信与邮件线程共用一套房间与消息模型；频道只有显式指派或 `@` 才唤醒员工，私信默认唤醒。
-- 邮件：To 里每位员工各起一份异步工作，CC 只收到副本；草稿可保存/继续编辑/发送/丢弃；按线程显示主题、To/CC、已读与归档；回复写给原发件人，回复全部带上原邮件其他收件人。
-- 邮箱地址 `名字@工作区.test` 保留中文、重名加确定性后缀，并保留用户的地址不被员工占用。
-- 实时进度：正在运行的员工回答会流式显示文本与工具活动。
-- 员工协作：`send_message`、`send_mail`、`delegate_task`，结果回到父会话并在「工作」页显示最终回答；交办层数、跨员工唤醒次数与模型轮次设有上限，把任务交办回自己的上级会被直接拒绝。
-- Auto mode 审批：LLM 判断者或 classifier 判断者先行判断，低风险调用自动批准，其余进入人工队列；批准的调用在执行前重新核验授权绑定、员工权限与配置版本。
-- 审批中心：等待裁决、历史记录、判断依据（LLM 理由或 classifier 的问题与概率）与完整时间线。
-- 技能：从目录导入 Agent Skills，按员工绑定，正文按需用 `load_skill` 读取。
-- MCP：stdio 与 Streamable HTTP，连接检查、工具发现、逐员工绑定与逐工具只读信任。
-- 模型与凭据：复用 Pi 的 provider 集合，支持自定义 OpenAI-compatible endpoint；凭据存放于 `0600` 的本地文件或环境变量，界面只显示配置状态。
-- 模型校验：员工与审批判断者只能保存目录中可解析的模型与受支持的推理强度；凭据变更后 provider 会按配置整体替换，被移除的 provider 及其模型立即不再可解析。
+- First-run setup wizard: workspace name, user name, default execution model, approval judge, and provider credentials.
+- Employees: create/edit/delete with an independent role, working guidelines, model and reasoning effort, working directory, skill bindings, MCP bindings, allowed tools, and MCP tools trusted as read-only.
+- Communication: channels, DMs, and mail threads share one room-and-message model; a channel wakes an employee only when explicitly assigned or `@`-mentioned, and a DM wakes its employee by default.
+- Mail: every employee in To starts an asynchronous work item and CC receives a copy only; drafts can be saved/continued/sent/discarded; threads show subject, To/CC, read, and archive state; a reply goes to the original sender, and reply-all includes the original mail's other recipients.
+- Mailbox addresses `name@workspace.test` preserve Chinese characters and add a deterministic suffix for duplicates, and the user's address is never taken by an employee.
+- Live progress: a running employee's answer streams text and tool activity.
+- Employee collaboration: `send_message`, `send_mail`, `delegate_task`; results return to the parent session and the final answer appears on the Work page; delegation depth, cross-employee wake count, and model turns are capped, and delegating a task back to one's own supervisor is rejected outright.
+- Auto-mode approval: an LLM or classifier judge evaluates first; low-risk calls are approved automatically and the rest enter a human queue; an approved call re-verifies its authorization binding, employee permissions, and configuration version before execution.
+- Approvals center: pending decisions, history, evidence (an LLM rationale or the classifier's questions and probabilities), and the complete timeline.
+- Skills: import Agent Skills from a directory, bind them per employee, and read their body on demand with `load_skill`.
+- MCP: stdio and Streamable HTTP, connection checks, tool discovery, per-employee binding, and per-tool read-only trust.
+- Models and credentials: reuse Pi's provider collection and support custom OpenAI-compatible endpoints; credentials live in a `0600` local file or environment variables, and the interface only shows configuration state.
+- Model validation: employees and the approval judge can only save models that resolve in the catalog with supported reasoning efforts; a credential change replaces the provider set wholesale, and a removed provider and its models stop resolving immediately.
 
-### 持久性与恢复
+### Durability and recovery
 
-- 一次工作在独立的执行 conversation 中运行；答案与“工作已完成”在同一个提交内写入，重复恢复不会重复投递。
-- 工具授权位于 `beforeTool`（intent 写入之前），因此等待人工审批期间崩溃后，恢复时会重新找到同一张审批单并继续等待；待裁决期间工作显示为“等待审批”。
-- 工作内的幂等提交使用 `work:<workId>` 与 `deliver:<workId>` 作为 requestId。
-- 启动时先恢复运行中的任务，再把未能恢复的工作标记为失败并在原会话说明。
-- 数据目录加单实例锁：第二个进程会等待并拒绝打开同一目录；被强制结束的进程残留的锁会在 15 秒后过期，由下次启动接管。
+- A work item runs in its own execution conversation; the answer and "work completed" are written in one commit, so repeated recovery does not double-deliver.
+- Tool authorization happens in `beforeTool` (before the intent is written), so a crash while waiting for a human approval re-finds the same approval record on recovery and keeps waiting; during that wait the work shows as "waiting for approval".
+- Idempotent commits within a work use `work:<workId>` and `deliver:<workId>` as requestIds.
+- On startup the process resumes running tasks first, then marks work it could not recover as failed and explains why in the original session.
+- The data directory has a single-instance lock: a second process waits and then refuses to open the same directory; a lock left by a force-killed process expires after 15 seconds and the next startup takes it over.
 
-### 修复
+### Fixes
 
-- 崩溃恢复不再把“等待人工裁决”的调用当成拒绝：恢复后重新找到同一张审批单并继续等待，工作显示为“等待审批”。
-- 停止等待裁决的工作不再死锁：先记录停止、再取消审批、最后中止会话。
-- 前端重新构建后无需重启后端：静态文件按磁盘内容提供，不再固化构建时的文件名。
-- 打开界面时自动载入当前会话的记录，不再显示空白对话。
-- 退出时不再因为浏览器的事件流连接而卡住。
-- 消息里的系统提示不再被当成右下角的浮动提示。
-- 中文名不再退化成 `workspace@…`／`employee@…`：地址保留名称本身，且员工不会再分到用户已在用的地址。
-- 跨员工唤醒预算不再被绕过：计数达到上限后仍会继续放行，现在按上限真正拒绝。
-- 删除自定义 provider 后其模型仍可解析：现在按配置整体替换 provider 集合，删除即失效。
-- 邮件收件人无法启动工作时（停用、模型不可用）不再静默跳过，会在会话里给出系统提示。
+- Crash recovery no longer treats a call waiting for a human decision as rejected: recovery re-finds the same approval record and keeps waiting, with the work shown as "waiting for approval".
+- Stopping a work that is waiting for a decision no longer deadlocks: it records the stop first, then cancels approvals, and finally aborts the session.
+- No backend restart is needed after rebuilding the front end: static files are served from disk content rather than frozen build-time filenames.
+- Opening the interface loads the current session's record automatically instead of showing an empty conversation.
+- Shutdown no longer hangs on the browser's event-stream connection.
+- System notices inside messages are no longer mistaken for the bottom-right floating toast.
+- Chinese names no longer degrade to `workspace@…`/`employee@…`: the address preserves the name itself, and an employee is never assigned an address the user is already using.
+- The cross-employee wake budget can no longer be bypassed: reaching the cap now actually rejects instead of continuing to let work through.
+- Deleting a custom provider no longer leaves its models resolvable: the provider set is replaced wholesale, so deletion takes effect immediately.
+- When a mail recipient cannot start work (disabled, model unavailable), it is no longer skipped silently — the session shows a system notice.
 
-### 已知限制
+### Known limitations
 
-- Shell 与 stdio MCP 以当前用户身份运行，工作目录不是沙箱。
-- 判断模型只提供建议，不构成安全保证。
-- SQLite 使用 WAL + `synchronous=NORMAL`：可恢复进程崩溃，但断电可能丢失最后一次提交；外部副作用不保证 exactly-once。
-- 关闭后端期间不执行任何工作；恢复只发生在下次启动。
+- Shell and stdio MCP run as the current user; working directories are not a sandbox.
+- The judge model only advises; it is not a security guarantee.
+- SQLite uses WAL + `synchronous=NORMAL`: process crashes are recoverable, but a power loss may lose the last commit; external side effects are not guaranteed exactly-once.
+- No work runs while the backend is down; recovery happens only on the next startup.

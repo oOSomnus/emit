@@ -1,6 +1,6 @@
 # Development
 
-[English](development.md) | [简体中文](development.zh-CN.md) · [README](../README.md)
+[English](development.md) | [Simplified Chinese](development.zh-CN.md) · [README](../README.md)
 
 Scripts, the dependency patch, prompt resources, and the technology stack. Setup and CLI options are in [Operations](operations.md); user-visible behavior is in [Usage](usage.md).
 

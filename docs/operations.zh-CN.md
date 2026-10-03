@@ -45,7 +45,7 @@ npm start -- --data-dir /absolute/path/to/data --port 8787
 - 每个工作开展一条独立的执行 conversation；房间的公开记录放在房间自己的 conversation 里，两者不互相污染。
 - 答案与「工作已完成」在同一个提交里写入：崩溃只会导致两边都没写，恢复后会重新投递，不会产生半截状态。
 - 启动时先恢复运行中的任务，再把没有活任务、也没有未决提交的工作标记为失败，并在原会话里说明原因。
-- 已经写入 intent、但执行阶段被中断的工具不会被自动重放。`read_file`、`load_skill` 与 `send_mail` 声明了 `replay=safe`（邮件通过持久 receipt 去重）；未声明 safe 的工具（写文件、编辑文件、Shell 等）与 `replay=unsafe` 的 MCP 工具在中断后不会自动重跑。模型会看到调用被中断，并自行决定下一步。外部副作用不承诺 exactly-once。
+- 恢复按每个工具的 replay 声明进行。`read_file`、`load_skill` 与 `send_mail` 声明了 `replay=safe`，中断的调用可以重跑（邮件通过持久 receipt 去重）；未声明 safe 的工具（写文件、编辑文件、Shell 等）与 `replay=unsafe` 的 MCP 工具在中断后不会自动重跑，模型会看到调用被中断并自行决定下一步。外部副作用不承诺 exactly-once。
 
 ## 从员工目录升级
 

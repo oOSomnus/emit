@@ -1,6 +1,6 @@
 # Operations
 
-[English](operations.md) | [简体中文](operations.zh-CN.md) · [README](../README.md)
+[English](operations.md) | [Simplified Chinese](operations.zh-CN.md) · [README](../README.md)
 
 CLI options, environment variables, data files, credentials, locking, and crash recovery for the single Emit process. Usage behavior is in [Usage](usage.md); approval rules are in [Security](security.md).
 
@@ -45,7 +45,7 @@ npm start -- --data-dir /absolute/path/to/data --port 8787
 - Every work runs in its own execution conversation; the room's public record lives in the room's own conversation, so they do not pollute each other.
 - An answer and "work completed" are written in the same commit: a crash leaves both unwritten, and recovery re-delivers instead of producing a half state.
 - On startup the process resumes running tasks first, then marks work that has no live task and no unsettled submission as failed and explains why in its original session.
-- A tool whose intent was written but whose execution was interrupted is not automatically replayed. `read_file`, `load_skill`, and `send_mail` declare `replay=safe` (mail is deduplicated by a durable receipt); tools that do not declare it (file writes/edits, Shell, ...) and MCP tools with `replay=unsafe` are not re-run automatically after an interruption. The model sees the interrupted call and decides what to do next. External side effects are not promised exactly-once.
+- Recovery follows each tool's replay declaration. `read_file`, `load_skill`, and `send_mail` declare `replay=safe`, so an interrupted call may be re-run (mail is deduplicated by a durable receipt); tools that do not declare it (file writes/edits, Shell, ...) and MCP tools with `replay=unsafe` are not re-run automatically after an interruption, and the model sees the interrupted call and decides what to do next. External side effects are not promised exactly-once.
 
 ## Upgrading from employee-owned directories
 

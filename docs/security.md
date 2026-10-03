@@ -1,6 +1,6 @@
 # Security
 
-[English](security.md) | [简体中文](security.zh-CN.md) · [README](../README.md)
+[English](security.md) | [Simplified Chinese](security.zh-CN.md) · [README](../README.md)
 
 The automatic risk review and its safety properties. Day-to-day behavior is in [Usage](usage.md); where data and credentials live is in [Operations](operations.md).
 
