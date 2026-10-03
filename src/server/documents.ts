@@ -148,7 +148,7 @@ export type WorkRecord = {
   employeeId: string;
   roomId: string;
   kind: "message" | "mail" | "delegation";
-  status: "queued" | "running" | "succeeded" | "failed" | "stopped" | "waiting-approval";
+  status: "queued" | "running" | "succeeded" | "failed" | "stopped" | "waiting-approval" | "waiting-mail";
   sourceEntryId: string;
   parentWorkId: string;
   rootWorkId: string;
@@ -167,6 +167,12 @@ export type WorkRecord = {
   inputTokens: number;
   outputTokens: number;
   cost: number;
+  /** Durable task that starts this queued mail work; empty for non-mail work. */
+  mailDispatchTaskId: string;
+  /** Durable task that feeds a finished child's reply back into this work. */
+  mailResumeTaskId: string;
+  /** Child works whose replies this work waits for before it may answer. */
+  awaitedMailWorkIds: string[];
 };
 
 export type ApprovalStatus =
@@ -389,7 +395,7 @@ export const McpDoc = defineDocFamily<McpServerRecord, { id: string }>({
 
 export const WorkDoc = defineDocFamily<WorkRecord, { id: string }>({
   kind: "emit.work",
-  version: 1,
+  version: 2,
   scope: "session",
   family: true,
   initial: (seed) => ({
@@ -412,7 +418,21 @@ export const WorkDoc = defineDocFamily<WorkRecord, { id: string }>({
     inputTokens: 0,
     outputTokens: 0,
     cost: 0,
+    mailDispatchTaskId: "",
+    mailResumeTaskId: "",
+    awaitedMailWorkIds: [],
   }),
+  // v1 works predate durable mail dispatch; they only miss the three mail
+  // bookkeeping fields, and nothing else may be touched.
+  migrate: (value, fromVersion): WorkRecord => {
+    if (fromVersion !== 1) throw new Error(`emit.work 没有从版本 ${fromVersion} 的迁移`);
+    return {
+      ...value,
+      mailDispatchTaskId: "",
+      mailResumeTaskId: "",
+      awaitedMailWorkIds: [],
+    } as unknown as WorkRecord;
+  },
 });
 
 export const ApprovalDoc = defineDocFamily<ApprovalRecord, { id: string }>({
@@ -464,6 +484,29 @@ export const MailFlagDoc = defineDocFamily<MailFlagRecord, { key: string }>({
   scope: "session",
   family: true,
   initial: (seed) => ({ key: seed.key, read: false, archived: false, active: true }),
+});
+
+/**
+ * Durable receipt of one employee mail send.
+ *
+ * A tool call must survive a replay with the same effect once: the send's
+ * entry, works, tasks, and this receipt are written in one commit, and a
+ * replay that finds the receipt returns the recorded outcome instead of
+ * sending again. The key is `tool:<toolTaskId>`.
+ */
+export type MailSendReceiptRecord = {
+  key: string;
+  roomId: string;
+  entryId: string;
+  workIds: string[];
+};
+
+export const MailSendReceiptDoc = defineDocFamily<MailSendReceiptRecord, { key: string }>({
+  kind: "emit.mail-send-receipt",
+  version: 1,
+  scope: "session",
+  family: true,
+  initial: (seed) => ({ key: seed.key, roomId: "", entryId: "", workIds: [] }),
 });
 
 export const CollaborationDoc = defineDocFamily<CollaborationRecord, { rootWorkId: string }>({

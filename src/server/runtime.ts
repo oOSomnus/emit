@@ -292,13 +292,36 @@ export class EmitRuntime {
         if (record.key === undefined) continue;
         const stored = await this.storage.document(record.id, "current", this.ctx);
         if (stored === undefined) continue;
-        const value = materialize<T>(stored.value, seed(record.key));
+        const value = materialize<T>(this.migratedValue(token, stored), seed(record.key));
         if (value !== undefined) records.push({ key: record.key, value });
       }
       if (page.next === undefined) break;
       cursor = page.next;
     }
     return records;
+  }
+
+  /**
+   * Apply the definition's migration to a raw scanned value.
+   *
+   * Typed snapshot access migrates internally; the raw storage scan bypasses
+   * that, so a stale stored version must be brought forward here or a schema
+   * change would drop live family members from every listing.
+   */
+  private migratedValue<T extends JsonObject, I extends JsonValue>(
+    token: SessionDocFamilyToken<T, I>,
+    stored: { version: number; value: JsonObject },
+  ): JsonObject {
+    if (stored.version === token.definition.version) return stored.value;
+    const { migrate } = token.definition;
+    if (migrate === undefined) {
+      throw new Error(`文档 ${token.definition.kind} 存储版本 ${stored.version} 缺少到版本 ${token.definition.version} 的迁移`);
+    }
+    let value = stored.value;
+    for (let version = stored.version; version < token.definition.version; version += 1) {
+      value = migrate(value, version);
+    }
+    return value;
   }
 
   async close(): Promise<void> {

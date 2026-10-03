@@ -22,7 +22,12 @@ import {
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { EmitRuntime } from "./runtime.ts";
 import { AppDoc, ConversationContextDoc, RoomDoc, type EmployeeRecord, type SkillRecord } from "./documents.ts";
-import { renderSkillSection } from "./skills.ts";
+import {
+  renderEmployeeContext,
+  renderEmployeeIdentity,
+  renderSkillSection,
+  type EmployeeContextInput,
+} from "./prompts/index.ts";
 import { BUILTIN_TOOL_RISK, buildFileTools } from "./tools.ts";
 import { gateToolCall, type ToolRisk } from "./approval/state.ts";
 import { readWorkDirectoryScope } from "./work-directories.ts";
@@ -110,53 +115,57 @@ export function buildEmployeeExtension(input: EmployeeAgentInput): Extension {
   const boundSkills = skills.filter((skill) => employee.skillIds.includes(skill.id));
 
   const identity = section("employee", () => {
-    return [
-      `你的名字是 ${employee.name}（邮箱 ${employee.address}）。`,
-      `你的角色：${employee.role}`,
-      employee.instructions.length > 0 ? `\n工作准则：\n${employee.instructions}` : "",
-      "",
-      "你是在 Emit 里工作的数字员工。你可以收发站内消息与邮件，也可以把任务交办给其他员工。",
-      "回答要直接、具体，直接给出结论或产物，不要复述这些设定。",
-    ]
-      .filter((part) => part.length > 0)
-      .join("\n");
+    return renderEmployeeIdentity({
+      name: employee.name,
+      address: employee.address,
+      role: employee.role,
+      instructions: employee.instructions,
+    });
   });
 
   const context = section("context", async (promptInput, ctx) => {
     const app = await promptInput.read.snapshot(AppDoc, ctx);
     const binding = await promptInput.read.snapshot(ConversationContextDoc, promptInput.conversationId, ctx);
-    const parts: string[] = [];
-    if (app !== undefined) {
-      parts.push(`工作区：${app.workspaceName}（${app.workspaceSlug}）。`);
-      parts.push(
-        `协作上限：最多 ${app.collaboration.maxDepth} 层交办，最多 ${app.collaboration.maxCrossEmployeeWakes} 次跨员工唤醒。`,
-      );
-    }
+    const work: EmployeeContextInput["work"] =
+      binding === undefined || binding.workId.length === 0
+        ? { kind: "none" }
+        : binding.roomId.length === 0
+          ? { kind: "delegation" }
+          : { kind: "room" };
     const directory = await readWorkDirectoryScope(runtime, promptInput.conversationId);
+    const appInput =
+      app === undefined
+        ? null
+        : {
+            workspaceName: app.workspaceName,
+            workspaceSlug: app.workspaceSlug,
+            maxDepth: app.collaboration.maxDepth,
+            maxCrossEmployeeWakes: app.collaboration.maxCrossEmployeeWakes,
+          };
     if (!directory.ok) {
-      parts.push(directory.message);
-    } else {
-      const { scope } = directory;
-      const room = await promptInput.read.snapshot(RoomDoc, scope.roomId, ctx);
-      if (room === undefined) {
-        parts.push("会话工作目录来源不存在，本地文件和 Shell 不可用。");
-      } else {
-        const label = room.kind === "mail" ? "邮件会话" : room.kind === "dm" ? "私信" : "频道";
-        parts.push(`本次工作目录来源于${label}「${room.name}」，目录版本 ${scope.version}。`);
-        if (scope.paths.length === 0) {
-          parts.push("本会话没有授权本地工作目录；本地文件工具和 Shell 不可用。");
-        } else {
-          parts.push(`本会话授权的工作目录：${scope.paths.join("、")}`);
-          parts.push(`默认执行目录：${scope.defaultPath}`);
-        }
-      }
+      return renderEmployeeContext({
+        app: appInput,
+        directory: { kind: "error", message: directory.message },
+        work,
+      });
     }
-    if (binding !== undefined && binding.workId.length > 0 && binding.roomId.length === 0) {
-      parts.push("本次工作由其他员工交办，完成后把结果作为你的最终回答返回，交办方会收到它。");
-    } else if (binding !== undefined && binding.workId.length > 0) {
-      parts.push("本次工作是该会话的一轮对话。");
-    }
-    return parts.join("\n");
+    const { scope } = directory;
+    const room = await promptInput.read.snapshot(RoomDoc, scope.roomId, ctx);
+    return renderEmployeeContext({
+      app: appInput,
+      directory:
+        room === undefined
+          ? { kind: "missing-room" }
+          : {
+              kind: "paths",
+              roomLabel: room.kind === "mail" ? "邮件会话" : room.kind === "dm" ? "私信" : "频道",
+              roomName: room.name,
+              directoryVersion: scope.version,
+              paths: scope.paths,
+              defaultPath: scope.defaultPath,
+            },
+      work,
+    });
   });
 
   const skillSection = section("skills", () => renderSkillSection(boundSkills, employee.skillIds));

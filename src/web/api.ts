@@ -26,6 +26,7 @@ import type {
   ServerEvent,
   SkillDTO,
   WorkDTO,
+  WorkExecutionDTO,
 } from "../shared/contracts.ts";
 
 export type ApiError = { status: number; message: string };
@@ -128,6 +129,12 @@ export const api = {
   works: () => request<WorkDTO[]>("/api/works"),
 
   stopWork: (id: string) => request<{ ok: true }>(`/api/works/${id}/stop`, { method: "POST", body: "{}" }),
+
+  /** One page of a work's durable execution record. */
+  workExecution: (id: string, cursor?: string) =>
+    request<WorkExecutionDTO>(
+      `/api/works/${id}/execution${cursor !== undefined && cursor.length > 0 ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+    ),
 
   approvals: () => request<{ approvals: ApprovalDTO[]; policyVersion: number }>("/api/approvals"),
 

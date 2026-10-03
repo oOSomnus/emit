@@ -219,7 +219,8 @@ export type WorkStatusDTO =
   | "succeeded"
   | "failed"
   | "stopped"
-  | "waiting-approval";
+  | "waiting-approval"
+  | "waiting-mail";
 
 export type WorkDTO = {
   id: string;
@@ -243,6 +244,46 @@ export type WorkDTO = {
   answer?: string;
   tools?: ToolActivityDTO[];
   usage?: { input: number; output: number; cost: number };
+  /** Durable task that will start this queued mail; present for queued mail. */
+  mailDispatchTaskId?: string;
+  /** Durable task that feeds a related reply back into this work. */
+  mailResumeTaskId?: string;
+  /** Child works whose replies this work waits for before answering. */
+  awaitedMailWorkIds: string[];
+};
+
+/**
+ * One step of a work's durable execution record.
+ *
+ * Steps are the model context as it was actually sent: user input, assistant
+ * text, tool calls, and tool results, redacted and bounded. System prompts and
+ * thinking never reach this shape.
+ */
+export type WorkExecutionStepDTO = {
+  /** Stable within the work: entry id plus the message and part it came from. */
+  id: string;
+  entryId: string;
+  taskId?: string;
+  kind: "input" | "assistant" | "tool-call" | "tool-result";
+  text?: string;
+  toolCallId?: string;
+  toolName?: string;
+  arguments?: string;
+  isError?: boolean;
+  /** The step was cut at the display limit. */
+  truncated?: boolean;
+  /** Task state for the durable work that wrote this entry. */
+  taskStatus?: string;
+  taskError?: string;
+};
+
+export type WorkExecutionDTO = {
+  work: WorkDTO;
+  /** Steps of this page, oldest first. */
+  steps: WorkExecutionStepDTO[];
+  /** Opaque cursor for the next, older page. */
+  nextCursor?: string;
+  approvals: ApprovalDTO[];
 };
 
 export type RiskLevel = "low" | "medium" | "high" | "critical" | "unknown";

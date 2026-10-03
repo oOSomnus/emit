@@ -102,25 +102,10 @@ export async function deleteSkill(runtime: EmitRuntime, id: string): Promise<voi
 }
 
 /**
- * The prompt section that advertises an employee's bound skills.
- *
- * Only name, description, and location are rendered. The body is fetched with
- * the `load_skill` tool, which is what keeps long instructions out of every
- * request while still making them available.
+ * The skill body is fetched with the `load_skill` tool, which is what keeps
+ * long instructions out of every request while still making them available;
+ * the prompt-side wrapper lives in `prompts/`.
  */
-export function renderSkillSection(skills: readonly SkillRecord[], selectedIds: readonly string[]): string {
-  const bound = skills.filter((skill) => selectedIds.includes(skill.id));
-  if (bound.length === 0) return "";
-  const lines = bound.map(
-    (skill) => `- ${skill.name}: ${skill.description}\n  SKILL.md: ${skill.filePath}`,
-  );
-  return (
-    "You have these Agent Skills. They are advertised here; read one with the load_skill tool " +
-    "before doing work that matches its description.\n\n" +
-    lines.join("\n")
-  );
-}
-
 export function findBoundSkill(
   skills: readonly SkillRecord[],
   selectedIds: readonly string[],

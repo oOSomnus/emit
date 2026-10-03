@@ -12,6 +12,14 @@ import { useApp } from "../state.tsx";
 import { Chip, Icon, IconButton, timeAgo } from "./ui.tsx";
 import { RoomDirectoryEditor } from "./RoomDirectories.tsx";
 
+/** How a live work's chip reads, including the paused-for-a-reply state. */
+const LIVE_WORK_LABELS: Record<string, { label: string; tone: "info" | "warn" | "muted" } | undefined> = {
+  queued: { label: "已排队", tone: "muted" },
+  running: { label: "进行中", tone: "info" },
+  "waiting-approval": { label: "等待审批", tone: "warn" },
+  "waiting-mail": { label: "等待回信", tone: "warn" },
+};
+
 /** The avatar initial: one grapheme, so a Chinese name does not render half a pair. */
 function initial(name: string): string {
   return [...name.trim()][0] ?? "?";
@@ -103,7 +111,9 @@ export function ChatView(): ReactNode {
           <article key={work.id} className="work-live">
             <div className="meta">
               <Chip tone="info">{work.employeeName} 正在工作</Chip>
-              <Chip tone={work.status === "waiting-approval" ? "warn" : "info"}>{work.status === "waiting-approval" ? "等待审批" : "进行中"}</Chip>
+              <Chip tone={LIVE_WORK_LABELS[work.status]?.tone ?? "info"}>
+                {LIVE_WORK_LABELS[work.status]?.label ?? "进行中"}
+              </Chip>
               <span className="time" />
               <IconButton icon="close" label="停止" onClick={() => void api.stopWork(work.id)} />
             </div>

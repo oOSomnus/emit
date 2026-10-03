@@ -1,0 +1,14 @@
+{
+  "chat": "连接检查。只回复 OK。",
+  "classifier": {
+    "state": { "probe": "emit connection check" },
+    "question": {
+      "type": "bool",
+      "instructions": "Is the classifier reachable and able to answer this probe?",
+      "criteria": {
+        "true": "The classifier answered this probe",
+        "false": "The classifier did not answer"
+      }
+    }
+  }
+}

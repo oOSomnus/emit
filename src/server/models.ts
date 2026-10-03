@@ -32,6 +32,7 @@ import type {
   ProviderAuthMethodDTO,
   ProviderStatusDTO,
 } from "../shared/contracts.ts";
+import { probeResources } from "./prompts/index.ts";
 import { configureBuiltinLogin, createCustomProviders, normalizeCustomProviders } from "./providers.ts";
 
 /** Reasoning efforts a model accepts, in ascending order, with `off` first. */
@@ -208,14 +209,8 @@ export class ModelCatalog {
       const model = this.classifierModel(ref);
       if (model === undefined) return { ok: false, message: `未找到分类模型 ${ref.providerId}/${ref.modelId}` };
       const result = await this.models.classify(model, {
-        state: { probe: "emit connection check" },
-        questions: {
-          reachable: {
-            type: "bool",
-            instructions: "Is the classifier reachable and able to answer this probe?",
-            criteria: { true: "The classifier answered this probe", false: "The classifier did not answer" },
-          },
-        },
+        state: probeResources.classifier.state,
+        questions: { reachable: probeResources.classifier.question },
       });
       if (result.stopReason !== "stop") {
         return { ok: false, message: result.errorMessage ?? `分类请求结束于 ${result.stopReason}` };
@@ -231,7 +226,7 @@ export class ModelCatalog {
     // this same options object, and therefore the same session.
     const message = await this.models.completeSimple(
       model,
-      { messages: [{ role: "user", content: "连接检查。只回复 OK。", timestamp: Date.now() }] },
+      { messages: [{ role: "user", content: probeResources.chat, timestamp: Date.now() }] },
       { maxTokens: 16, sessionId: randomUUID() },
     );
     if (message.stopReason === "error" || message.stopReason === "aborted") {

@@ -19,6 +19,7 @@ import {
   type RoomMessageData,
   type RoomRecord,
 } from "./documents.ts";
+import { configure } from "@earendil-works/pi-durable";
 import type { ConversationId, EntryRecord, EntryId, Tx } from "@earendil-works/pi-durable";
 import type { EmitRuntime } from "./runtime.ts";
 import type {
@@ -128,6 +129,34 @@ async function canonicalizeRoomDirectories(draft: unknown): Promise<RoomDirector
     throw new RoomDirectoryError(400, `默认工作目录不在授权目录列表中：${defaultPath}`);
   }
   return { paths, defaultPath, version: 1 };
+}
+
+/**
+ * Detach a room record from a transaction overlay.
+ *
+ * A record read or written inside a commit points into that transaction's
+ * overlay, which is settled the moment the commit resolves. Callers that keep
+ * the record past the commit — to build a DTO or emit an event — must take a
+ * plain copy first, or the first property read throws.
+ */
+export function plainRoom(record: RoomRecord): RoomRecord {
+  return {
+    id: record.id,
+    kind: record.kind,
+    name: record.name,
+    topic: record.topic,
+    memberIds: [...record.memberIds],
+    employeeId: record.employeeId,
+    directories: {
+      paths: [...record.directories.paths],
+      defaultPath: record.directories.defaultPath,
+      version: record.directories.version,
+    },
+    createdAt: record.createdAt,
+    lastMessageAt: record.lastMessageAt,
+    messageCount: record.messageCount,
+    conversationId: record.conversationId,
+  };
 }
 
 export function toRoomDTO(record: RoomRecord, unread = 0): RoomDTO {
@@ -386,28 +415,34 @@ export async function findEmployeeDm(runtime: EmitRuntime, employeeId: string): 
 
 let roomCounter = 0;
 
-/** Create a room and its transcript conversation in one commit. */
-export async function createRoom(
-  runtime: EmitRuntime,
-  init: {
-    kind: RoomRecord["kind"];
-    name: string;
-    topic?: string;
-    employeeId?: string;
-    memberIds?: string[];
-    directories?: RoomDirectoryDraftDTO;
-  },
+/** Room creation input: the record's identity fields the caller chooses. */
+export type RoomCreateInput = {
+  kind: RoomRecord["kind"];
+  name: string;
+  topic?: string;
+  employeeId?: string;
+  memberIds?: string[];
+  directories?: RoomDirectoryDraftDTO;
+};
+
+/**
+ * Create a room, its transcript conversation, and the room document inside one
+ * caller-owned transaction.
+ *
+ * The caller validates directories before opening the transaction: this helper
+ * does no filesystem or network work, so it is safe to compose with message
+ * appends, work creation, and task creation in a single commit.
+ */
+export async function createRoomIn(
+  tx: Tx,
+  init: RoomCreateInput & { directories: RoomDirectoriesRecord },
 ): Promise<RoomRecord> {
-  const directories =
-    init.directories === undefined
-      ? { paths: [], defaultPath: "", version: 1 }
-      : await canonicalizeRoomDirectories(init.directories);
   const id = `room_${Date.now().toString(36)}${(roomCounter++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const now = Date.now();
-  const conversation = await runtime.harness.createConversation(
-    { ownership: { kind: "ownerless" }, agent: { extensions: [] } },
-    runtime.ctx,
-  );
+  const conversation = await tx.createConversation({ ownership: { kind: "ownerless" } });
+  // A transcript conversation runs no agent; employee extensions are selected
+  // on the execution conversations their work creates.
+  await configure(tx, conversation.id, { extensions: [] });
   const record: RoomRecord = {
     id,
     kind: init.kind,
@@ -415,17 +450,27 @@ export async function createRoom(
     topic: init.topic ?? "",
     memberIds: init.memberIds ?? [],
     employeeId: init.employeeId ?? "",
-    directories,
+    directories: { ...init.directories, paths: [...init.directories.paths] },
     createdAt: now,
     lastMessageAt: now,
     messageCount: 0,
     conversationId: Number(conversation.id),
   };
-  const saved = await runtime.updateFamily(RoomDoc, id, { id }, (doc) => {
-    Object.assign(doc, record);
-  });
-  runtime.emit({ type: "room", room: toRoomDTO(saved) });
-  return saved;
+  const doc = await tx.doc(RoomDoc, id, { id });
+  Object.assign(doc, record);
+  return record;
+}
+
+/** Create a room and its transcript conversation in one commit. */
+export async function createRoom(runtime: EmitRuntime, init: RoomCreateInput): Promise<RoomRecord> {
+  const directories =
+    init.directories === undefined
+      ? { paths: [], defaultPath: "", version: 1 }
+      : await canonicalizeRoomDirectories(init.directories);
+  const record = await runtime.harness.commit((tx) => createRoomIn(tx, { ...init, directories }), runtime.ctx);
+  const saved = await runtime.readFamily(RoomDoc, record.id, { id: record.id });
+  runtime.emit({ type: "room", room: toRoomDTO(saved ?? record) });
+  return saved ?? record;
 }
 
 export async function updateRoomDirectories(

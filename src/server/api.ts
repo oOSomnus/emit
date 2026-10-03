@@ -53,21 +53,22 @@ import {
   stopWork,
   type Resume,
 } from "./work.ts";
+import { sendQueuedMail } from "./mail.ts";
+import { WorkExecutionCursorError, readWorkExecution } from "./work-execution.ts";
 import { findApproval, invalidateStaleGrants, invalidateRoomDirectoryGrants, listApprovals, toApprovalDTO } from "./approval/state.ts";
 import { toWorkDTO } from "./dto.ts";
 import { ApprovalDoc, EmployeeDoc, type ApprovalRecord } from "./documents.ts";
 
 export type ApiOptions = {
-  runtime: EmitRuntime;
-  mcp: McpManager;
+  resume: Resume;
   webRoot: string | undefined;
 };
 
 const MAX_BODY = 200_000;
 
 export async function buildServer(options: ApiOptions): Promise<FastifyInstance> {
-  const { runtime, mcp } = options;
-  const resume: Resume = { runtime, mcp };
+  const { resume } = options;
+  const { runtime, mcp } = resume;
   // The event stream is a connection that never ends on its own, so a plain
   // close would wait for it forever; connections are dropped on shutdown.
   const app = Fastify({ logger: false, bodyLimit: MAX_BODY, forceCloseConnections: true });
@@ -285,30 +286,51 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
     };
 
     if (room.kind === "mail") {
+      const subject = (typeof body.subject === "string" ? body.subject : "").trim();
+      if (body.draft === true) {
+        if (body.inReplyTo !== undefined && (typeof body.inReplyTo !== "string" ||
+          (body.inReplyTo.length > 0 && !(await isSentMailEntry(runtime, room, body.inReplyTo))))) {
+          return reply.code(400).send({ message: "inReplyTo 必须引用当前会话内的已发送邮件" });
+        }
+        const addressedDraft = await resolveMailAddresses(runtime, body?.to ?? [], body?.cc ?? []);
+        if (typeof addressedDraft === "string") return reply.code(400).send({ message: addressedDraft });
+        const message = await appendRoomMessage(
+          runtime,
+          room,
+          messageData({
+            author,
+            body: text,
+            mail: mailEnvelope({
+              subject: subject.length > 0 ? subject : room.name,
+              ...addressedDraft,
+              sent: false,
+              draft: true,
+              inReplyTo: body.inReplyTo,
+            }),
+          }),
+        );
+        return { message };
+      }
       if (body.inReplyTo !== undefined && (typeof body.inReplyTo !== "string" ||
         (body.inReplyTo.length > 0 && !(await isSentMailEntry(runtime, room, body.inReplyTo))))) {
         return reply.code(400).send({ message: "inReplyTo 必须引用当前会话内的已发送邮件" });
       }
       const addressed = await resolveMailAddresses(runtime, body?.to ?? [], body?.cc ?? []);
       if (typeof addressed === "string") return reply.code(400).send({ message: addressed });
-      const subject = (typeof body.subject === "string" ? body.subject : "").trim();
-      const message = await appendRoomMessage(
-        runtime,
-        room,
-        messageData({
+      const { message, workIds } = await sendQueuedMail(resume, {
+        room: { id: room.id },
+        data: messageData({
           author,
           body: text,
           mail: mailEnvelope({
             subject: subject.length > 0 ? subject : room.name,
             ...addressed,
-            sent: body?.draft !== true,
-            draft: body?.draft === true,
+            sent: true,
+            draft: false,
             inReplyTo: body.inReplyTo,
           }),
         }),
-      );
-      if (body?.draft === true) return { message };
-      const workIds = await wakeMailRecipients(resume, room, message, addressed.recipients, text);
+      });
       return { message, ...(workIds.length > 0 ? { workId: workIds[0] } : {}), workIds };
     }
 
@@ -344,16 +366,9 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
     if (!draft.mail.draft) return reply.code(409).send({ message: "这封邮件已经发送" });
 
     const appRecord = await readApp(runtime);
-    const addressed = {
-      to: draft.mail.to,
-      cc: draft.mail.cc,
-      recipients: draft.mail.recipients,
-      copies: draft.mail.copies,
-    };
-    const message = await appendRoomMessage(
-      runtime,
-      room,
-      messageData({
+    const { message, workIds } = await sendQueuedMail(resume, {
+      room: { id: room.id },
+      data: messageData({
         author: {
           type: "user",
           id: "user",
@@ -361,13 +376,18 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
           address: appRecord.userAddress,
         },
         body: draft.body,
-        mail: mailEnvelope({ subject: draft.mail.subject, ...addressed, sent: true, inReplyTo: draft.mail.inReplyTo }),
+        mail: mailEnvelope({
+          subject: draft.mail.subject,
+          to: draft.mail.to,
+          cc: draft.mail.cc,
+          recipients: draft.mail.recipients,
+          copies: draft.mail.copies,
+          sent: true,
+          inReplyTo: draft.mail.inReplyTo,
+        }),
       }),
-    );
-    // The draft is retired rather than deleted: entries are immutable, so the
-    // sent mail is a new entry and the draft stops being part of the thread.
-    await setMailFlag(runtime, room.id, draft.id, { active: false });
-    const workIds = await wakeMailRecipients(resume, room, message, addressed.recipients, draft.body);
+      retireDraftId: draft.id,
+    });
     return { message, workIds, ...(workIds.length > 0 ? { workId: workIds[0] } : {}) };
   });
 
@@ -423,9 +443,24 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
 
   app.get("/api/works", async () => workDTOs());
 
+  /** The durable record of one work: what it did, what failed, what it waits for. */
+  app.get("/api/works/:id/execution", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const raw = (request.query as { cursor?: unknown }).cursor;
+    if (raw !== undefined && typeof raw !== "string") return reply.code(400).send({ message: "游标格式不正确" });
+    try {
+      const execution = await readWorkExecution(runtime, id, raw);
+      if (execution === undefined) return reply.code(404).send({ message: "工作不存在" });
+      return execution;
+    } catch (error) {
+      if (error instanceof WorkExecutionCursorError) return reply.code(400).send({ message: error.message });
+      throw error;
+    }
+  });
+
   app.post("/api/works/:id/stop", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const work = await stopWork(runtime, id);
+    const work = await stopWork(resume, id);
     if (work === undefined) return reply.code(404).send({ message: "工作不存在" });
     return { ok: true };
   });
@@ -627,52 +662,6 @@ async function resolveMailAddresses(
 function isTypedAddress(value: string): boolean {
   const parts = value.split("@");
   return parts.length === 2 && parts[0]!.length > 0 && parts[1]!.length > 0 && !/\s/.test(value);
-}
-
-/** Ask every employee addressed in To to work on one mail; CC is never woken. */
-async function wakeMailRecipients(
-  resume: Resume,
-  room: { id: string },
-  message: { id: string },
-  recipients: readonly string[],
-  body: string,
-): Promise<string[]> {
-  const { runtime } = resume;
-  const unique = [...new Set(recipients)];
-  const workIds: string[] = [];
-  const failures: string[] = [];
-  for (const employeeId of unique) {
-    try {
-      const work = await startWork(resume, {
-        roomId: room.id,
-        employeeId,
-        intent: body,
-        kind: "mail",
-        sourceEntryId: message.id,
-      });
-      workIds.push(work.id);
-    } catch (error) {
-      // One recipient who cannot start (disabled, missing model) must not
-      // swallow the mail for the others, but it must not be silent either.
-      const employee = await runtime.readFamily(EmployeeDoc, employeeId, { id: employeeId });
-      failures.push(`${employee?.name ?? employeeId}：${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  if (failures.length > 0) {
-    const record = await findRoom(runtime, room.id);
-    if (record !== undefined) {
-      await appendRoomMessage(
-        runtime,
-        record,
-        messageData({
-          author: { type: "system", id: "system", name: "系统" },
-          body: `这封邮件有收件人无法开始处理：\n${failures.join("\n")}`,
-          notice: true,
-        }),
-      );
-    }
-  }
-  return workIds;
 }
 
   // ------------------------------------------------------------------ static

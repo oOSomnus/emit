@@ -18,6 +18,7 @@ import type {
 } from "../shared/contracts.ts";
 import { AppDoc, EmployeeDoc, type AppRecord, type EmployeeRecord } from "./documents.ts";
 import { completeText, parseJsonObject } from "./llm.ts";
+import { renderAddressSystem, renderAddressUser } from "./prompts/index.ts";
 import type { EmitRuntime } from "./runtime.ts";
 import { CLASSIFIER_CRITERIA_VERSION, LLM_CRITERIA_VERSION } from "./approval/evaluators.ts";
 
@@ -192,16 +193,12 @@ export async function suggestLocalPart(
     runtime.catalog,
     model,
     {
-      system:
-        "You propose professional email addresses for a company directory. " +
-        "Answer with a single JSON object and nothing else.",
-      prompt:
-        `Workspace: ${input.workspaceSlug}\n` +
-        `Member name: ${input.name}\n` +
-        `Role: ${input.role.length > 0 ? input.role : "(unnamed role)"}\n\n` +
-        `Propose one short, professional email local part for this member: lowercase letters, digits, dots ` +
-        `or hyphens only, no spaces, at most 24 characters, derived from the name, optionally suffixed with the role.\n` +
-        `Reply as {"localpart": "..."}.`,
+      system: renderAddressSystem(),
+      prompt: renderAddressUser({
+        workspaceSlug: input.workspaceSlug,
+        name: input.name,
+        role: input.role,
+      }),
       maxTokens: 200,
     },
   );

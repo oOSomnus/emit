@@ -1373,6 +1373,110 @@ async function main() {
       }
     }
 
+    // A work that asks for another employee's reply pauses instead of
+    // answering early, and finishes once the real reply is in its context.
+    const askBackAsker = await call("/api/employees", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "求助发起员工",
+        role: "协作",
+        instructions: "需要别人的结果时用 send_mail 求助并等待回信。",
+        executionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
+        toolPolicy: { allowedTools: ["send_mail"], trustedReadOnlyTools: [] },
+        generateAddress: true,
+      }),
+    });
+    const askBackAnswerer = await call("/api/employees", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "求助应答员工",
+        role: "协作",
+        instructions: "按请求回信。",
+        executionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
+        toolPolicy: { allowedTools: [], trustedReadOnlyTools: [] },
+        generateAddress: true,
+      }),
+    });
+    const askBackRoom = await call("/api/rooms", {
+      method: "POST",
+      body: JSON.stringify({ kind: "mail", name: "求助回信会话" }),
+    });
+    const askBackStart = await call(`/api/rooms/${askBackRoom.id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        body: "ASK_BACK_START",
+        subject: "求助回信",
+        to: [askBackAsker.id],
+      }),
+    });
+    if (askBackStart.workIds?.length !== 1) throw new Error("求助场景没有启动唯一发起工作");
+    const askBackParent = await waitFor("求助发起工作进入等待回信", async () => {
+      const work = (await call("/api/works")).find((entry) => entry.id === askBackStart.workIds[0]);
+      return work !== undefined && work.status === "waiting-mail" ? work : undefined;
+    });
+    if (askBackParent.awaitedMailWorkIds.length !== 1) {
+      throw new Error(`等待列表应有一封回信，实际 ${askBackParent.awaitedMailWorkIds.length}`);
+    }
+    const askBackChild = await waitFor("求助应答工作已持久", async () => {
+      const work = (await call("/api/works")).find(
+        (entry) => entry.kind === "mail" && entry.employeeId === askBackAnswerer.id && entry.roomId === askBackRoom.id,
+      );
+      return work !== undefined && work.status !== "succeeded" ? work : undefined;
+    });
+    if (askBackChild.parentWorkId !== askBackStart.workIds[0]) {
+      throw new Error("求助工作没有记录 caller parentWorkId");
+    }
+    const askBackEarly = (await call(`/api/rooms/${askBackRoom.id}/messages`)).messages.filter(
+      (message) => message.body === "提前给出的答复（不应投递）。",
+    );
+    if (askBackEarly.length !== 0) throw new Error("等待回信前就把提前答案投递了");
+
+    // ---- crash while a work waits for a reply -----------------------------
+    // The wait and its link must survive a hard kill: the answer is still owed,
+    // the answer text written before the reply was read must still be held.
+    const killedWaiting = server;
+    const killedWaitingPid = killedWaiting.pid;
+    killedWaiting.kill("SIGKILL");
+    await once(killedWaiting, "exit");
+    server = startServer();
+    if (server.pid === killedWaitingPid) throw new Error("等待回信重启没有产生新的进程");
+    await waitForServer();
+    await collectEvents(events);
+    const resumedWait = await waitFor("强杀重启后工作仍在等待同一封回信", async () => {
+      const work = (await call("/api/works")).find((entry) => entry.id === askBackStart.workIds[0]);
+      return work !== undefined && work.status === "waiting-mail" && work.awaitedMailWorkIds.length === 1 ? work : undefined;
+    });
+    if (resumedWait.answer !== "提前给出的答复（不应投递）。") {
+      throw new Error(`重启后保留的答案变成了 ${resumedWait.answer}`);
+    }
+    const askBackAfterKill = (await call(`/api/rooms/${askBackRoom.id}/messages`)).messages.filter(
+      (message) => message.body === "提前给出的答复（不应投递）。",
+    );
+    if (askBackAfterKill.length !== 0) throw new Error("重启后把提前答案投递了");
+    log("· 强杀重启后仍保留等待中的回信与未投递的答案");
+
+    await fetch(`http://127.0.0.1:${PROVIDER_PORT}/_release_ask_back`, { method: "POST" });
+    const askBackDone = await waitFor("求助工作使用回信完成", async () => {
+      const work = (await call("/api/works")).find((entry) => entry.id === askBackStart.workIds[0]);
+      return work !== undefined && work.status === "succeeded" ? work : undefined;
+    });
+    if (askBackDone.awaitedMailWorkIds.length !== 0) throw new Error("完成后仍保留等待中的回信");
+    const askBackReplies = (await call(`/api/rooms/${askBackRoom.id}/messages`)).messages.filter(
+      (message) => message.author.id === askBackAsker.id && message.body === "最终答复：回信结果已使用。",
+    );
+    if (askBackReplies.length !== 1) {
+      throw new Error(`求助发起工作应只投递一次最终答复，实际 ${askBackReplies.length}`);
+    }
+    const askBackChildReplies = (await call(`/api/rooms/${askBackRoom.id}/messages`)).messages.filter(
+      (message) => message.author.id === askBackAnswerer.id && message.body.includes("ASK_BACK_RESULT"),
+    );
+    if (askBackChildReplies.length !== 1) throw new Error("求助应答员工应只回信一次");
+    const askBackChildWorks = (await call("/api/works")).filter(
+      (entry) => entry.kind === "mail" && entry.employeeId === askBackAnswerer.id && entry.roomId === askBackRoom.id,
+    );
+    if (askBackChildWorks.length !== 1) throw new Error("最终答复不应再唤醒一次应答员工");
+    log("· 等待回信:提前答案被扣住,回信到达后只投递一次最终答复");
+
     const mailChainCaller = await call("/api/employees", {
       method: "POST",
       body: JSON.stringify({

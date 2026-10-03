@@ -7,7 +7,7 @@
  * keeps the reducer free of domain rules.
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from "react";
 import { createElement } from "react";
 import type {
   ApprovalDTO,
@@ -45,6 +45,11 @@ export type State = {
   messages: MessageDTO[];
   view: View;
   notice: { id: number; text: string } | undefined;
+  /**
+   * Bumped whenever a mail could have changed on the server: the mailbox is a
+   * server-owned view, so it is refetched on this revision rather than patched.
+   */
+  mailRevision: number;
   storagePath: string;
 };
 
@@ -66,6 +71,7 @@ const initialState: State = {
   messages: [],
   view: "chat",
   notice: undefined,
+  mailRevision: 0,
   storagePath: "",
 };
 
@@ -94,7 +100,8 @@ type Action =
   | { type: "activeRoom"; roomId: string | undefined }
   | { type: "messages"; messages: MessageDTO[] }
   | { type: "message"; roomId: string; message: MessageDTO }
-  | { type: "notice"; text: string };
+  | { type: "notice"; text: string }
+  | { type: "mailChanged" };
 
 function upsert<T extends { id: string }>(list: readonly T[], item: T): T[] {
   const index = list.findIndex((entry) => entry.id === item.id);
@@ -184,6 +191,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, messages: [...state.messages, action.message] };
     case "notice":
       return { ...state, notice: { id: Date.now(), text: action.text } };
+    case "mailChanged":
+      return { ...state, mailRevision: state.mailRevision + 1 };
     default:
       return state;
   }
@@ -206,6 +215,9 @@ const AppContext = createContext<ContextValue | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
+  // The SSE handler runs outside the render it was created in, so the address
+  // it needs to recognise the user's own mail lives in a ref.
+  const userAddress = useRef("");
 
   const refreshRooms = useCallback(async () => {
     dispatch({ type: "rooms", rooms: await api.rooms() });
@@ -250,6 +262,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const reload = useCallback(async () => {
     try {
       const [bootstrap, models] = await Promise.all([api.bootstrap(), api.models()]);
+      userAddress.current = bootstrap.app.user.address;
       dispatch({ type: "bootstrap", payload: bootstrap, models: models.models });
       // The bootstrap snapshot carries the room list, not a transcript, so the
       // pane has to open a room or the app starts on an empty conversation.
@@ -272,10 +285,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
         case "message": {
           dispatch({ type: "message", roomId: event.roomId, message: event.message });
           void refreshRooms();
+          // A complete mail from an employee is news the user must be able to
+          // notice from any page; the mailbox refreshes and the notice names
+          // it. Employee-to-employee mail is not the user's news.
+          if (
+            event.message.mail !== undefined &&
+            event.message.author.type === "employee" &&
+            event.message.mail.draft !== true &&
+            userAddress.current.length > 0 &&
+            [...event.message.mail.to, ...event.message.mail.cc].some(
+              (entry) => entry.address === userAddress.current,
+            )
+          ) {
+            dispatch({ type: "mailChanged" });
+            dispatch({ type: "notice", text: `收到新邮件：${event.message.mail.subject || "（无主题）"}` });
+          }
           break;
         }
         case "room":
           dispatch({ type: "room", room: event.room });
+          dispatch({ type: "mailChanged" });
           break;
         case "work":
           dispatch({ type: "workOne", work: event.work });

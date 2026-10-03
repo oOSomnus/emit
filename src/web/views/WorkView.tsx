@@ -7,13 +7,19 @@
  * it, so nothing is left waiting on a decision that no longer matters.
  */
 
-import { type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { api } from "../api.ts";
 import { useApp } from "../state.tsx";
 import { Chip, IconButton, WorkStatus, timeAgo } from "./ui.tsx";
+import { WorkExecution } from "./WorkExecution.tsx";
+import type { WorkStatusDTO } from "../../shared/contracts.ts";
+
+/** Work that is still owed to somebody: it can be stopped and it is shown as live. */
+export const ACTIVE_WORK_STATUSES: readonly WorkStatusDTO[] = ["queued", "running", "waiting-approval", "waiting-mail"];
 
 export function WorkView(): ReactNode {
   const { state, setError } = useApp();
+  const [executionWorkId, setExecutionWorkId] = useState<string | undefined>(undefined);
 
   const stop = (workId: string) => {
     void api
@@ -27,7 +33,8 @@ export function WorkView(): ReactNode {
         <div>
           <h2>工作</h2>
           <p className="topic">
-            {state.work.length} 条记录 · 进行中 {state.work.filter((work) => work.status === "running").length}
+            {state.work.length} 条记录 · 进行中{" "}
+            {state.work.filter((work) => ACTIVE_WORK_STATUSES.includes(work.status)).length}
           </p>
         </div>
       </header>
@@ -69,7 +76,10 @@ export function WorkView(): ReactNode {
                       {work.error !== undefined ? work.error : work.progressText !== undefined ? work.progressText.slice(0, 120) : ""}
                     </td>
                     <td>
-                      {work.status === "running" || work.status === "queued" || work.status === "waiting-approval" ? (
+                      <button type="button" className="link" onClick={() => setExecutionWorkId(work.id)}>
+                        查看执行
+                      </button>
+                      {ACTIVE_WORK_STATUSES.includes(work.status) ? (
                         <IconButton icon="close" label="停止" onClick={() => stop(work.id)} />
                       ) : null}
                     </td>
@@ -83,6 +93,9 @@ export function WorkView(): ReactNode {
           <Chip tone="muted">提示</Chip> 进程被强制关闭后重启时，未能自动恢复的工作会在这里标记为失败，并在原会话里留下说明。
         </p>
       </div>
+      {executionWorkId !== undefined ? (
+        <WorkExecution workId={executionWorkId} onClose={() => setExecutionWorkId(undefined)} />
+      ) : null}
     </div>
   );
 }

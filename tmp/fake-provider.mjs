@@ -237,6 +237,17 @@ function decide(body) {
   const ask = messageText(lastUser);
   const request = currentRequest(ask);
   const hasToolResult = messages.some((message) => message.role === "tool" || message.role === "toolResult");
+  // A reply that was awaited continues the parent task; the parent only
+  // answers for real when the reply text is really in its context.
+  if (text.includes("收到与本任务相关的邮件回信")) {
+    return {
+      content: text.includes("ASK_BACK_RESULT") ? "最终答复：回信结果已使用。" : "最终答复：没有看到回信内容。",
+      toolCalls: [],
+    };
+  }
+  if (request.includes("请把结果告诉我")) {
+    return { content: "回信：ASK_BACK_RESULT", toolCalls: [] };
+  }
   if (hasToolResult) {
     if (request.includes("MAIL_TWO_BRANCHES")) {
       const sentBranches = messages.filter(
@@ -258,6 +269,10 @@ function decide(body) {
           }],
         };
       }
+    }
+    if (request.includes("ASK_BACK_START") && text.includes("已发送邮件给")) {
+      // An answer written before the reply was read; the work must hold it.
+      return { content: "提前给出的答复（不应投递）。", toolCalls: [] };
     }
     // A refusal is echoed back so the run can show what the model was told.
     if (
@@ -389,6 +404,21 @@ function decide(body) {
           to: "小柯二",
           subject: "同 parent 分支一",
           body: "请写一个 multi-branch-one.txt",
+        }),
+      }],
+    };
+  }
+  if (request.includes("ASK_BACK_START")) {
+    return {
+      content: "",
+      toolCalls: [{
+        id: "call_ask_back",
+        name: "send_mail",
+        arguments: JSON.stringify({
+          to: "求助应答员工",
+          subject: "求助回信",
+          body: "请把结果告诉我",
+          awaitReply: true,
         }),
       }],
     };
@@ -574,6 +604,13 @@ let resumeStaleMailRequest;
 const staleMailRequestReleased = new Promise((resolve) => {
   resumeStaleMailRequest = resolve;
 });
+/** The employee who was asked for a result answers only when released. */
+let askBackSeen = false;
+let askBackOpen = false;
+let resumeAskBack;
+const askBackReleased = new Promise((resolve) => {
+  resumeAskBack = resolve;
+});
 const server = createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/_opencode_sessions") {
     response.writeHead(200, { "content-type": "application/json" });
@@ -592,6 +629,17 @@ const server = createServer(async (request, response) => {
   }
   if (request.method === "POST" && request.url === "/_release_stale_mail") {
     resumeStaleMailRequest();
+    response.writeHead(204).end();
+    return;
+  }
+  if (request.method === "GET" && request.url === "/_ask_back_ready") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ready: askBackSeen }));
+    return;
+  }
+  if (request.method === "POST" && request.url === "/_release_ask_back") {
+    askBackOpen = true;
+    resumeAskBack();
     response.writeHead(204).end();
     return;
   }
@@ -617,6 +665,12 @@ const server = createServer(async (request, response) => {
   if (!staleMailRequestSeen && employeePrompt.includes("STALE_MAIL_START")) {
     staleMailRequestSeen = true;
     await staleMailRequestReleased;
+  }
+  // The asked employee's own request carries the ask body; the continuation
+  // that quotes its answer must not be held.
+  if (!askBackOpen && employeePrompt.includes("请把结果告诉我")) {
+    askBackSeen = true;
+    await askBackReleased;
   }
   const decision = decide(body);
   let content;

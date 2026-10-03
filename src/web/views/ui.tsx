@@ -122,6 +122,7 @@ const WORK_LABELS: Record<WorkStatusDTO, string> = {
   failed: "失败",
   stopped: "已停止",
   "waiting-approval": "等待审批",
+  "waiting-mail": "等待回信",
 };
 
 const WORK_TONES: Record<WorkStatusDTO, string> = {
@@ -131,6 +132,7 @@ const WORK_TONES: Record<WorkStatusDTO, string> = {
   failed: "error",
   stopped: "muted",
   "waiting-approval": "warn",
+  "waiting-mail": "info",
 };
 
 export function WorkStatus({ status }: { status: WorkStatusDTO }): ReactNode {

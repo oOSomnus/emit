@@ -1,0 +1,66 @@
+{
+  "read_file": {
+    "description": "Read a UTF-8 text file inside a directory authorized for this session or a bound skill directory. Returns the file with 1-based line numbers.",
+    "parameters": {
+      "path": "Relative to this session's default directory, or absolute inside an authorized or bound skill directory",
+      "offset": "First 1-based line to return",
+      "limit": "Maximum number of lines"
+    }
+  },
+  "write_file": {
+    "description": "Write a UTF-8 text file inside a directory authorized for this session, creating or replacing it.",
+    "parameters": {
+      "path": "Relative to this session's default directory, or absolute inside an authorized directory",
+      "content": "Complete file content"
+    }
+  },
+  "edit_file": {
+    "description": "Replace an exact text snippet in a file inside a directory authorized for this session. The old text must appear exactly once unless replaceAll is set.",
+    "parameters": {
+      "path": "Relative to this session's default directory, or absolute inside an authorized directory",
+      "oldText": "Exact text to replace",
+      "newText": "Replacement text",
+      "replaceAll": "Replace every occurrence"
+    }
+  },
+  "run_shell": {
+    "description": "Run a shell command with this session's default directory. Output is streamed and truncated; a long-running command is stopped at the timeout.",
+    "parameters": {
+      "command": "Shell command line",
+      "cwd": "Directory to run in; defaults to this session's authorized default directory",
+      "timeoutMs": "Timeout in milliseconds"
+    }
+  },
+  "load_skill": {
+    "description": "Read the full SKILL.md of one of your bound skills, by name.",
+    "parameters": {
+      "name": "Skill name or id"
+    }
+  },
+  "send_message": {
+    "description": "Send an in-app message to another employee. It starts their work and their answer arrives as a message.",
+    "parameters": {
+      "to": "Employee name, id, or address",
+      "body": "Message text"
+    }
+  },
+  "send_mail": {
+    "description": "Send an in-app mail to another employee. It starts their work and their reply arrives as a mail. Set awaitReply=true when this task cannot be finished without the other employee's result: after doing everything else the current run is paused, and the reply continues it, so the final answer must not be written before the reply is read. Leave awaitReply=false for notices and independent mails; their answers only land in the mailbox.",
+    "parameters": {
+      "to": "Employee name, id, or address",
+      "subject": "Mail subject",
+      "body": "Mail body",
+      "cc": "Comma-separated employee names to copy",
+      "newSession": "Start an independent session with no inherited directories",
+      "inReplyTo": "Sent mail entry in the current session to branch from",
+      "awaitReply": "Wait for this employee's reply and continue this task with it (default false)"
+    }
+  },
+  "delegate_task": {
+    "description": "Hand a task to another employee and let them own it. Their result comes back to you as a message in this conversation.",
+    "parameters": {
+      "employee": "Employee name, id, or address",
+      "task": "What to do, and what to return"
+    }
+  }
+}

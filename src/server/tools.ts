@@ -18,6 +18,7 @@ import type { EmployeeRecord, SkillRecord } from "./documents.ts";
 import type { EmitRuntime } from "./runtime.ts";
 import { AppDoc } from "./documents.ts";
 import { findBoundSkill } from "./skills.ts";
+import { renderToolResult, toolTextResources } from "./prompts/index.ts";
 import { recordExecution, verifyGrant, type ApprovalRequest, type ToolRisk } from "./approval/state.ts";
 import {
   readWorkDirectoryScope,
@@ -134,15 +135,11 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
 
   const readFile = defineTool({
     name: "read_file",
-    description:
-      "Read a UTF-8 text file inside a directory authorized for this session or a bound skill directory. " +
-      "Returns the file with 1-based line numbers.",
+    description: toolTextResources.read_file.description,
     parameters: Type.Object({
-      path: Type.String({
-        description: "Relative to this session's default directory, or absolute inside an authorized or bound skill directory",
-      }),
-      offset: Type.Optional(Type.Number({ description: "First 1-based line to return" })),
-      limit: Type.Optional(Type.Number({ description: "Maximum number of lines" })),
+      path: Type.String({ description: toolTextResources.read_file.parameters.path }),
+      offset: Type.Optional(Type.Number({ description: toolTextResources.read_file.parameters.offset })),
+      limit: Type.Optional(Type.Number({ description: toolTextResources.read_file.parameters.limit })),
     }),
     replay: "safe",
     execute: async (args, api, ctx) => {
@@ -162,7 +159,7 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
       if (!read.ok) return errorResult(`读取失败 ${resolved.path}: ${read.error.message}`);
       if (read.value.length > MAX_READ_BYTES) {
         return errorResult(
-          `文件过大（${read.value.length} 字节，上限 ${MAX_READ_BYTES}）。请先用 run_shell 或分段读取。`,
+          renderToolResult("read-too-large", { size: read.value.length, max: MAX_READ_BYTES }),
         );
       }
       const lines = read.value.split("\n");
@@ -170,19 +167,20 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
       const limit = Math.max(1, Math.min(args.limit ?? MAX_READ_LINES, MAX_READ_LINES));
       const slice = lines.slice(offset - 1, offset - 1 + limit);
       const numbered = slice.map((line, index) => `${offset + index}: ${line}`).join("\n");
-      const suffix = lines.length > offset - 1 + slice.length ? `\n… 共 ${lines.length} 行` : "";
+      const suffix =
+        lines.length > offset - 1 + slice.length
+          ? `\n${renderToolResult("read-lines-suffix", { total: lines.length })}`
+          : "";
       return textResult(`${numbered}${suffix}`);
     },
   });
 
   const writeFile = defineTool({
     name: "write_file",
-    description: "Write a UTF-8 text file inside a directory authorized for this session, creating or replacing it.",
+    description: toolTextResources.write_file.description,
     parameters: Type.Object({
-      path: Type.String({
-        description: "Relative to this session's default directory, or absolute inside an authorized directory",
-      }),
-      content: Type.String({ description: "Complete file content" }),
+      path: Type.String({ description: toolTextResources.write_file.parameters.path }),
+      content: Type.String({ description: toolTextResources.write_file.parameters.content }),
     }),
     execute: gatedExecute(
       { runtime, employee, toolName: "write_file", kind: "file-write" },
@@ -198,23 +196,19 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
         }
         const written = await env.writeFile(target, args.content, ctx);
         if (!written.ok) return errorResult(`写入失败 ${target}: ${written.error.message}`);
-        return textResult(`已写入 ${target}（${args.content.length} 字符）`);
+        return textResult(renderToolResult("write-ok", { path: target, length: args.content.length }));
       },
     ),
   });
 
   const editFile = defineTool({
     name: "edit_file",
-    description:
-      "Replace an exact text snippet in a file inside a directory authorized for this session. " +
-      "The old text must appear exactly once unless replaceAll is set.",
+    description: toolTextResources.edit_file.description,
     parameters: Type.Object({
-      path: Type.String({
-        description: "Relative to this session's default directory, or absolute inside an authorized directory",
-      }),
-      oldText: Type.String({ description: "Exact text to replace" }),
-      newText: Type.String({ description: "Replacement text" }),
-      replaceAll: Type.Optional(Type.Boolean({ description: "Replace every occurrence" })),
+      path: Type.String({ description: toolTextResources.edit_file.parameters.path }),
+      oldText: Type.String({ description: toolTextResources.edit_file.parameters.oldText }),
+      newText: Type.String({ description: toolTextResources.edit_file.parameters.newText }),
+      replaceAll: Type.Optional(Type.Boolean({ description: toolTextResources.edit_file.parameters.replaceAll })),
     }),
     execute: gatedExecute(
       { runtime, employee, toolName: "edit_file", kind: "file-write" },
@@ -229,7 +223,7 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
         const occurrences = read.value.split(args.oldText).length - 1;
         if (occurrences === 0) return errorResult("文件中找不到 oldText");
         if (occurrences > 1 && args.replaceAll !== true) {
-          return errorResult(`oldText 出现了 ${occurrences} 次；请提供更精确的片段或设置 replaceAll`);
+          return errorResult(renderToolResult("edit-ambiguous", { count: occurrences }));
         }
         const updated =
           args.replaceAll === true
@@ -237,22 +231,20 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
             : read.value.replace(args.oldText, args.newText);
         const written = await env.writeFile(target, updated, ctx);
         if (!written.ok) return errorResult(`写入失败 ${target}: ${written.error.message}`);
-        return textResult(`已更新 ${target}（替换 ${args.replaceAll === true ? occurrences : 1} 处）`);
+        return textResult(
+          renderToolResult("edit-ok", { path: target, count: args.replaceAll === true ? occurrences : 1 }),
+        );
       },
     ),
   });
 
   const runShell = defineTool({
     name: "run_shell",
-    description:
-      "Run a shell command with this session's default directory. Output is streamed and truncated; " +
-      "a long-running command is stopped at the timeout.",
+    description: toolTextResources.run_shell.description,
     parameters: Type.Object({
-      command: Type.String({ description: "Shell command line" }),
-      cwd: Type.Optional(
-        Type.String({ description: "Directory to run in; defaults to this session's authorized default directory" }),
-      ),
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds" })),
+      command: Type.String({ description: toolTextResources.run_shell.parameters.command }),
+      cwd: Type.Optional(Type.String({ description: toolTextResources.run_shell.parameters.cwd })),
+      timeoutMs: Type.Optional(Type.Number({ description: toolTextResources.run_shell.parameters.timeoutMs })),
     }),
     execute: gatedExecute(
       { runtime, employee, toolName: "run_shell", kind: "shell" },
@@ -270,23 +262,35 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
           ctx,
         );
         if (!result.ok) {
+          const spill =
+            result.error.spillPath !== undefined
+              ? `\n${renderToolResult("shell-failed-spill", { spillPath: result.error.spillPath })}`
+              : "";
           return errorResult(
-            `命令失败: ${result.error.message}${result.error.spillPath !== undefined ? `\n完整输出: ${result.error.spillPath}` : ""}`,
+            renderToolResult("shell-failed", { message: result.error.message, spillBlock: spill }),
           );
         }
-        const spill = result.value.spillPath !== undefined ? `\n完整输出已写入 ${result.value.spillPath}` : "";
+        const spill =
+          result.value.spillPath !== undefined
+            ? `\n${renderToolResult("shell-exit-spill", { spillPath: result.value.spillPath })}`
+            : "";
         if (result.value.exitCode !== 0) {
-          return { isError: true, content: [{ type: "text", text: `退出码 ${result.value.exitCode}${spill}` }] };
+          return {
+            isError: true,
+            content: [
+              { type: "text", text: renderToolResult("shell-exit", { exitCode: result.value.exitCode, spillBlock: spill }) },
+            ],
+          };
         }
-        return textResult(`退出码 0${spill}`);
+        return textResult(renderToolResult("shell-exit", { exitCode: 0, spillBlock: spill }));
       },
     ),
   });
 
   const loadSkill = defineTool({
     name: "load_skill",
-    description: "Read the full SKILL.md of one of your bound skills, by name.",
-    parameters: Type.Object({ name: Type.String({ description: "Skill name or id" }) }),
+    description: toolTextResources.load_skill.description,
+    parameters: Type.Object({ name: Type.String({ description: toolTextResources.load_skill.parameters.name }) }),
     replay: "safe",
     execute: async (args, api, ctx) => {
       const env = api.env;
@@ -297,16 +301,19 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
       if (skill === undefined) {
         const bound = skills.filter((entry) => employee.skillIds.includes(entry.id));
         return errorResult(
-          `没有名为 ${args.name} 的技能。已绑定：${bound.map((entry) => entry.name).join(", ") || "(无)"}`,
+          renderToolResult("skill-missing", {
+            name: args.name,
+            bound: bound.map((entry) => entry.name).join(", ") || "(无)",
+          }),
         );
       }
       const resolved = await resolveWithin(env, ctx, skill.filePath, [skill.directory], skill.directory);
       if (!resolved.ok) return errorResult(resolved.message);
       const read = await env.readTextFile(resolved.path, ctx);
       if (!read.ok) return errorResult(`读取失败 ${resolved.path}: ${read.error.message}`);
-      const base = `技能目录：${skill.directory}\n配套文件请用相对该目录的路径访问。\n\n`;
+      const base = `${renderToolResult("skill-directory", { directory: skill.directory })}\n\n`;
       if (read.value.length > MAX_READ_BYTES) {
-        return textResult(`${base}${read.value.slice(0, MAX_READ_BYTES)}\n… 已截断`);
+        return textResult(`${base}${read.value.slice(0, MAX_READ_BYTES)}\n${renderToolResult("skill-truncated")}`);
       }
       return textResult(`${base}${read.value}`);
     },

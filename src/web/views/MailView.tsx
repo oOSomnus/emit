@@ -11,9 +11,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api.ts";
 import { useApp } from "../state.tsx";
-import { Chip, Icon, IconButton, timeAgo } from "./ui.tsx";
+import { Chip, Icon, IconButton, WorkStatus, timeAgo } from "./ui.tsx";
+import { WorkExecution } from "./WorkExecution.tsx";
 import { DirectoryFields, RoomDirectoryEditor } from "./RoomDirectories.tsx";
-import type { MailboxItemDTO, MessageDTO, RoomDirectoryDraftDTO } from "../../shared/contracts.ts";
+import type { MailboxItemDTO, MessageDTO, RoomDirectoryDraftDTO, WorkDTO } from "../../shared/contracts.ts";
 
 /** The user is an address on the envelope but never a recipient who works. */
 const USER_ID = "user";
@@ -102,6 +103,8 @@ type Compose = {
   roomId: string;
   /** The draft entry being edited, when editing. */
   draftId: string;
+  /** The sent mail this compose answers; empty when it starts a new thread. */
+  inReplyTo: string;
   to: string[];
   cc: string[];
   extraTo: string;
@@ -122,6 +125,7 @@ function snapshot(compose: Compose): string {
     compose.subject,
     compose.body,
     compose.directories,
+    compose.inReplyTo,
   ]);
 }
 
@@ -132,7 +136,9 @@ export function MailView(): ReactNode {
   const [mailbox, setMailbox] = useState<MailboxItemDTO[]>([]);
   const [reading, setReading] = useState(false);
   const [editingRoomDirectories, setEditingRoomDirectories] = useState(false);
-  const [reply, setReply] = useState("");
+  const [executionWorkId, setExecutionWorkId] = useState<string | undefined>(undefined);
+  /** A reply the user asked for while a dirty compose was still open. */
+  const [pendingReply, setPendingReply] = useState<{ message: MessageDTO; all: boolean } | undefined>(undefined);
   const [compose, setCompose] = useState<Compose | undefined>(undefined);
   const [composeBase, setComposeBase] = useState("");
   const [askClose, setAskClose] = useState(false);
@@ -153,7 +159,7 @@ export function MailView(): ReactNode {
 
   useEffect(() => {
     void refreshMailbox();
-  }, [refreshMailbox]);
+  }, [refreshMailbox, state.mailRevision]);
 
   // The unread badge in the rail is server-owned, so it is refetched whenever
   // this page learns that something changed.
@@ -239,8 +245,13 @@ export function MailView(): ReactNode {
     thread.find((message) => message.mail?.draft !== true)?.mail?.subject ?? thread[0]?.mail?.subject ?? room?.name ?? "";
   /** The message the reader's thread-level action acts on. */
   const newest = thread[thread.length - 1];
-  const roomWork = state.work.filter(
-    (work) => work.roomId === state.activeRoomId && work.status !== "succeeded" && work.status !== "failed" && work.status !== "stopped",
+  /** Works this specific mail started (its To recipients) or carried (an answer). */
+  const relatedWorks = useCallback(
+    (message: MessageDTO): WorkDTO[] =>
+      state.work.filter(
+        (work) => work.roomId === state.activeRoomId && (work.sourceEntryId === message.id || work.id === message.workId),
+      ),
+    [state.activeRoomId, state.work],
   );
 
   const flag = useCallback(
@@ -321,6 +332,7 @@ export function MailView(): ReactNode {
     const next: Compose = {
       roomId: "",
       draftId: "",
+      inReplyTo: "",
       to: state.employees[0] !== undefined ? [state.employees[0].id] : [],
       cc: [],
       extraTo: "",
@@ -352,6 +364,7 @@ export function MailView(): ReactNode {
       const next: Compose = {
         roomId: item.roomId,
         draftId: item.message.id,
+        inReplyTo: mail?.inReplyTo ?? "",
         to: [...(mail?.recipients ?? [])],
         cc: [...(mail?.copies ?? [])],
         extraTo: typed(mail?.to),
@@ -419,6 +432,7 @@ export function MailView(): ReactNode {
         to: [...compose.to, ...splitAddresses(compose.extraTo)],
         cc: [...compose.cc, ...splitAddresses(compose.extraCc)],
         draft: true,
+        ...(compose.inReplyTo.length > 0 ? { inReplyTo: compose.inReplyTo } : {}),
       });
       if (result.error !== undefined) {
         setError(result.error);
@@ -456,6 +470,7 @@ export function MailView(): ReactNode {
         subject: compose.subject.trim(),
         to: [...compose.to, ...splitAddresses(compose.extraTo)],
         cc: [...compose.cc, ...splitAddresses(compose.extraCc)],
+        ...(compose.inReplyTo.length > 0 ? { inReplyTo: compose.inReplyTo } : {}),
       });
       if (result.error !== undefined) {
         setError(result.error);
@@ -464,7 +479,11 @@ export function MailView(): ReactNode {
       if (compose.draftId.length > 0) await api.mailFlag(roomId, compose.draftId, { active: false });
       setCompose(undefined);
       setAskClose(false);
-      openThread(roomId);
+      // Sending is the end of composing: the reply lands in the inbox, so the
+      // user is not dropped into a live wait.
+      setReading(false);
+      setFolder("sent");
+      dispatch({ type: "notice", text: "邮件已发送，回复将送达收件箱" });
       await refreshMailbox();
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error));
@@ -495,35 +514,63 @@ export function MailView(): ReactNode {
     }
   };
 
-  const replyTo = async (all: boolean) => {
-    if (room === undefined || reply.trim().length === 0) return;
-    const last = [...thread].reverse().find((message) => message.mail !== undefined && message.mail.draft !== true);
-    if (last === undefined) {
-      setError("无法确定当前邮件父节点，请指定当前会话内的 inReplyTo");
+  /**
+   * Open the composer as a reply to one specific message.
+   *
+   * The reply never defaults to "the newest mail": parallel branches in one
+   * thread would silently attach to the wrong parent, so the parent is always
+   * the message the user clicked.
+   */
+  const startReply = (message: MessageDTO, all: boolean): void => {
+    if (room === undefined || message.mail === undefined) return;
+    const mine = message.author.id === USER_ID;
+    // Answering my own sent mail answers its recipients; answering someone
+    // else answers that sender.
+    const to = mine ? [...message.mail.recipients] : message.author.id === USER_ID ? [] : [message.author.id];
+    const mail = message.mail;
+    const others = [...new Set([...mail.recipients, ...mail.copies])].filter(
+      (id) => id !== USER_ID && !to.includes(id),
+    );
+    const employeeAddresses = new Set(state.employees.map((employee) => employee.address));
+    const external = (entries: { address: string }[] | undefined): string =>
+      (entries ?? [])
+        .map((entry) => entry.address)
+        .filter((address) => address.length > 0 && !employeeAddresses.has(address) && address !== userAddress)
+        .join(", ");
+    const next: Compose = {
+      roomId: room.id,
+      draftId: "",
+      inReplyTo: message.id,
+      to,
+      cc: all ? others : [],
+      extraTo: external(mine ? mail.to : undefined),
+      extraCc: external(all ? mail.cc : undefined),
+      subject: mail.subject.startsWith("Re: ") ? mail.subject : `Re: ${mail.subject.length > 0 ? mail.subject : room.name}`,
+      body: "",
+      showCc: all && others.length > 0,
+      directories: { paths: [...room.directories.paths], defaultPath: room.directories.defaultPath },
+      directoryVersion: room.directories.version,
+    };
+    if (compose !== undefined && snapshot(compose) !== composeBase) {
+      // A dirty compose is never thrown away silently: the user decides.
+      setPendingReply({ message, all });
+      setAskClose(true);
       return;
     }
-    const target = last.author.id;
-    const copies =
-      all && last.mail !== undefined
-        ? [...new Set([...last.mail.recipients, ...last.mail.copies])].filter((id) => id !== target && id !== USER_ID)
-        : [];
-    try {
-      const result = await api.sendMessage(room.id, {
-        body: reply.trim(),
-        subject: threadSubject,
-        to: [target],
-        cc: copies,
-        inReplyTo: last.id,
-      });
-      if (result.error !== undefined) {
-        setError(result.error);
-        return;
-      }
-      setReply("");
-      await refreshMailbox();
-    } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
-    }
+    setCompose(next);
+    setComposeBase(snapshot(next));
+    setAskClose(false);
+  };
+
+  /** Continue the reply the user asked for once the dirty compose is settled. */
+  const openPendingReply = (): void => {
+    const pending = pendingReply;
+    setPendingReply(undefined);
+    setCompose(undefined);
+    setAskClose(false);
+    if (pending === undefined) return;
+    // Rebuild from the message, not from the discarded compose.
+    setTimeout(() => startReply(pending.message, pending.all), 0);
   };
 
   const draftItem = (row: Row): MailboxItemDTO | undefined =>
@@ -747,44 +794,37 @@ export function MailView(): ReactNode {
                             >
                               继续编辑
                             </button>
-                          ) : null}
+                          ) : (
+                            <>
+                              <button type="button" className="link" onClick={() => startReply(message, false)}>
+                                回复
+                              </button>
+                              <button type="button" className="link" onClick={() => startReply(message, true)}>
+                                回复全部
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      ) : null}
+                      {/* Work this message started or carried: the mail itself
+                          stays a mail, the execution is one click away. */}
+                      {relatedWorks(message).length > 0 ? (
+                        <div className="row mail-work">
+                          {relatedWorks(message).map((work) => (
+                            <span key={work.id} className="mail-work-item">
+                              <WorkStatus status={work.status} />
+                              <span className="hint">{work.employeeName}</span>
+                              <button type="button" className="link" onClick={() => setExecutionWorkId(work.id)}>
+                                查看执行
+                              </button>
+                            </span>
+                          ))}
                         </div>
                       ) : null}
                     </div>
                   </article>
                 ))}
-
-                {roomWork.map((work) => (
-                  <article key={work.id} className="work-live">
-                    <div className="meta">
-                      <Chip tone="info">{work.employeeName} 正在处理这封邮件</Chip>
-                      {work.status === "waiting-approval" ? <Chip tone="warn">等待审批</Chip> : null}
-                      <span className="time" />
-                      <IconButton icon="close" label="停止" onClick={() => void api.stopWork(work.id)} />
-                    </div>
-                    {work.progressText !== undefined && work.progressText.length > 0 ? (
-                      <pre className="stream">{work.progressText}</pre>
-                    ) : null}
-                  </article>
-                ))}
               </div>
-
-              <footer className="composer">
-                <textarea
-                  value={reply}
-                  placeholder="回复…"
-                  aria-label="回复内容"
-                  onChange={(event) => setReply(event.target.value)}
-                />
-                <button type="button" className="primary" disabled={reply.trim().length === 0} onClick={() => void replyTo(false)}>
-                  <Icon name="reply" />
-                  回复
-                </button>
-                <button type="button" disabled={reply.trim().length === 0} onClick={() => void replyTo(true)}>
-                  <Icon name="reply-all" />
-                  回复全部
-                </button>
-              </footer>
             </section>
           ) : null}
         </div>
@@ -793,7 +833,9 @@ export function MailView(): ReactNode {
       {compose !== undefined ? (
         <section className="mail-compose" aria-label="写邮件">
           <div className="mail-compose-head">
-            <span className="title">{compose.draftId.length > 0 ? "编辑草稿" : "新邮件"}</span>
+            <span className="title">
+              {compose.draftId.length > 0 ? "编辑草稿" : compose.inReplyTo.length > 0 ? "回复邮件" : "新邮件"}
+            </span>
             <IconButton icon="close" label="关闭" disabled={busy} onClick={closeCompose} />
           </div>
           <div className="mail-compose-body">
@@ -888,9 +930,19 @@ export function MailView(): ReactNode {
           <div className="mail-compose-foot">
             {askClose ? (
               <>
-                <span className="hint">还有未保存的内容</span>
+                <span className="hint">
+                  {pendingReply !== undefined ? "还有未保存的内容；丢弃后打开回复" : "还有未保存的内容"}
+                </span>
                 <span className="spacer" />
-                <button type="button" disabled={busy} onClick={() => void saveDraft()}>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    void saveDraft().then((saved) => {
+                      if (saved && pendingReply !== undefined) openPendingReply();
+                    });
+                  }}
+                >
                   保存草稿
                 </button>
                 <button
@@ -898,13 +950,24 @@ export function MailView(): ReactNode {
                   className="danger"
                   disabled={busy}
                   onClick={() => {
+                    if (pendingReply !== undefined) {
+                      openPendingReply();
+                      return;
+                    }
                     setCompose(undefined);
                     setAskClose(false);
                   }}
                 >
                   丢弃
                 </button>
-                <button type="button" disabled={busy} onClick={() => setAskClose(false)}>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setPendingReply(undefined);
+                    setAskClose(false);
+                  }}
+                >
                   继续编辑
                 </button>
               </>
@@ -936,6 +999,9 @@ export function MailView(): ReactNode {
       ) : null}
       {editingRoomDirectories && room?.kind === "mail" ? (
         <RoomDirectoryEditor key={room.id} room={room} onClose={() => setEditingRoomDirectories(false)} />
+      ) : null}
+      {executionWorkId !== undefined ? (
+        <WorkExecution workId={executionWorkId} onClose={() => setExecutionWorkId(undefined)} />
       ) : null}
     </div>
   );

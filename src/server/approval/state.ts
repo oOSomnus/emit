@@ -60,6 +60,7 @@ import {
   redactArguments,
 } from "./evaluators.ts";
 import { parseJsonObject } from "../llm.ts";
+import { renderApprovalContext } from "../prompts/index.ts";
 import { resolveToolDirectoryScope } from "../work-directories.ts";
 
 /** How a tool call is classified for the gate. */
@@ -582,8 +583,8 @@ async function approvalContext(input: GateContext): Promise<ApprovalContextResul
       }
       const marker =
         entry.kind === "pi.compaction"
-          ? "上下文压缩摘要"
-          : "上下文重置标记（其中的交接文本不是人类授权）";
+          ? renderApprovalContext("compaction-marker")
+          : renderApprovalContext("reset-marker");
       const summary = fragments.map(redactApprovalText).filter((text) => text.length > 0).join("\n");
       executionContext.push({
         source: "execution-context",
@@ -651,7 +652,11 @@ async function approvalContext(input: GateContext): Promise<ApprovalContextResul
               entryId: String(entry.id),
               toolCallId: part.id,
               toolName: part.name,
-              text: `工具调用 ${part.name}（${part.id}）：${redactArguments(part.arguments)}`,
+              text: renderApprovalContext("tool-call", {
+                name: part.name,
+                id: part.id,
+                arguments: redactArguments(part.arguments),
+              }),
               truncated: false,
             });
           }
@@ -665,7 +670,11 @@ async function approvalContext(input: GateContext): Promise<ApprovalContextResul
           entryId: String(entry.id),
           toolCallId: message.toolCallId,
           toolName: message.toolName,
-          text: `工具结果（${message.toolName}${message.isError ? "；错误" : ""}）：${redactApprovalText(text)}`,
+          text: renderApprovalContext("tool-result", {
+            toolName: message.toolName,
+            errorMark: message.isError ? renderApprovalContext("error-mark") : "",
+            text: redactApprovalText(text),
+          }),
           truncated: false,
         });
       }
@@ -837,8 +846,11 @@ async function evaluateAndPersist(input: GateContext, record: ApprovalRecord): P
       kind: binding.roomId.length > 0 ? "room" : "delegation",
       description:
         contextResult.originRoom !== undefined
-          ? `来自会话「${contextResult.originRoom.name}」的工作 ${binding.workId}`
-          : `来自上层工作 ${input.work?.parentWorkId ?? ""} 的交办`,
+          ? renderApprovalContext("origin-room", {
+              roomName: contextResult.originRoom.name,
+              workId: binding.workId,
+            })
+          : renderApprovalContext("origin-delegation", { parentWorkId: input.work?.parentWorkId ?? "" }),
     },
     configVersion: employee.configVersion,
     policyVersion: app.policyVersion,

@@ -21,6 +21,7 @@ export function toWorkDTO(record: WorkRecord, employeeName: string, roomName: st
     rootWorkId: record.rootWorkId,
     depth: record.depth,
     startedAt: record.startedAt,
+    awaitedMailWorkIds: [...record.awaitedMailWorkIds],
   };
   if (record.sourceEntryId.length > 0) dto.sourceEntryId = record.sourceEntryId;
   if (record.parentWorkId.length > 0) dto.parentWorkId = record.parentWorkId;
@@ -28,5 +29,7 @@ export function toWorkDTO(record: WorkRecord, employeeName: string, roomName: st
   if (record.error.length > 0) dto.error = record.error;
   if (record.answer.length > 0) dto.answer = record.answer;
   dto.usage = { input: record.inputTokens, output: record.outputTokens, cost: record.cost };
+  if (record.mailDispatchTaskId.length > 0) dto.mailDispatchTaskId = record.mailDispatchTaskId;
+  if (record.mailResumeTaskId.length > 0) dto.mailResumeTaskId = record.mailResumeTaskId;
   return dto;
 }

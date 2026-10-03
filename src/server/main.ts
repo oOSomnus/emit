@@ -12,7 +12,8 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { EmitRuntime } from "./runtime.ts";
 import { McpManager } from "./mcp.ts";
-import { installAllExtensions, reconcileWorks } from "./work.ts";
+import { buildMailExtension, buildMailTasks, type MailTasks } from "./mail.ts";
+import { installAllExtensions, reconcileWorks, type Resume } from "./work.ts";
 import { buildServer } from "./api.ts";
 import { invalidateStaleGrants } from "./approval/state.ts";
 import { attachProgress } from "./progress.ts";
@@ -83,19 +84,22 @@ async function main(): Promise<void> {
   await mcp.connectEnabled().catch((error: unknown) => {
     process.stdout.write(`MCP 连接失败: ${error instanceof Error ? error.message : String(error)}\n`);
   });
-  const installed = await installAllExtensions(runtime, mcp);
+  const resume: Resume = { runtime, mcp, mail: undefined as unknown as MailTasks };
+  resume.mail = buildMailTasks(() => resume);
+  const installed = await installAllExtensions(resume);
   process.stdout.write(`已加载 ${installed} 位数字员工。\n`);
+  runtime.registry.install(buildMailExtension(resume.mail));
 
   runtime.emit({ type: "notice", text: "正在恢复上次未完成的工作…" });
   runtime.resume();
-  const interrupted = await reconcileWorks(runtime);
+  const interrupted = await reconcileWorks(resume);
   if (interrupted > 0) {
     process.stdout.write(`已标记 ${interrupted} 项未能恢复的工作。\n`);
   }
 
   const detachProgress = attachProgress(runtime);
 
-  const server = await buildServer({ runtime, mcp, webRoot: options.webRoot });
+  const server = await buildServer({ resume, webRoot: options.webRoot });
   await server.listen({ host: options.host, port: options.port });
   const address = `http://${options.host}:${options.port}`;
   process.stdout.write(`Emit 已启动：${address}\n数据目录：${runtime.dataDir}\n`);
