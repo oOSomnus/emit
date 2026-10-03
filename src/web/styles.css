@@ -1649,6 +1649,15 @@ ul.plain li {
   min-width: 0;
 }
 
+.model-picker select[size] {
+  height: 180px;
+  padding: 6px 10px;
+}
+
+.model-picker-results {
+  margin: 0;
+}
+
 .provider-manager {
   display: grid;
   gap: 12px;

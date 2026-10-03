@@ -159,9 +159,13 @@ export function modelKey(model: { providerId: string; modelId: string }): string
  * select itself.
  *
  * Filtering never calls `onChange`: narrowing the visible options must not
- * change the selection. The current value keeps its option even when the
- * filter excludes it, so the control never silently jumps to a different
- * model. A model the current credential cannot use is browsable but disabled.
+ * change the selection. While a search term or provider filter is active the
+ * native select expands to six visible rows so the matches are actually
+ * readable, and a status line reports the match count or that nothing
+ * matched. The current value keeps its option even when the filter excludes
+ * it, marked as the unmatched current selection, so the control never
+ * silently jumps to a different model. A model the current credential cannot
+ * use is browsable but disabled.
  */
 export function ModelPicker({
   models,
@@ -195,6 +199,7 @@ export function ModelPicker({
     return `${model.name} ${model.modelId} ${model.providerName} ${model.providerId}`.toLowerCase().includes(term);
   });
 
+  const filtering = term.length > 0 || providerId.length > 0;
   const selected = models.find((model) => modelKey(model) === value);
   const stale = value.length > 0 && selected === undefined;
   const options = selected !== undefined && !filtered.includes(selected) ? [selected, ...filtered] : filtered;
@@ -225,7 +230,9 @@ export function ModelPicker({
       <select
         id={`${base}-model`}
         value={value}
+        size={filtering ? 6 : undefined}
         aria-label={label ?? "选择模型"}
+        aria-describedby={filtering ? `${base}-results` : undefined}
         onChange={(event) => onChange(event.target.value)}
       >
         {allowEmpty === true ? <option value="">（不设置）</option> : null}
@@ -251,9 +258,15 @@ export function ModelPicker({
           <option key={modelKey(model)} value={modelKey(model)} disabled={!model.configured}>
             {model.providerName} · {model.name}
             {model.configured ? "" : "（当前凭据不可用）"}
+            {filtering && modelKey(model) === value && !filtered.includes(model) ? "（当前选择，不匹配筛选）" : ""}
           </option>
         ))}
       </select>
+      {filtering ? (
+        <p id={`${base}-results`} className="hint model-picker-results" role="status">
+          {filtered.length === 0 ? "（没有匹配的模型）" : `${filtered.length} 个匹配模型`}
+        </p>
+      ) : null}
     </div>
   );
 }
