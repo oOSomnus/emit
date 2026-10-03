@@ -8,12 +8,15 @@
 
 import { useState, type ReactNode } from "react";
 import { api } from "../api.ts";
+import { errorDisplay } from "../../shared/i18n.ts";
+import { LanguagePicker, useI18n } from "../i18n.tsx";
 import { useApp, type View } from "../state.tsx";
 import { Chip, Icon, IconButton } from "./ui.tsx";
 import { ThemePicker } from "../theme.tsx";
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode {
   const { state, dispatch, openRoom, setError } = useApp();
+  const { messages } = useI18n();
   const [creating, setCreating] = useState<"channel" | "dm" | undefined>(undefined);
   const [draftName, setDraftName] = useState("");
   const [draftEmployee, setDraftEmployee] = useState("");
@@ -54,7 +57,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
       dispatch({ type: "view", view: "chat" });
       onNavigate?.();
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(errorDisplay(error));
     }
   };
 
@@ -92,22 +95,22 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
       <nav className="sidebar-rooms">
         <section>
           <h3>
-            频道
-            <IconButton icon="plus" label="新建频道" onClick={() => startCreating("channel")} />
+            {messages.sidebar.channels}
+            <IconButton icon="plus" label={messages.sidebar.newChannel} onClick={() => startCreating("channel")} />
           </h3>
           {channels.map((room) => renderRoom(room.id, "channel"))}
         </section>
 
         <section>
           <h3>
-            私信
-            <IconButton icon="plus" label="开始私信" onClick={() => startCreating("dm")} />
+            {messages.sidebar.directs}
+            <IconButton icon="plus" label={messages.sidebar.newDirect} onClick={() => startCreating("dm")} />
           </h3>
           {directs.map((room) => renderRoom(room.id, "dm"))}
         </section>
 
         <section>
-          <h3>邮箱</h3>
+          <h3>{messages.sidebar.mailbox}</h3>
           <button
             type="button"
             className={state.view === "mail" ? "room active" : "room"}
@@ -115,7 +118,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
             onClick={() => select("mail")}
           >
             <Icon name="mail" />
-            <span className="room-name">邮箱</span>
+            <span className="room-name">{messages.sidebar.mailbox}</span>
             {mailUnread > 0 ? <Chip tone="info">{mailUnread}</Chip> : null}
           </button>
         </section>
@@ -124,12 +127,12 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
       {creating !== undefined ? (
         <div className="creator">
           <div className="row">
-            <span>{creating === "channel" ? "新频道" : "开始私信"}</span>
+            <span>{creating === "channel" ? messages.sidebar.creatorChannel : messages.sidebar.creatorDirect}</span>
           </div>
           {creating === "channel" ? (
             <input
               autoFocus
-              placeholder="频道名称"
+              placeholder={messages.sidebar.channelPlaceholder}
               value={draftName}
               onChange={(event) => setDraftName(event.target.value)}
               onKeyDown={(event) => {
@@ -138,7 +141,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
             />
           ) : (
             <select value={draftEmployee} onChange={(event) => setDraftEmployee(event.target.value)}>
-              {state.employees.length === 0 ? <option value="">（还没有员工）</option> : null}
+              {state.employees.length === 0 ? <option value="">{messages.sidebar.noEmployees}</option> : null}
               {state.employees.map((employee) => (
                 <option key={employee.id} value={employee.id}>
                   {employee.name} · {employee.role}
@@ -148,10 +151,10 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
           )}
           <div className="row">
             <button type="button" className="primary" onClick={() => void commit()}>
-              创建
+              {messages.common.create}
             </button>
             <button type="button" onClick={() => setCreating(undefined)}>
-              取消
+              {messages.common.cancel}
             </button>
           </div>
         </div>
@@ -165,7 +168,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
           onClick={() => select("approvals")}
         >
           <Icon name="approval" />
-          <span className="label">审批</span>
+          <span className="label">{messages.app.view.approvals}</span>
           {pendingApprovals > 0 ? <Chip tone="warn">{pendingApprovals}</Chip> : null}
         </button>
         <button
@@ -175,7 +178,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
           onClick={() => select("work")}
         >
           <Icon name="work" />
-          <span className="label">工作</span>
+          <span className="label">{messages.app.view.work}</span>
           {running > 0 ? <Chip tone="info">{running}</Chip> : null}
         </button>
         <button
@@ -185,7 +188,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
           onClick={() => select("employees")}
         >
           <Icon name="employees" />
-          <span className="label">员工</span>
+          <span className="label">{messages.app.view.employees}</span>
         </button>
         <button
           type="button"
@@ -194,9 +197,10 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
           onClick={() => select("settings")}
         >
           <Icon name="settings" />
-          <span className="label">设置</span>
+          <span className="label">{messages.app.view.settings}</span>
         </button>
-        <ThemePicker label="外观" />
+        <ThemePicker />
+        <LanguagePicker />
       </nav>
     </aside>
   );

@@ -20,6 +20,8 @@ import { AppDoc } from "./documents.ts";
 import { findBoundSkill } from "./skills.ts";
 import { renderToolResult, toolTextResources } from "./prompts/index.ts";
 import { recordExecution, verifyGrant, type ApprovalRequest, type ToolRisk } from "./approval/state.ts";
+import { fromError } from "./app-text.ts";
+import { appMessages } from "./messages.ts";
 import {
   readWorkDirectoryScope,
   resolveToolDirectoryScope,
@@ -115,16 +117,13 @@ export function gatedExecute<T>(
         spec.runtime,
         grant.record.id,
         result.isError === true ? "failed" : "succeeded",
-        result.isError === true ? `${spec.toolName} 返回错误` : `${spec.toolName} 已完成`,
+        result.isError === true
+          ? appMessages.approval.executionFailed(spec.toolName)
+          : appMessages.approval.executionSucceeded(spec.toolName),
       );
       return result;
     } catch (error) {
-      await recordExecution(
-        spec.runtime,
-        grant.record.id,
-        "failed",
-        error instanceof Error ? error.message : String(error),
-      );
+      await recordExecution(spec.runtime, grant.record.id, "failed", fromError(error));
       throw error;
     }
   };

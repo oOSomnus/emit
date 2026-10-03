@@ -21,6 +21,7 @@
 
 import { createHash } from "node:crypto";
 import type { ConversationId, EntryId, TaskId as HarnessTaskId } from "@earendil-works/pi-durable";
+import type { LocalizedText } from "../../shared/i18n.ts";
 import type { ApprovalDTO, ApprovalEvidenceDTO } from "../../shared/contracts.ts";
 import {
   AppDoc,
@@ -33,7 +34,9 @@ import {
   WorkDoc,
 } from "../documents.ts";
 import type {
+  ApprovalEvidenceRecord,
   ApprovalRecord,
+  ApprovalTimelineRecord,
   AppRecord,
   ConversationContextRecord,
   EmployeeRecord,
@@ -60,6 +63,8 @@ import {
   redactArguments,
 } from "./evaluators.ts";
 import { parseJsonObject } from "../llm.ts";
+import { fromError, rawText, type AppText } from "../app-text.ts";
+import { appMessages } from "../messages.ts";
 import { renderApprovalContext } from "../prompts/index.ts";
 import { resolveToolDirectoryScope } from "../work-directories.ts";
 
@@ -119,6 +124,24 @@ export function approvalId(request: ApprovalRequest, configVersion: number, poli
   return `ap_${createHash("sha256").update(material).digest("hex").slice(0, 32)}`;
 }
 
+/** Policy evidence pair included only when the sentence is application-authored. */
+function policyEvidence(message: AppText): ApprovalEvidenceRecord {
+  return message.localized === undefined
+    ? { kind: "policy", rationale: message.text }
+    : { kind: "policy", rationale: message.text, rationaleLocalized: message.localized };
+}
+
+/** One persisted timeline row; raw actor/text stay byte-identical, pairs ride along. */
+function timelineEntry(at: number, actor: AppText, text: AppText): ApprovalTimelineRecord {
+  return {
+    at,
+    actor: actor.text,
+    ...(actor.localized !== undefined ? { actorLocalized: actor.localized } : {}),
+    text: text.text,
+    ...(text.localized !== undefined ? { textLocalized: text.localized } : {}),
+  };
+}
+
 export function toApprovalDTO(record: ApprovalRecord): ApprovalDTO {
   return {
     id: record.id,
@@ -137,6 +160,9 @@ export function toApprovalDTO(record: ApprovalRecord): ApprovalDTO {
     execution: {
       state: record.executionState,
       detail: record.executionDetail.length > 0 ? record.executionDetail : undefined,
+      ...(record.executionDetail.length > 0 && record.executionDetailLocalized !== undefined
+        ? { detailLocalized: record.executionDetailLocalized }
+        : {}),
     },
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -149,6 +175,9 @@ export function toApprovalDTO(record: ApprovalRecord): ApprovalDTO {
         : {
             source: record.autoDecisionSource as "llm" | "classifier" | "policy" | "human",
             reason: record.autoDecisionReason,
+            ...(record.autoDecisionReasonLocalized !== undefined
+              ? { reasonLocalized: record.autoDecisionReasonLocalized }
+              : {}),
           },
     evidence: toEvidenceDTO(record),
     origin:
@@ -160,14 +189,26 @@ export function toApprovalDTO(record: ApprovalRecord): ApprovalDTO {
             entryId: record.originEntryId,
           }
         : { kind: "delegation", parentWorkId: record.originParentWorkId },
-    timeline: record.timeline.map((entry) => ({ at: entry.at, actor: entry.actor, text: entry.text })),
+    timeline: record.timeline.map((entry) => ({
+      at: entry.at,
+      actor: entry.actor,
+      text: entry.text,
+      ...(entry.actorLocalized !== undefined ? { actorLocalized: entry.actorLocalized } : {}),
+      ...(entry.textLocalized !== undefined ? { textLocalized: entry.textLocalized } : {}),
+    })),
   };
 }
 
 function toEvidenceDTO(record: ApprovalRecord): ApprovalEvidenceDTO | undefined {
   const evidence = record.evidence;
   if (evidence === null) return undefined;
-  if (evidence.kind === "policy") return { kind: "policy", rationale: evidence.rationale };
+  if (evidence.kind === "policy") {
+    return {
+      kind: "policy",
+      rationale: evidence.rationale,
+      ...(evidence.rationaleLocalized !== undefined ? { rationaleLocalized: evidence.rationaleLocalized } : {}),
+    };
+  }
   if (evidence.kind === "llm") return { ...evidence };
   return {
     kind: "classifier",
@@ -328,15 +369,15 @@ export async function gateToolCall(input: GateInput): Promise<GateDecision> {
     doc.originParentWorkId = work?.parentWorkId ?? "";
     doc.configVersion = employee.configVersion;
     doc.policyVersion = app.policyVersion;
-    doc.evidence = { kind: "policy", rationale: "等待自动判断" };
-    doc.timeline = [{ at: now, actor: "system", text: `提交审批：${request.toolName}` }];
+    doc.evidence = policyEvidence(appMessages.approval.policyWaiting);
+    doc.timeline = [timelineEntry(now, appMessages.approval.actorSystem, appMessages.approval.submitted(request.toolName))];
   });
 
   runtime.emit({ type: "approval", approval: toApprovalDTO(created) });
 
   if (created.status === "approved") return { allow: true, record: created };
   if (created.status !== "evaluating" && created.status !== "pending-human") {
-    return { allow: false, message: blockedMessage(created) };
+    return { allow: false, message: blockedMessage(created).text };
   }
 
   const context: GateContext = {
@@ -358,11 +399,17 @@ export async function gateToolCall(input: GateInput): Promise<GateDecision> {
     record = await evaluateAndPersist(context, record);
     runtime.emit({ type: "approval", approval: toApprovalDTO(record) });
     if (record.status === "approved") return { allow: true, record };
-    if (record.status !== "pending-human") return { allow: false, message: blockedMessage(record) };
+    if (record.status !== "pending-human") return { allow: false, message: blockedMessage(record).text };
   }
 
   await setWorkStatus(runtime, binding.workId, "waiting-approval");
-  runtime.emit({ type: "notice", text: `审批 ${record.id} 等待你的裁决（${request.toolName}）` });
+  const notice = appMessages.approval.pendingDecision(record.id, request.toolName);
+  runtime.emit({
+    type: "notice",
+    text: notice.text,
+    // The catalog always pairs this sentence; the raw fallback never fires.
+    textLocalized: notice.localized ?? { en: notice.text, "zh-CN": notice.text },
+  });
 
   const finalStatus = await waitForHuman(
     runtime,
@@ -378,9 +425,12 @@ export async function gateToolCall(input: GateInput): Promise<GateDecision> {
   }
   await setWorkStatus(runtime, binding.workId, "running", true);
   if (finalStatus === "cancelled") {
-    return { allow: false, message: `工具调用已取消：${request.toolName} 没有执行（工作已停止或调用被中止）` };
+    return {
+      allow: false,
+      message: appMessages.approval.blockedCancelledRun(request.toolName).text,
+    };
   }
-  return { allow: false, message: blockedMessage(latest) };
+  return { allow: false, message: blockedMessage(latest).text };
 }
 
 /**
@@ -432,22 +482,45 @@ type ApprovalContextEvidence = {
 
 type ApprovalContextResult =
   | { ok: true; evidence: ApprovalContextEvidence; originRoom: RoomRecord | undefined }
-  | { ok: false; message: string };
+  | {
+      ok: false;
+      message: string;
+      /** Present when the failure sentence is application-authored. */
+      messageLocalized?: LocalizedText;
+      /** Missing-context sentences are complete sentences stored verbatim. */
+      verbatim?: true;
+    };
 
-function blockedMessage(record: ApprovalRecord): string {
+/**
+ * The blocked outcome of one approval, as it is reported to the model and to
+ * the browser. Nested reasons (the user's comment, the automatic decision
+ * reason) keep their raw value in Chinese and their display pair in English
+ * when one exists.
+ */
+function blockedMessage(record: ApprovalRecord): AppText {
   switch (record.status) {
-    case "rejected":
-      return `工具调用被自动拒绝（审批 ${record.id}）${record.comment || record.autoDecisionReason ? `：${record.comment || record.autoDecisionReason}` : ""}`;
+    case "rejected": {
+      const useComment = record.comment.length > 0;
+      return appMessages.approval.blockedRejected(
+        record.id,
+        useComment ? record.comment : record.autoDecisionReason,
+        useComment ? undefined : record.autoDecisionReasonLocalized,
+      );
+    }
     case "blocked":
-      return `自动审查阻止了工具调用（审批 ${record.id}）${record.autoDecisionReason.length > 0 ? `：${record.autoDecisionReason}` : ""}`;
+      return appMessages.approval.blockedAutomatic(
+        record.id,
+        record.autoDecisionReason,
+        record.autoDecisionReasonLocalized,
+      );
     case "cancelled":
-      return `工具调用已取消：所属工作已停止（审批 ${record.id}）`;
+      return appMessages.approval.blockedCancelled(record.id);
     case "invalidated":
-      return `会话工作目录已变更，旧审批失效；请停止并重新发送任务（审批 ${record.id}）`;
+      return appMessages.approval.blockedInvalidated(record.id);
     case "pending-human":
-      return `等待人工审批（审批 ${record.id}），在“审批”页面批准或拒绝后该调用才会执行`;
+      return appMessages.approval.blockedPendingHuman(record.id);
     default:
-      return `工具调用未获批准（审批 ${record.id}）`;
+      return appMessages.approval.blockedDefault(record.id);
   }
 }
 
@@ -516,11 +589,13 @@ async function approvalContext(input: GateContext): Promise<ApprovalContextResul
     .conversation(input.conversationId as ConversationId, input.runtime.ctx)
     .catch(() => undefined);
   if (conversation === undefined) {
-    return { ok: false, message: "缺少当前执行上下文，已阻止工具调用" };
+    const blocked = appMessages.approval.missingContext;
+    return { ok: false, message: blocked.text, messageLocalized: blocked.localized, verbatim: true };
   }
   const active = await conversation.context(input.runtime.ctx).catch(() => undefined);
   if (active === undefined || active.entries.length === 0) {
-    return { ok: false, message: "当前执行会话没有可用上下文，已阻止工具调用" };
+    const blocked = appMessages.approval.noContextAvailable;
+    return { ok: false, message: blocked.text, messageLocalized: blocked.localized, verbatim: true };
   }
 
   const omitted: OmittedContext = { count: 0 };
@@ -804,15 +879,23 @@ async function approvalContext(input: GateContext): Promise<ApprovalContextResul
 async function evaluateAndPersist(input: GateContext, record: ApprovalRecord): Promise<ApprovalRecord> {
   const { runtime, employee, app, request, binding } = input;
   const config = toEvaluatorConfig(app);
-  const contextResult = await approvalContext(input).catch((error: unknown): ApprovalContextResult => ({
-    ok: false,
-    message: error instanceof Error ? error.message : String(error),
-  }));
+  const contextResult = await approvalContext(input).catch((error: unknown): ApprovalContextResult => {
+    const wrapped = fromError(error);
+    return {
+      ok: false,
+      message: wrapped.text,
+      ...(wrapped.localized !== undefined ? { messageLocalized: wrapped.localized } : {}),
+    };
+  });
   if (!contextResult.ok) {
     return persistOutcome(input, record, {
       status: "unavailable",
       reason: "invalid-output",
       message: contextResult.message,
+      ...(contextResult.messageLocalized !== undefined
+        ? { messageLocalized: contextResult.messageLocalized }
+        : {}),
+      ...(contextResult.verbatim === true ? { verbatim: true } : {}),
     });
   }
   const selectedModel =
@@ -823,7 +906,8 @@ async function evaluateAndPersist(input: GateContext, record: ApprovalRecord): P
     return persistOutcome(input, record, {
       status: "unavailable",
       reason: "configuration",
-      message: "自动审查不可用，请在设置中配置审批判断模型",
+      message: appMessages.approval.reviewUnavailable.text,
+      messageLocalized: appMessages.approval.reviewUnavailable.localized,
     });
   }
   const approvalCase: ApprovalCase = {
@@ -864,11 +948,15 @@ async function evaluateAndPersist(input: GateContext, record: ApprovalRecord): P
       contextWindow: selectedModel.contextWindow,
       ...(input.signal !== undefined ? { signal: input.signal } : {}),
     })
-    .catch((error: unknown): EvaluationOutcome => ({
-      status: "unavailable",
-      reason: "provider",
-      message: error instanceof Error ? error.message : String(error),
-    }));
+    .catch((error: unknown): EvaluationOutcome => {
+      const wrapped = fromError(error);
+      return {
+        status: "unavailable",
+        reason: "provider",
+        message: wrapped.text,
+        ...(wrapped.localized !== undefined ? { messageLocalized: wrapped.localized } : {}),
+      };
+    });
 
   return persistOutcome(input, record, outcome);
 }
@@ -876,23 +964,26 @@ async function evaluateAndPersist(input: GateContext, record: ApprovalRecord): P
 export type ApprovalVerdict =
   | { action: "approve" }
   | { action: "human" }
-  | { action: "reject"; reason: string }
-  | { action: "block"; reason: string };
+  | { action: "reject"; reason: AppText }
+  | { action: "block"; reason: AppText };
 
 /** The one policy seam shared by LLM and classifier decisions. */
 export function approvalVerdict(outcome: EvaluationOutcome): ApprovalVerdict {
   if (outcome.status === "unavailable") {
-    return { action: "block", reason: `自动审查不可用：${outcome.message}` };
+    return {
+      action: "block",
+      reason: appMessages.approval.unavailableVerdict(outcome.message, outcome.messageLocalized),
+    };
   }
   if (outcome.outcome === "deny") {
-    return { action: "reject", reason: "自动审查明确判定该动作不应执行" };
+    return { action: "reject", reason: appMessages.approval.denyReason };
   }
   if (outcome.risk === "critical") {
-    return { action: "reject", reason: "自动审查判定该动作属于严重风险，已自动拒绝" };
+    return { action: "reject", reason: appMessages.approval.criticalReason };
   }
   if (outcome.risk === "high") return { action: "human" };
   if (outcome.risk === "low" || outcome.risk === "medium") return { action: "approve" };
-  return { action: "block", reason: "自动审查无法确定具体风险等级，已阻止执行" };
+  return { action: "block", reason: appMessages.approval.unknownReason };
 }
 
 function currentDirectoryVersion(
@@ -913,14 +1004,16 @@ function currentDirectoryVersion(
 
 function invalidateApproval(doc: ApprovalRecord, currentVersion: number): void {
   const now = Date.now();
+  const reason = appMessages.approval.directoryInvalidated(currentVersion);
   doc.status = "invalidated";
   doc.autoDecisionSource = "policy";
-  doc.autoDecisionReason = `会话工作目录已变更（当前版本 v${currentVersion}），旧审批失效；请停止并重新发送任务`;
-  doc.evidence = { kind: "policy", rationale: doc.autoDecisionReason };
+  doc.autoDecisionReason = reason.text;
+  doc.autoDecisionReasonLocalized = reason.localized;
+  doc.evidence = policyEvidence(reason);
   doc.decidedAt = now;
   doc.decidedBy = "policy";
   doc.updatedAt = now;
-  doc.timeline.push({ at: now, actor: "system", text: doc.autoDecisionReason });
+  doc.timeline.push(timelineEntry(now, appMessages.approval.actorSystem, reason));
 }
 
 /** Persist only if the room's exact directory authorization is still current. */
@@ -948,23 +1041,30 @@ async function persistOutcome(
       doc.risk = "unknown";
       doc.status = "blocked";
       doc.autoDecisionSource = "policy";
-      doc.autoDecisionReason =
-        outcome.message.includes("输入预算") || outcome.message.includes("执行上下文")
-          ? outcome.message
-          : `自动审查不可用，请在设置中配置审批判断模型：${outcome.message}`;
-      doc.evidence = {
-        kind: "policy",
-        rationale: `自动审查不可用（${outcome.reason}）：${outcome.message}`,
-      };
+      // A verbatim reason is a complete application sentence (budget or
+      // missing-context) stored as-is; everything else gets the generic
+      // unavailable wrapper with the raw reason embedded unchanged.
+      const reason =
+        outcome.verbatim === true && outcome.messageLocalized !== undefined
+          ? { text: outcome.message, localized: outcome.messageLocalized }
+          : outcome.verbatim === true
+            ? rawText(outcome.message)
+            : appMessages.approval.reviewUnavailableWithReason(outcome.message, outcome.messageLocalized);
+      doc.autoDecisionReason = reason.text;
+      doc.autoDecisionReasonLocalized = reason.localized;
+      doc.evidence = policyEvidence(
+        appMessages.approval.unavailableEvidence(outcome.reason, outcome.message, outcome.messageLocalized),
+      );
       doc.decidedAt = now;
       doc.decidedBy = "policy";
-      doc.timeline.push({ at: now, actor: "自动判断", text: `自动审查受阻：${doc.autoDecisionReason}` });
+      doc.timeline.push(timelineEntry(now, appMessages.approval.actorAuto, appMessages.approval.blockedTimeline(reason)));
       doc.updatedAt = now;
       return snapshotApproval(doc);
     }
 
     doc.risk = outcome.risk;
     doc.autoDecisionSource = outcome.evidence.kind;
+    let reason: AppText;
     if (outcome.evidence.kind === "llm") {
       doc.evidence = {
         kind: "llm",
@@ -975,8 +1075,13 @@ async function persistOutcome(
         readOnly: outcome.evidence.readOnly,
         userAuthorization: outcome.evidence.userAuthorization,
       };
-      doc.autoDecisionReason =
-        `LLM 判定 ${outcome.outcome}（风险 ${outcome.risk}；只读 ${outcome.evidence.readOnly ? "是" : "否"}；用户授权 ${outcome.evidence.userAuthorization}）：${outcome.evidence.rationale}`;
+      reason = appMessages.approval.llmSummary(
+        outcome.outcome,
+        outcome.risk,
+        outcome.evidence.readOnly,
+        outcome.evidence.userAuthorization,
+        outcome.evidence.rationale,
+      );
     } else {
       doc.evidence = {
         kind: "classifier",
@@ -993,30 +1098,44 @@ async function persistOutcome(
         authorized: outcome.evidence.authorized,
         authorizedProbability: outcome.evidence.authorizedProbability,
       };
-      doc.autoDecisionReason = describeClassifierEvidence(outcome.evidence);
+      reason = describeClassifierEvidence(outcome.evidence);
     }
+    doc.autoDecisionReason = reason.text;
+    doc.autoDecisionReasonLocalized = reason.localized;
 
     const verdict = approvalVerdict(outcome);
     if (verdict.action === "approve") {
       doc.status = "approved";
       doc.decidedAt = now;
       doc.decidedBy = `${outcome.evidence.kind}:${outcome.model.providerId}/${outcome.model.modelId}`;
-      doc.timeline.push({ at: now, actor: "自动判断", text: `自动批准：${doc.autoDecisionReason}` });
+      doc.timeline.push(
+        timelineEntry(now, appMessages.approval.actorAuto, appMessages.approval.autoApproved(reason)),
+      );
     } else if (verdict.action === "human") {
       doc.status = "pending-human";
-      doc.timeline.push({ at: now, actor: "自动判断", text: `高风险转人工：${doc.autoDecisionReason}` });
+      doc.timeline.push(
+        timelineEntry(now, appMessages.approval.actorAuto, appMessages.approval.humanHandoff(reason)),
+      );
     } else if (verdict.action === "reject") {
       doc.status = "rejected";
       doc.decidedAt = now;
       doc.decidedBy = `${outcome.evidence.kind}:${outcome.model.providerId}/${outcome.model.modelId}`;
-      doc.autoDecisionReason = `${verdict.reason}；${doc.autoDecisionReason}`;
-      doc.timeline.push({ at: now, actor: "自动判断", text: `自动拒绝：${doc.autoDecisionReason}` });
+      const combined = appMessages.approval.combinedReason(verdict.reason, reason);
+      doc.autoDecisionReason = combined.text;
+      doc.autoDecisionReasonLocalized = combined.localized;
+      doc.timeline.push(
+        timelineEntry(now, appMessages.approval.actorAuto, appMessages.approval.autoRejected(combined)),
+      );
     } else {
       doc.status = "blocked";
       doc.decidedAt = now;
       doc.decidedBy = "policy";
-      doc.autoDecisionReason = `${verdict.reason}；${doc.autoDecisionReason}`;
-      doc.timeline.push({ at: now, actor: "自动判断", text: `自动审查受阻：${doc.autoDecisionReason}` });
+      const combined = appMessages.approval.combinedReason(verdict.reason, reason);
+      doc.autoDecisionReason = combined.text;
+      doc.autoDecisionReasonLocalized = combined.localized;
+      doc.timeline.push(
+        timelineEntry(now, appMessages.approval.actorAuto, appMessages.approval.blockedTimeline(combined)),
+      );
     }
     doc.updatedAt = now;
     return snapshotApproval(doc);
@@ -1139,7 +1258,7 @@ async function waitForHuman(
   }
 }
 
-export type DecisionResult = { ok: true; record: ApprovalRecord } | { ok: false; message: string };
+export type DecisionResult = { ok: true; record: ApprovalRecord } | { ok: false; message: AppText };
 
 export async function decideApproval(
   runtime: EmitRuntime,
@@ -1148,7 +1267,7 @@ export async function decideApproval(
   comment: string,
 ): Promise<DecisionResult> {
   const existing = await findApproval(runtime, id);
-  if (existing === undefined) return { ok: false, message: `审批不存在: ${id}` };
+  if (existing === undefined) return { ok: false, message: appMessages.approval.notFoundWithId(id) };
   if (existing.status === "pending-human") {
     const directory = await directoryScopeMatchesCurrentRoom(runtime, existing);
     if (!directory.matches) {
@@ -1164,16 +1283,14 @@ export async function decideApproval(
     doc.decidedBy = "user";
     doc.comment = comment;
     doc.updatedAt = now;
-    doc.timeline.push({
-      at: now,
-      actor: "你",
-      text: decision === "approved" ? `批准${comment.length > 0 ? `：${comment}` : ""}` : `拒绝${comment.length > 0 ? `：${comment}` : ""}`,
-    });
+    doc.timeline.push(
+      timelineEntry(now, appMessages.approval.actorYou, appMessages.approval.decidedWithComment(decision, comment)),
+    );
   });
   const record = updated.status === existing.status ? existing : updated;
   runtime.emit({ type: "approval", approval: toApprovalDTO(record) });
   if (record.status !== decision) {
-    return { ok: false, message: `审批已被处理：${record.status}` };
+    return { ok: false, message: appMessages.approval.alreadyDecided(record.status) };
   }
   return { ok: true, record };
 }
@@ -1183,11 +1300,20 @@ export async function recordExecution(
   runtime: EmitRuntime,
   id: string,
   state: "succeeded" | "failed" | "interrupted",
-  detail: string,
+  detail: AppText,
 ): Promise<void> {
   const updated = await runtime.updateFamily(ApprovalDoc, id, { id }, (doc) => {
     doc.executionState = state;
-    doc.executionDetail = detail.slice(0, 2_000);
+    // The raw detail keeps its current length budget; each display language
+    // gets the same budget so no language shows a longer record than today.
+    doc.executionDetail = detail.text.slice(0, 2_000);
+    doc.executionDetailLocalized =
+      detail.localized === undefined
+        ? undefined
+        : {
+            en: detail.localized.en.slice(0, 2_000),
+            "zh-CN": detail.localized["zh-CN"].slice(0, 2_000),
+          };
     doc.updatedAt = Date.now();
   });
   runtime.emit({ type: "approval", approval: toApprovalDTO(updated) });
@@ -1211,9 +1337,8 @@ export async function verifyGrant(
   }
   if ((await runtime.readFamily(RoomDoc, request.directoryRoomId, { id: request.directoryRoomId })) === undefined) {
     const invalidated = await invalidateApprovalForDirectoryChange(runtime, id);
-    return { allow: false, message: blockedMessage(invalidated) };
+    return { allow: false, message: blockedMessage(invalidated).text };
   }
-
   const claim = await runtime.harness.commit(async (tx) => {
     const record = await tx.doc(ApprovalDoc, id, { id });
     if (record.createdAt === 0) {
@@ -1237,7 +1362,7 @@ export async function verifyGrant(
       };
     }
     if (record.status !== "approved") {
-      return { decision: { allow: false, message: blockedMessage(record) } as GrantDecision };
+      return { decision: { allow: false, message: blockedMessage(record).text } as GrantDecision };
     }
     if (record.executionState !== "not-started") {
       return {
@@ -1259,13 +1384,15 @@ export async function verifyGrant(
     ) {
       invalidateApproval(record, room.directories.version);
       return {
-        decision: { allow: false, message: blockedMessage(record) } as GrantDecision,
+        decision: { allow: false, message: blockedMessage(record).text } as GrantDecision,
         updated: snapshotApproval(record),
       };
     }
 
     record.executionState = "running";
-    record.executionDetail = `${request.toolName} 开始执行`;
+    const started = appMessages.approval.executionStarted(request.toolName);
+    record.executionDetail = started.text;
+    record.executionDetailLocalized = started.localized;
     record.updatedAt = Date.now();
     const snapshot = snapshotApproval(record);
     return {
@@ -1292,7 +1419,7 @@ export async function cancelApprovalsForWork(runtime: EmitRuntime, workId: strin
       const now = Date.now();
       doc.status = "cancelled";
       doc.updatedAt = now;
-      doc.timeline.push({ at: now, actor: "system", text: "所属工作已停止，审批取消" });
+      doc.timeline.push(timelineEntry(now, appMessages.approval.actorSystem, appMessages.approval.workStopped));
     });
     runtime.emit({ type: "approval", approval: toApprovalDTO(updated) });
   }
@@ -1335,14 +1462,16 @@ export async function invalidateStaleGrants(runtime: EmitRuntime, policyVersion:
         invalidateApproval(doc, room?.directories?.version ?? 0);
       } else {
         const now = Date.now();
+        const reason = appMessages.approval.policyUpdated(policyVersion);
         doc.status = "invalidated";
         doc.autoDecisionSource = "policy";
-        doc.autoDecisionReason = `审批策略已更新（v${policyVersion}），旧批准失效`;
-        doc.evidence = { kind: "policy", rationale: doc.autoDecisionReason };
+        doc.autoDecisionReason = reason.text;
+        doc.autoDecisionReasonLocalized = reason.localized;
+        doc.evidence = policyEvidence(reason);
         doc.decidedAt = now;
         doc.decidedBy = "policy";
         doc.updatedAt = now;
-        doc.timeline.push({ at: now, actor: "system", text: doc.autoDecisionReason });
+        doc.timeline.push(timelineEntry(now, appMessages.approval.actorSystem, reason));
       }
     });
     if (updated.status === "invalidated") {

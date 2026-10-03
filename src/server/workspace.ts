@@ -18,6 +18,8 @@ import type {
 } from "../shared/contracts.ts";
 import { AppDoc, EmployeeDoc, type AppRecord, type EmployeeRecord } from "./documents.ts";
 import { completeText, parseJsonObject } from "./llm.ts";
+import { AppError } from "./messages.ts";
+import { workspaceMessages, type ExecutionModelScope } from "./messages/workspace.ts";
 import { renderAddressSystem, renderAddressUser } from "./prompts/index.ts";
 import type { EmitRuntime } from "./runtime.ts";
 import { CLASSIFIER_CRITERIA_VERSION, LLM_CRITERIA_VERSION } from "./approval/evaluators.ts";
@@ -39,10 +41,10 @@ const RESERVED_LOCAL_PARTS = [
 /**
  * Local parts may carry any letter or digit.
  *
- * The workspace is a Chinese-language product and addresses never leave the
- * machine, so a name like 小柯 has to survive as an address instead of being
- * stripped down to "employee"; ASCII is not the only alphabet a directory of
- * digital employees is named in.
+ * The workspace addresses never leave the machine, so a name in any script —
+ * not just ASCII — has to survive as an address instead of being stripped
+ * down to "employee"; ASCII is not the only alphabet a directory of digital
+ * employees is named in.
  */
 const ADDRESS_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,63}$/u;
 
@@ -226,11 +228,11 @@ export type SetupInput = {
  * The HTTP layer turns these into a 400 with the reason, so a bad model
  * selection reads as "this choice is wrong" rather than a crash.
  */
-export class ValidationError extends Error {}
+export class ValidationError extends AppError {}
 
 export async function setupWorkspace(runtime: EmitRuntime, input: SetupInput): Promise<AppRecord> {
-  if (input.approval === null) throw new ValidationError("请选择一个可用的审批判断模型");
-  assertChatSelection(runtime, input.defaultExecutionModel, "默认执行模型");
+  if (input.approval === null) throw new ValidationError(workspaceMessages.approvalJudgeRequired);
+  assertChatSelection(runtime, input.defaultExecutionModel, "default");
   assertApproval(runtime, input.approval);
   const approval = input.approval;
   const workspaceSlug = slugify(input.workspaceName);
@@ -286,7 +288,7 @@ export type AppPatch = {
  */
 export async function updateAppConfig(runtime: EmitRuntime, patch: AppPatch): Promise<AppRecord> {
   const approval = patch.approval;
-  if (approval === null) throw new ValidationError("审批判断模型不能为空");
+  if (approval === null) throw new ValidationError(workspaceMessages.approvalJudgeEmpty);
   if (approval !== undefined) assertApproval(runtime, approval);
   const saved = await runtime.updateSession(AppDoc, (draft) => {
     if (patch.workspaceName !== undefined && patch.workspaceName.length > 0) {
@@ -358,7 +360,7 @@ export async function createEmployee(runtime: EmitRuntime, draft: EmployeeDraftD
       addressSource = "llm";
     }
   }
-  assertChatSelection(runtime, { model: executionModel, effort: executionModel.effort }, "员工执行模型");
+  assertChatSelection(runtime, { model: executionModel, effort: executionModel.effort }, "employee");
   const policy = draft.toolPolicy ?? defaultToolPolicy();
 
   const record: EmployeeRecord = {
@@ -403,7 +405,7 @@ export async function updateEmployee(
   patch: EmployeePatch,
 ): Promise<EmployeeRecord> {
   const current = await findEmployee(runtime, id);
-  if (current === undefined) throw new Error(`员工不存在: ${id}`);
+  if (current === undefined) throw new AppError(workspaceMessages.employeeNotFound(id));
   if (patch.address !== undefined) {
     const app = await readApp(runtime);
     const domain = workspaceDomain(app);
@@ -412,12 +414,12 @@ export async function updateEmployee(
       ...(await listEmployees(runtime)).filter((e) => e.id !== id).map((e) => e.address),
     ]);
     const normalized = normalizeLocalPart(patch.address.split("@")[0] ?? patch.address);
-    if (normalized.length === 0) throw new ValidationError("邮箱本地部分无效");
+    if (normalized.length === 0) throw new ValidationError(workspaceMessages.employeeLocalPartInvalid);
     const address = allocateAddress(normalized, domain, others);
     patch = { ...patch, address };
   }
   if (patch.executionModel !== undefined) {
-    assertChatSelection(runtime, patch.executionModel, "员工执行模型");
+    assertChatSelection(runtime, patch.executionModel, "employee");
   }
   const saved = await runtime.updateFamily(EmployeeDoc, id, { id }, (doc) => {
     if (patch.name !== undefined) doc.name = patch.name;
@@ -478,20 +480,20 @@ function chatSelection(selection: {
 function assertChatSelection(
   runtime: EmitRuntime,
   selection: ChatSelectionDTO | null,
-  label: string,
+  scope: ExecutionModelScope,
 ): void {
   if (selection === null) return;
   const problem = runtime.catalog.chatSelectionProblem(chatSelection(selection));
-  if (problem !== undefined) throw new ValidationError(`${label}不可用：${problem}`);
+  if (problem !== undefined) throw new ValidationError(workspaceMessages.executionModelUnavailable(scope, problem));
 }
 
 function assertApproval(runtime: EmitRuntime, config: ApprovalEvaluatorConfigDTO | null): void {
-  if (config === null) throw new ValidationError("请选择一个可用的审批判断模型");
+  if (config === null) throw new ValidationError(workspaceMessages.approvalJudgeRequired);
   const problem = runtime.catalog.approvalProblem({
     kind: config.kind,
     providerId: config.model.providerId,
     modelId: config.model.modelId,
     effort: config.kind === "llm" ? config.effort : "off",
   });
-  if (problem !== undefined) throw new ValidationError(`审批判断模型不可用：${problem}`);
+  if (problem !== undefined) throw new ValidationError(workspaceMessages.approvalJudgeUnavailable(problem));
 }

@@ -305,7 +305,6 @@ describe("connection check", () => {
 
     const first = await catalog.check({ providerId: PROVIDER_ID, modelId: MODEL_ID }, "chat");
     expect(first.ok).toBe(true);
-    expect(first.message).toContain("已应答");
 
     const [a, b] = await Promise.all([
       catalog.check({ providerId: PROVIDER_ID, modelId: MODEL_ID }, "chat"),

@@ -10,7 +10,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
-import type { MailboxItemDTO, ServerEvent, RoomDirectoryDraftDTO, RoomDirectoryPatchDTO } from "../shared/contracts.ts";
+import type { ApiErrorBody, MailboxItemDTO, ServerEvent, RoomDirectoryDraftDTO, RoomDirectoryPatchDTO } from "../shared/contracts.ts";
 import type { EmitRuntime } from "./runtime.ts";
 import type { McpManager } from "./mcp.ts";
 import {
@@ -28,6 +28,9 @@ import {
 import { deleteSkill, importSkillDirectory, listSkills, toSkillDTO, type SkillImportResult } from "./skills.ts";
 import { toMcpServerDTO } from "./mcp.ts";
 import { ProviderAuthError } from "./provider-auth.ts";
+import { fromError, type AppText } from "./messages.ts";
+import { apiMessages } from "./messages/api.ts";
+import { approvalMessages } from "./messages/approval.ts";
 import {
   appendRoomMessage,
   createRoom,
@@ -66,6 +69,14 @@ export type ApiOptions = {
 
 const MAX_BODY = 200_000;
 
+/**
+ * One application message as the HTTP layer sends it: the original text plus
+ * its translation pair when one exists.
+ */
+function messageBody(value: AppText): ApiErrorBody {
+  return { message: value.text, ...(value.localized === undefined ? {} : { messageLocalized: value.localized }) };
+}
+
 export async function buildServer(options: ApiOptions): Promise<FastifyInstance> {
   const { resume } = options;
   const { runtime, mcp } = resume;
@@ -75,11 +86,11 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
 
   // A rejected input answers 400 with its reason; anything else stays a 500.
   app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof ValidationError) return reply.code(400).send({ message: error.message });
-    if (error instanceof RoomDirectoryError) return reply.code(error.status).send({ message: error.message });
-    if (error instanceof ProviderAuthError) return reply.code(error.status).send({ message: error.message });
-    const message = error instanceof Error ? error.message : String(error);
-    return reply.code(500).send({ message });
+    const message = fromError(error);
+    if (error instanceof ValidationError) return reply.code(400).send(messageBody(message));
+    if (error instanceof RoomDirectoryError) return reply.code(error.status).send(messageBody(message));
+    if (error instanceof ProviderAuthError) return reply.code(error.status).send(messageBody(message));
+    return reply.code(500).send(messageBody(message));
   });
 
   const employees = async () => listEmployees(runtime);
@@ -137,7 +148,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
       approval?: unknown;
     };
     if (typeof body?.workspaceName !== "string" || typeof body?.userName !== "string") {
-      return reply.code(400).send({ message: "缺少工作区名称或你的名字" });
+      return reply.code(400).send(messageBody(apiMessages.missingWorkspaceName));
     }
     const saved = await setupWorkspace(runtime, {
       workspaceName: body.workspaceName,
@@ -163,7 +174,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   app.post("/api/models/check", async (request, reply) => {
     const body = request.body as { model?: { providerId?: string; modelId?: string }; kind?: "chat" | "classifier" };
     if (typeof body?.model?.providerId !== "string" || typeof body?.model.modelId !== "string") {
-      return reply.code(400).send({ message: "缺少模型标识" });
+      return reply.code(400).send(messageBody(apiMessages.missingModelRef));
     }
     return runtime.catalog.check(
       { providerId: body.model.providerId, modelId: body.model.modelId },
@@ -181,7 +192,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
 
   app.patch("/api/employees/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    if ((await findEmployee(runtime, id)) === undefined) return reply.code(404).send({ message: "员工不存在" });
+    if ((await findEmployee(runtime, id)) === undefined) return reply.code(404).send(messageBody(apiMessages.employeeNotFound));
     const employee = await updateEmployee(runtime, id, request.body as never);
     await installEmployeeExtension(resume, employee);
     return toEmployeeDTO(employee);
@@ -189,7 +200,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
 
   app.delete("/api/employees/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    if ((await findEmployee(runtime, id)) === undefined) return reply.code(404).send({ message: "员工不存在" });
+    if ((await findEmployee(runtime, id)) === undefined) return reply.code(404).send(messageBody(apiMessages.employeeNotFound));
     const employee = await findEmployee(runtime, id);
     await runtime.harness.commit((tx) => tx.retireDoc(EmployeeDoc, id), runtime.ctx);
     if (employee !== undefined) runtime.registry.uninstall({ name: `employee:${employee.id}` });
@@ -210,14 +221,14 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
       directories?: RoomDirectoryDraftDTO;
     };
     if (body?.kind !== "channel" && body?.kind !== "dm" && body?.kind !== "mail") {
-      return reply.code(400).send({ message: "会话类型无效" });
+      return reply.code(400).send(messageBody(apiMessages.invalidRoomKind));
     }
     if (typeof body.name !== "string" || body.name.trim().length === 0) {
-      return reply.code(400).send({ message: "缺少名称" });
+      return reply.code(400).send(messageBody(apiMessages.missingRoomName));
     }
     if (body.employeeId !== undefined && body.employeeId.length > 0) {
       const employee = await findEmployee(runtime, body.employeeId);
-      if (employee === undefined) return reply.code(404).send({ message: "员工不存在" });
+      if (employee === undefined) return reply.code(404).send(messageBody(apiMessages.employeeNotFound));
       if (body.kind === "dm") {
         const existing = (await listRoomDTOs(runtime, "user")).find(
           (room) => room.employeeId === body.employeeId && room.kind === "dm",
@@ -250,7 +261,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   app.get("/api/rooms/:id/messages", async (request, reply) => {
     const { id } = request.params as { id: string };
     const room = await findRoom(runtime, id);
-    if (room === undefined) return reply.code(404).send({ message: "会话不存在" });
+    if (room === undefined) return reply.code(404).send(messageBody(apiMessages.roomNotFound));
     return { room: toRoomDTO(room), messages: await listRoomMessages(runtime, room) };
   });
 
@@ -264,7 +275,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   app.post("/api/rooms/:id/messages", async (request, reply) => {
     const { id } = request.params as { id: string };
     const room = await findRoom(runtime, id);
-    if (room === undefined) return reply.code(404).send({ message: "会话不存在" });
+    if (room === undefined) return reply.code(404).send(messageBody(apiMessages.roomNotFound));
     const body = request.body as {
       body?: string;
       employeeId?: string;
@@ -275,7 +286,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
       inReplyTo?: string;
     };
     const text = typeof body?.body === "string" ? body.body.trim() : "";
-    if (text.length === 0) return reply.code(400).send({ message: "消息内容为空" });
+    if (text.length === 0) return reply.code(400).send(messageBody(apiMessages.emptyMessageBody));
 
     const appRecord = await readApp(runtime);
     const author = {
@@ -290,10 +301,10 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
       if (body.draft === true) {
         if (body.inReplyTo !== undefined && (typeof body.inReplyTo !== "string" ||
           (body.inReplyTo.length > 0 && !(await isSentMailEntry(runtime, room, body.inReplyTo))))) {
-          return reply.code(400).send({ message: "inReplyTo 必须引用当前会话内的已发送邮件" });
+          return reply.code(400).send(messageBody(apiMessages.inReplyToNotSentMail));
         }
         const addressedDraft = await resolveMailAddresses(runtime, body?.to ?? [], body?.cc ?? []);
-        if (typeof addressedDraft === "string") return reply.code(400).send({ message: addressedDraft });
+        if ("text" in addressedDraft) return reply.code(400).send(messageBody(addressedDraft));
         const message = await appendRoomMessage(
           runtime,
           room,
@@ -313,10 +324,10 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
       }
       if (body.inReplyTo !== undefined && (typeof body.inReplyTo !== "string" ||
         (body.inReplyTo.length > 0 && !(await isSentMailEntry(runtime, room, body.inReplyTo))))) {
-        return reply.code(400).send({ message: "inReplyTo 必须引用当前会话内的已发送邮件" });
+        return reply.code(400).send(messageBody(apiMessages.inReplyToNotSentMail));
       }
       const addressed = await resolveMailAddresses(runtime, body?.to ?? [], body?.cc ?? []);
-      if (typeof addressed === "string") return reply.code(400).send({ message: addressed });
+      if ("text" in addressed) return reply.code(400).send(messageBody(addressed));
       const { message, workIds } = await sendQueuedMail(resume, {
         room: { id: room.id },
         data: messageData({
@@ -347,7 +358,12 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
       });
       return { message, workId: work.id };
     } catch (error) {
-      return { message, error: error instanceof Error ? error.message : String(error) };
+      const reason = fromError(error);
+      return {
+        message,
+        error: reason.text,
+        ...(reason.localized === undefined ? {} : { errorLocalized: reason.localized }),
+      };
     }
   });
 
@@ -355,15 +371,15 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   app.post("/api/rooms/:id/mail-send", async (request, reply) => {
     const { id } = request.params as { id: string };
     const room = await findRoom(runtime, id);
-    if (room === undefined) return reply.code(404).send({ message: "会话不存在" });
+    if (room === undefined) return reply.code(404).send(messageBody(apiMessages.roomNotFound));
     const body = request.body as { entryId?: string };
     if (typeof body?.entryId !== "string" || body.entryId.length === 0) {
-      return reply.code(400).send({ message: "缺少草稿 id" });
+      return reply.code(400).send(messageBody(apiMessages.missingDraftId));
     }
     const messages = await listRoomMessages(runtime, room);
     const draft = messages.find((message) => message.id === body.entryId);
-    if (draft?.mail === undefined) return reply.code(404).send({ message: "草稿不存在" });
-    if (!draft.mail.draft) return reply.code(409).send({ message: "这封邮件已经发送" });
+    if (draft?.mail === undefined) return reply.code(404).send(messageBody(apiMessages.draftNotFound));
+    if (!draft.mail.draft) return reply.code(409).send(messageBody(apiMessages.mailAlreadySent));
 
     const appRecord = await readApp(runtime);
     const { message, workIds } = await sendQueuedMail(resume, {
@@ -394,7 +410,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   app.post("/api/rooms/:id/mail-flag", async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as { entryId?: string; read?: boolean; archived?: boolean; active?: boolean };
-    if (typeof body?.entryId !== "string") return reply.code(400).send({ message: "缺少邮件 id" });
+    if (typeof body?.entryId !== "string") return reply.code(400).send(messageBody(apiMessages.missingMailEntryId));
     // "active" retires a draft: it is the only mutable part of a mail entry,
     // which is otherwise immutable.
     await setMailFlag(runtime, id, body.entryId, {
@@ -447,13 +463,13 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   app.get("/api/works/:id/execution", async (request, reply) => {
     const { id } = request.params as { id: string };
     const raw = (request.query as { cursor?: unknown }).cursor;
-    if (raw !== undefined && typeof raw !== "string") return reply.code(400).send({ message: "游标格式不正确" });
+    if (raw !== undefined && typeof raw !== "string") return reply.code(400).send(messageBody(apiMessages.malformedCursor));
     try {
       const execution = await readWorkExecution(runtime, id, raw);
-      if (execution === undefined) return reply.code(404).send({ message: "工作不存在" });
+      if (execution === undefined) return reply.code(404).send(messageBody(apiMessages.workNotFound));
       return execution;
     } catch (error) {
-      if (error instanceof WorkExecutionCursorError) return reply.code(400).send({ message: error.message });
+      if (error instanceof WorkExecutionCursorError) return reply.code(400).send(messageBody(fromError(error)));
       throw error;
     }
   });
@@ -461,7 +477,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   app.post("/api/works/:id/stop", async (request, reply) => {
     const { id } = request.params as { id: string };
     const work = await stopWork(resume, id);
-    if (work === undefined) return reply.code(404).send({ message: "工作不存在" });
+    if (work === undefined) return reply.code(404).send(messageBody(apiMessages.workNotFound));
     return { ok: true };
   });
 
@@ -477,26 +493,38 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
     const { id } = request.params as { id: string };
     const body = request.body as { decision?: string; comment?: string };
     if (body?.decision !== "approved" && body?.decision !== "rejected") {
-      return reply.code(400).send({ message: "裁决必须是 approved 或 rejected" });
+      return reply.code(400).send(messageBody(approvalMessages.decisionInvalid));
     }
     const record = await findApproval(runtime, id);
-    if (record === undefined) return reply.code(404).send({ message: "审批不存在" });
+    if (record === undefined) return reply.code(404).send(messageBody(approvalMessages.notFound));
     if (record.status !== "pending-human" && record.status !== "evaluating") {
-      return reply.code(409).send({ message: `审批已处于 ${record.status} 状态` });
+      return reply.code(409).send(messageBody(approvalMessages.alreadyInStatus(record.status)));
     }
+    const approved = body.decision === "approved";
+    const reason = approved ? approvalMessages.humanApproved : approvalMessages.humanRejected;
+    const timelineText = approved ? approvalMessages.humanTimelineApproved : approvalMessages.humanTimelineRejected;
     const updated = (await runtime.updateFamily(ApprovalDoc, id, { id }, (doc) => {
       if (doc.status !== "pending-human" && doc.status !== "evaluating") return;
       const now = Date.now();
-      doc.status = body.decision === "approved" ? "approved" : "rejected";
+      doc.status = approved ? "approved" : "rejected";
       doc.decidedAt = now;
       doc.decidedBy = "user";
       doc.comment = body.comment ?? "";
       doc.updatedAt = now;
       doc.autoDecisionSource = "human";
-      doc.autoDecisionReason = body.decision === "approved" ? "由你批准" : "由你拒绝";
+      doc.autoDecisionReason = reason.text;
+      if (reason.localized !== undefined) doc.autoDecisionReasonLocalized = reason.localized;
       doc.timeline = [
         ...doc.timeline,
-        { at: now, actor: "你", text: body.decision === "approved" ? "批准执行" : "拒绝执行" },
+        {
+          at: now,
+          actor: approvalMessages.actorYou.text,
+          text: timelineText.text,
+          ...(approvalMessages.actorYou.localized === undefined
+            ? {}
+            : { actorLocalized: approvalMessages.actorYou.localized }),
+          ...(timelineText.localized === undefined ? {} : { textLocalized: timelineText.localized }),
+        },
       ];
     })) as ApprovalRecord;
     runtime.emit({ type: "approval", approval: toApprovalDTO(updated) });
@@ -510,7 +538,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   app.post("/api/skills/import", async (request, reply) => {
     const body = request.body as { directory?: string };
     if (typeof body?.directory !== "string" || body.directory.trim().length === 0) {
-      return reply.code(400).send({ message: "缺少目录路径" });
+      return reply.code(400).send(messageBody(apiMessages.missingSkillDirectory));
     }
     const result: SkillImportResult = await importSkillDirectory(runtime, body.directory.trim());
     return result;
@@ -545,7 +573,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
 
   app.put("/api/providers/custom", async (request, reply) => {
     const body = request.body as { providers?: unknown };
-    if (!Array.isArray(body?.providers)) return reply.code(400).send({ message: "缺少 providers" });
+    if (!Array.isArray(body?.providers)) return reply.code(400).send(messageBody(apiMessages.missingProviders));
     const updated = await runtime.storeCustomProviders(body.providers);
     return {
       providers: updated.providers,
@@ -556,7 +584,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   app.delete("/api/providers/:id/credential", async (request, reply) => {
     const { id } = request.params as { id: string };
     if (runtime.catalog.models.getProvider(id) === undefined) {
-      return reply.code(404).send({ message: "Provider 不存在" });
+      return reply.code(404).send(messageBody(apiMessages.providerNotFound));
     }
     // Wait out a login before deleting: otherwise a late commit could put the
     // credential straight back after the user asked to remove it.
@@ -568,12 +596,13 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   app.post("/api/providers/:id/refresh", async (request, reply) => {
     const { id } = request.params as { id: string };
     if (runtime.catalog.models.getProvider(id) === undefined) {
-      return reply.code(404).send({ message: "Provider 不存在" });
+      return reply.code(404).send(messageBody(apiMessages.providerNotFound));
     }
     const result = await runtime.catalog.refresh({ allowNetwork: true, providers: [id], force: true });
     const failure = result.errors.get(id);
+    // A native refresh failure keeps its raw reason; the success line is ours.
     if (failure !== undefined) return { ok: false, message: failure.message };
-    return { ok: true, message: "模型目录已刷新" };
+    return { ok: true, ...messageBody(apiMessages.catalogRefreshed) };
   });
 
   // ------------------------------------------------------------ provider auth
@@ -581,7 +610,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   app.post("/api/auth/sessions", async (request, reply) => {
     const body = request.body as { providerId?: unknown; type?: unknown };
     if (typeof body?.providerId !== "string" || (body.type !== "api_key" && body.type !== "oauth")) {
-      return reply.code(400).send({ message: "缺少 providerId 或认证方式无效" });
+      return reply.code(400).send(messageBody(apiMessages.missingAuthInput));
     }
     return reply.code(201).send(runtime.providerAuth.start(body.providerId, body.type));
   });
@@ -595,7 +624,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
     const { id } = request.params as { id: string };
     const body = request.body as { promptId?: unknown; value?: unknown };
     if (typeof body?.promptId !== "string" || typeof body.value !== "string") {
-      return reply.code(400).send({ message: "缺少 promptId 或回答" });
+      return reply.code(400).send(messageBody(apiMessages.missingAuthResponse));
     }
     return runtime.providerAuth.respond(id, body.promptId, body.value);
   });
@@ -610,19 +639,20 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
  * Resolve the employee ids on a mail into addresses and wake ids.
  *
  * The user is a valid recipient and never starts work; an unknown id is a
- * client error rather than something silently dropped.
+ * client error rather than something silently dropped. A failed resolution
+ * returns the application message instead of the addressed envelope.
  */
 async function resolveMailAddresses(
   runtime: EmitRuntime,
   to: readonly string[],
   cc: readonly string[],
 ): Promise<
-  | string
+  | AppText
   | { to: MailAddress[]; cc: MailAddress[]; recipients: string[]; copies: string[] }
 > {
   const app = await readApp(runtime);
   const employees = await listEmployees(runtime);
-  const resolve = (ids: readonly string[]): MailAddress[] | string => {
+  const resolve = (ids: readonly string[]): MailAddress[] | AppText => {
     const addresses: MailAddress[] = [];
     for (const id of ids) {
       if (id === "user") {
@@ -640,14 +670,14 @@ async function resolveMailAddresses(
         addresses.push({ name: "", address: id });
         continue;
       }
-      return `找不到收件人 ${id}`;
+      return apiMessages.unknownRecipient(id);
     }
     return addresses;
   };
   const toAddresses = resolve(to);
-  if (typeof toAddresses === "string") return toAddresses;
+  if ("text" in toAddresses) return toAddresses;
   const ccAddresses = resolve(cc);
-  if (typeof ccAddresses === "string") return ccAddresses;
+  if ("text" in ccAddresses) return ccAddresses;
   const employeesOnly = (ids: readonly string[]): string[] =>
     ids.filter((id) => id !== "user" && employees.some((employee) => employee.id === id));
   return {
@@ -672,7 +702,7 @@ function isTypedAddress(value: string): boolean {
     // HTML against files that no longer exist.
     await app.register(fastifyStatic, { root: options.webRoot, index: ["index.html"] });
     app.setNotFoundHandler((request, reply) => {
-      if (request.url.startsWith("/api/")) return reply.code(404).send({ message: "接口不存在" });
+      if (request.url.startsWith("/api/")) return reply.code(404).send(messageBody(apiMessages.apiRouteNotFound));
       return reply.sendFile("index.html");
     });
   }

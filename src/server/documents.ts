@@ -9,6 +9,7 @@
 
 import { defineDoc, defineDocFamily, defineEntry } from "@earendil-works/pi-durable";
 import type { ReviewOutcome, RiskLevel, UserAuthorizationLevel } from "../shared/contracts.ts";
+import type { LocalizedText } from "../shared/i18n.ts";
 
 /** Immutable public message written into a room conversation's transcript. */
 export type RoomMessageData = {
@@ -17,6 +18,8 @@ export type RoomMessageData = {
   authorName: string;
   address: string;
   body: string;
+  /** Present only for application-authored system notices. */
+  bodyLocalized?: LocalizedText;
   /** Wall-clock milliseconds when the message was appended. */
   createdAt: number;
   /** Present when the message is a delivery or answer for a work item. */
@@ -156,6 +159,8 @@ export type WorkRecord = {
   startedAt: number;
   finishedAt: number;
   error: string;
+  /** Present when the failure reason is application-authored. */
+  errorLocalized?: LocalizedText;
   /** Employee execution conversation carrying this work. */
   conversationId: number;
   /** Immutable room-directory snapshot bound to this run. */
@@ -210,9 +215,17 @@ export type ApprovalEvidenceRecord =
       authorized: boolean | null;
       authorizedProbability: number | null;
     }
-  | { kind: "policy"; rationale: string };
+  | { kind: "policy"; rationale: string; rationaleLocalized?: LocalizedText };
 
-export type ApprovalTimelineRecord = { at: number; actor: string; text: string };
+export type ApprovalTimelineRecord = {
+  at: number;
+  actor: string;
+  text: string;
+  /** Present when the actor label is application-generated. */
+  actorLocalized?: LocalizedText;
+  /** Present when the timeline sentence is application-authored. */
+  textLocalized?: LocalizedText;
+};
 
 export type ApprovalRecord = {
   id: string;
@@ -235,6 +248,8 @@ export type ApprovalRecord = {
   status: ApprovalStatus;
   executionState: "not-started" | "running" | "succeeded" | "failed" | "interrupted";
   executionDetail: string;
+  /** Present when the execution detail is application-authored. */
+  executionDetailLocalized?: LocalizedText;
   createdAt: number;
   updatedAt: number;
   decidedAt: number;
@@ -242,6 +257,8 @@ export type ApprovalRecord = {
   comment: string;
   autoDecisionSource: "" | "llm" | "classifier" | "policy" | "human";
   autoDecisionReason: string;
+  /** Present when the automatic decision reason is application-authored. */
+  autoDecisionReasonLocalized?: LocalizedText;
   evidence: ApprovalEvidenceRecord | null;
   originKind: "room" | "delegation";
   originRoomId: string;

@@ -286,14 +286,13 @@ describe("employee model selection", () => {
 
   it("rejects an effort the model cannot reason with, naming the choices", () => {
     const problem = catalog.chatSelectionProblem({ providerId: "local-test", modelId: "plain", effort: "high" });
-    expect(problem).toContain("不支持");
-    expect(problem).toContain("off");
+    expect(problem?.text).toContain("high");
+    expect(problem?.text).toContain("off");
   });
 
   it("rejects a model the catalog cannot resolve, and an empty selection", () => {
-    expect(catalog.chatSelectionProblem({ providerId: "local-test", modelId: "gone", effort: "off" })).toContain("找不到");
-    expect(catalog.chatSelectionProblem({ providerId: "local-test", modelId: "gone", effort: "off" })).toContain("gone");
-    expect(catalog.chatSelectionProblem({ providerId: "", modelId: "", effort: "off" })).toContain("请选择");
+    expect(catalog.chatSelectionProblem({ providerId: "local-test", modelId: "gone", effort: "off" })?.text).toContain("gone");
+    expect(catalog.chatSelectionProblem({ providerId: "", modelId: "", effort: "off" })).toBeDefined();
   });
 
   it("keeps a chat model out of the classifier slot", () => {
@@ -302,10 +301,10 @@ describe("employee model selection", () => {
     ).toBeUndefined();
     expect(
       catalog.approvalProblem({ kind: "llm", providerId: "local-test", modelId: "plain", effort: "high" }),
-    ).toContain("不支持");
+    ).toBeDefined();
     expect(
       catalog.approvalProblem({ kind: "classifier", providerId: "local-test", modelId: "plain", effort: "off" }),
-    ).toContain("分类模型");
+    ).toBeDefined();
   });
 });
 

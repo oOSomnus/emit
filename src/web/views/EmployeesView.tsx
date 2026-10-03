@@ -9,7 +9,10 @@
 
 import { useState, type ReactNode } from "react";
 import { api } from "../api.ts";
+import { errorDisplay } from "../../shared/i18n.ts";
 import { useApp } from "../state.tsx";
+import { uiText } from "../messages.ts";
+import { useI18n } from "../i18n.tsx";
 import { Chip, ConnectionCheckButton, EffortPicker, ModelPicker, modelKey } from "./ui.tsx";
 import type { EmployeeDTO } from "../../shared/contracts.ts";
 
@@ -63,6 +66,7 @@ function toggle(list: readonly string[], value: string): string[] {
 
 export function EmployeesView(): ReactNode {
   const { state, refreshEmployees, setError } = useApp();
+  const { messages } = useI18n();
   // The full chat catalog is offered; the shared picker disables models the
   // current credential cannot use instead of hiding them.
   const chatModels = state.models.filter((model) => model.kind === "chat");
@@ -87,12 +91,12 @@ export function EmployeesView(): ReactNode {
 
   const save = async (): Promise<void> => {
     if (draft.name.trim().length === 0 || draft.role.trim().length === 0) {
-      setError("请填写员工的名字与角色");
+      setError(uiText((messages) => messages.employees.nameRoleRequired));
       return;
     }
     const [providerId, modelId] = draft.modelKey.split("|");
     if (providerId === undefined || modelId === undefined) {
-      setError("请选择员工的模型");
+      setError(uiText((messages) => messages.employees.modelRequired));
       return;
     }
     setBusy(true);
@@ -114,7 +118,7 @@ export function EmployeesView(): ReactNode {
       await refreshEmployees();
       setEditing(undefined);
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(errorDisplay(error));
     } finally {
       setBusy(false);
     }
@@ -124,17 +128,17 @@ export function EmployeesView(): ReactNode {
     <div className="pane">
       <header className="pane-header">
         <div>
-          <h2>员工</h2>
-          <p className="topic">{state.employees.length} 位数字员工 · 每位拥有独立的角色、技能、MCP 与工具权限</p>
+          <h2>{messages.employees.title}</h2>
+          <p className="topic">{messages.employees.summary(state.employees.length)}</p>
         </div>
         <button type="button" className="primary" onClick={openNew}>
-          新建员工
+          {messages.employees.newEmployee}
         </button>
       </header>
 
       <div className="scroll split employees-layout">
         <div className="list">
-          {state.employees.length === 0 ? <p className="hint">还没有员工。先创建一位，给他一个角色和一份技能。</p> : null}
+          {state.employees.length === 0 ? <p className="hint">{messages.employees.empty}</p> : null}
           {state.employees.map((employee) => (
             <button
               key={employee.id}
@@ -146,9 +150,9 @@ export function EmployeesView(): ReactNode {
               <span className="address">{employee.address}</span>
               <span className="role">{employee.role}</span>
               <span className="tags">
-                {employee.enabled ? <Chip tone="ok">启用</Chip> : <Chip tone="muted">停用</Chip>}
-                {employee.skillIds.length > 0 ? <Chip tone="info">{employee.skillIds.length} 技能</Chip> : null}
-                {employee.mcpServerIds.length > 0 ? <Chip tone="info">{employee.mcpServerIds.length} MCP</Chip> : null}
+                {employee.enabled ? <Chip tone="ok">{messages.employees.enabled}</Chip> : <Chip tone="muted">{messages.employees.disabled}</Chip>}
+                {employee.skillIds.length > 0 ? <Chip tone="info">{messages.employees.skillCount(employee.skillIds.length)}</Chip> : null}
+                {employee.mcpServerIds.length > 0 ? <Chip tone="info">{messages.employees.mcpCount(employee.mcpServerIds.length)}</Chip> : null}
                 <Chip tone="muted">v{employee.configVersion}</Chip>
               </span>
             </button>
@@ -157,29 +161,29 @@ export function EmployeesView(): ReactNode {
 
         {editing !== undefined ? (
           <section className="editor">
-            <h3>{editing === "new" ? "新员工" : "编辑员工"}</h3>
+            <h3>{editing === "new" ? messages.employees.newTitle : messages.employees.editTitle}</h3>
             <label>
-              名字
+              {messages.employees.nameLabel}
               <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
             </label>
             <label>
-              角色
+              {messages.employees.roleLabel}
               <input
                 value={draft.role}
-                placeholder="例如：前端工程师 / 研究助理"
+                placeholder={messages.employees.rolePlaceholder}
                 onChange={(event) => setDraft({ ...draft, role: event.target.value })}
               />
             </label>
             <label>
-              工作准则
+              {messages.employees.instructionsLabel}
               <textarea
                 value={draft.instructions}
-                placeholder="这个员工长期遵循的做事方式、输出格式、禁忌。"
+                placeholder={messages.employees.instructionsPlaceholder}
                 onChange={(event) => setDraft({ ...draft, instructions: event.target.value })}
               />
             </label>
             <fieldset>
-              <legend>模型与推理强度</legend>
+              <legend>{messages.employees.modelSection}</legend>
               <div className="row">
               <ModelPicker
                 models={chatModels}
@@ -192,13 +196,13 @@ export function EmployeesView(): ReactNode {
                     effort: efforts.includes(draft.effort) ? draft.effort : efforts[0] ?? "off",
                   });
                 }}
-                label="员工模型"
+                label={messages.employees.modelLabel}
               />
               <EffortPicker
                 efforts={selectedModel?.efforts ?? []}
                 value={draft.effort}
                 onChange={(effort) => setDraft({ ...draft, effort })}
-                label="员工模型推理强度"
+                label={messages.employees.effortLabel}
               />
               <ConnectionCheckButton model={selectedModel} kind="chat" />
               </div>
@@ -210,13 +214,13 @@ export function EmployeesView(): ReactNode {
                   checked={draft.generateAddress}
                   onChange={(event) => setDraft({ ...draft, generateAddress: event.target.checked })}
                 />
-                让模型根据名字与工作区生成邮箱地址
+                {messages.employees.generateAddress}
               </label>
             ) : null}
 
             <fieldset>
-              <legend>技能</legend>
-              {state.skills.length === 0 ? <p className="hint">还没有导入技能，可在设置页导入 Skills 目录。</p> : null}
+              <legend>{messages.employees.skillsSection}</legend>
+              {state.skills.length === 0 ? <p className="hint">{messages.employees.skillsEmpty}</p> : null}
               {state.skills.map((skill) => (
                 <label key={skill.id} className="inline">
                   <input
@@ -231,8 +235,8 @@ export function EmployeesView(): ReactNode {
             </fieldset>
 
             <fieldset>
-              <legend>MCP 服务</legend>
-              {state.mcpServers.length === 0 ? <p className="hint">还没有 MCP 服务。</p> : null}
+              <legend>{messages.employees.mcpSection}</legend>
+              {state.mcpServers.length === 0 ? <p className="hint">{messages.employees.mcpEmpty}</p> : null}
               {state.mcpServers.map((server) => (
                 <label key={server.id} className="inline">
                   <input
@@ -249,15 +253,17 @@ export function EmployeesView(): ReactNode {
                   />
                   {server.name}
                   <span className="hint">
-                    {server.connection.state === "connected" ? `${server.tools.length} 个工具` : server.connection.message ?? "未连接"}
+                    {server.connection.state === "connected"
+                      ? messages.employees.toolCount(server.tools.length)
+                      : server.connection.message ?? messages.employees.notConnected}
                   </span>
                 </label>
               ))}
             </fieldset>
 
             <fieldset>
-              <legend>允许的工具</legend>
-              <p className="hint">未列出的内置工具会被直接拒绝，不会进入审批流程。协作工具（发消息、发邮件、交办）始终可用。</p>
+              <legend>{messages.employees.allowedToolsSection}</legend>
+              <p className="hint">{messages.employees.allowedToolsHint}</p>
               {BUILTIN_TOOLS.map((tool) => (
                 <label key={tool} className="inline">
                   <input
@@ -271,8 +277,8 @@ export function EmployeesView(): ReactNode {
             </fieldset>
 
             <fieldset>
-              <legend>信任为只读的 MCP 工具</legend>
-              <p className="hint">只读信任是你给出的判断；未被信任的 MCP 调用同样会进入审批。</p>
+              <legend>{messages.employees.trustedReadOnlySection}</legend>
+              <p className="hint">{messages.employees.trustedReadOnlyHint}</p>
               {state.mcpServers
                 .filter((server) => draft.mcpServerIds.includes(server.id))
                 .flatMap((server) =>
@@ -288,7 +294,7 @@ export function EmployeesView(): ReactNode {
                           }
                         />
                         <code>{reference}</code>
-                        {tool.readOnly ? <span className="hint">服务声明只读</span> : null}
+                        {tool.readOnly ? <span className="hint">{messages.employees.declaredReadOnly}</span> : null}
                       </label>
                     );
                   }),
@@ -297,10 +303,10 @@ export function EmployeesView(): ReactNode {
 
             <div className="row">
               <button type="button" className="primary" disabled={busy} onClick={() => void save()}>
-                {busy ? "保存中…" : "保存"}
+                {busy ? messages.employees.saving : messages.employees.save}
               </button>
               <button type="button" onClick={() => setEditing(undefined)}>
-                取消
+                {messages.employees.cancel}
               </button>
               {editing !== "new" ? (
                 <button
@@ -311,17 +317,17 @@ export function EmployeesView(): ReactNode {
                       .deleteEmployee(editing)
                       .then(() => refreshEmployees())
                       .then(() => setEditing(undefined))
-                      .catch((error: unknown) => setError(error instanceof Error ? error.message : String(error)));
+                      .catch((error: unknown) => setError(errorDisplay(error)));
                   }}
                 >
-                  删除
+                  {messages.employees.delete}
                 </button>
               ) : null}
             </div>
           </section>
         ) : (
           <section className="editor">
-            <p className="hint">选择一位员工来编辑，或新建一位。</p>
+            <p className="hint">{messages.employees.emptyEditor}</p>
           </section>
         )}
       </div>

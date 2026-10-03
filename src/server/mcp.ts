@@ -21,10 +21,12 @@ import {
 } from "@earendil-works/pi-mcp";
 import { defineTool, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
+import type { LocalizedText } from "../shared/i18n.ts";
 import type { McpServerDTO, McpServerDraftDTO } from "../shared/contracts.ts";
 import { McpDoc, type EmployeeRecord, type McpServerRecord } from "./documents.ts";
 import type { EmitRuntime } from "./runtime.ts";
 import { slugify } from "./workspace.ts";
+import { mcpMessages } from "./messages/mcp.ts";
 import { gatedExecute, toolError } from "./tools.ts";
 import { readWorkDirectoryScope } from "./work-directories.ts";
 
@@ -170,11 +172,20 @@ export class McpManager {
     this.#runtime.emit({ type: "mcp" });
   }
 
-  /** Connect (or reconnect) one server and record its discovered tools. */
-  async connect(id: string): Promise<{ ok: boolean; message: string; tools: string[] }> {
+  /**
+   * Connect (or reconnect) one server and record its discovered tools. The
+   * app-authored success and server-not-found lines carry a pair; a native
+   * connection failure stays raw.
+   */
+  async connect(
+    id: string,
+  ): Promise<{ ok: boolean; message: string; messageLocalized?: LocalizedText; tools: string[] }> {
     const servers = await this.listServers();
     const record = servers.find((server) => server.id === id);
-    if (record === undefined) return { ok: false, message: `MCP server 不存在: ${id}`, tools: [] };
+    if (record === undefined) {
+      const missing = mcpMessages.serverMissing(id);
+      return { ok: false, message: missing.text, messageLocalized: missing.localized, tools: [] };
+    }
 
     await this.#disconnect(id);
     const signature = configSignature(record);
@@ -202,7 +213,13 @@ export class McpManager {
       this.#connections.set(id, { signature, client, tools });
       await this.#recordConnection(id, "connected", "", tools);
       this.#runtime.emit({ type: "mcp" });
-      return { ok: true, message: `已连接，发现 ${tools.length} 个工具`, tools: tools.map((tool) => tool.name) };
+      const connected = mcpMessages.connected(tools.length);
+      return {
+        ok: true,
+        message: connected.text,
+        messageLocalized: connected.localized,
+        tools: tools.map((tool) => tool.name),
+      };
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const message = lastStderr.length > 0 ? `${detail}\n${lastStderr}` : detail;
@@ -220,7 +237,12 @@ export class McpManager {
       if (!server.enabled) continue;
       const result = await this.connect(server.id);
       if (!result.ok) {
-        this.#runtime.emit({ type: "notice", text: `MCP server ${server.name} 连接失败：${result.message}` });
+        const failure = mcpMessages.connectionFailedNotice(server.name, result.message);
+        this.#runtime.emit({
+          type: "notice",
+          text: failure.text,
+          textLocalized: failure.localized ?? { en: failure.text, "zh-CN": failure.text },
+        });
       }
     }
   }

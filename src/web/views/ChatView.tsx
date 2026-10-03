@@ -8,16 +8,18 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api.ts";
+import { errorDisplay } from "../../shared/i18n.ts";
+import { useI18n } from "../i18n.tsx";
 import { useApp } from "../state.tsx";
 import { Chip, Icon, IconButton, timeAgo } from "./ui.tsx";
 import { RoomDirectoryEditor } from "./RoomDirectories.tsx";
 
-/** How a live work's chip reads, including the paused-for-a-reply state. */
-const LIVE_WORK_LABELS: Record<string, { label: string; tone: "info" | "warn" | "muted" } | undefined> = {
-  queued: { label: "已排队", tone: "muted" },
-  running: { label: "进行中", tone: "info" },
-  "waiting-approval": { label: "等待审批", tone: "warn" },
-  "waiting-mail": { label: "等待回信", tone: "warn" },
+/** How a live work's chip is toned; the wording comes from the work statuses. */
+const LIVE_WORK_TONES: Record<string, "info" | "warn" | "muted" | undefined> = {
+  queued: "muted",
+  running: "info",
+  "waiting-approval": "warn",
+  "waiting-mail": "warn",
 };
 
 /** The avatar initial: one grapheme, so a Chinese name does not render half a pair. */
@@ -27,6 +29,7 @@ function initial(name: string): string {
 
 export function ChatView(): ReactNode {
   const { state, openRoom, setError } = useApp();
+  const { locale, messages, text } = useI18n();
   const [draft, setDraft] = useState("");
   const [target, setTarget] = useState("");
   const [sending, setSending] = useState(false);
@@ -52,8 +55,8 @@ export function ChatView(): ReactNode {
   if (room === undefined) {
     return (
       <div className="empty">
-        <h2>还没有会话</h2>
-        <p>在左侧创建一个频道，或在“员工”页创建你的第一位数字员工。</p>
+        <h2>{messages.chat.emptyTitle}</h2>
+        <p>{messages.chat.emptyBody}</p>
       </div>
     );
   }
@@ -67,10 +70,10 @@ export function ChatView(): ReactNode {
         body,
         ...(room.kind === "channel" && target.length > 0 ? { employeeId: target } : {}),
       });
-      if (result.error !== undefined) setError(result.error);
+      if (result.error !== undefined) setError(result.errorLocalized ?? result.error);
       setDraft("");
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(errorDisplay(error));
     } finally {
       setSending(false);
     }
@@ -85,9 +88,9 @@ export function ChatView(): ReactNode {
         </div>
         <div className="pane-header-actions">
           <button type="button" onClick={() => setEditingDirectories(true)}>
-            工作目录（{room.directories.paths.length}）
+            {messages.chat.directoriesButton(room.directories.paths.length)}
           </button>
-          <IconButton icon="refresh" label="刷新" onClick={() => void openRoom(room.id)} />
+          <IconButton icon="refresh" label={messages.common.refresh} onClick={() => void openRoom(room.id)} />
         </div>
       </header>
 
@@ -97,31 +100,29 @@ export function ChatView(): ReactNode {
             {message.notice === true ? null : <span className="avatar">{initial(message.author.name)}</span>}
             <div className="message-content">
               <div className="meta">
-                <strong>{message.author.name}</strong>
+                <strong>{text(message.author.nameLocalized ?? message.author.name)}</strong>
                 {message.author.address !== undefined && message.author.address.length > 0 ? (
                   <span className="address">{message.author.address}</span>
                 ) : null}
-                <span className="time">{timeAgo(message.createdAt)}</span>
+                <span className="time">{timeAgo(message.createdAt, locale)}</span>
               </div>
-              <div className="body">{message.body}</div>
+              <div className="body">{text(message.bodyLocalized ?? message.body)}</div>
             </div>
           </article>
         ))}
         {roomWork.map((work) => (
           <article key={work.id} className="work-live">
             <div className="meta">
-              <Chip tone="info">{work.employeeName} 正在工作</Chip>
-              <Chip tone={LIVE_WORK_LABELS[work.status]?.tone ?? "info"}>
-                {LIVE_WORK_LABELS[work.status]?.label ?? "进行中"}
-              </Chip>
+              <Chip tone="info">{messages.chat.working(work.employeeName)}</Chip>
+              <Chip tone={LIVE_WORK_TONES[work.status] ?? "info"}>{messages.work.status[work.status]}</Chip>
               <span className="time" />
-              <IconButton icon="close" label="停止" onClick={() => void api.stopWork(work.id)} />
+              <IconButton icon="close" label={messages.chat.stop} onClick={() => void api.stopWork(work.id)} />
             </div>
             {work.tools !== undefined && work.tools.length > 0 ? (
               <ul className="tools">
                 {work.tools.map((tool) => (
                   <li key={tool.callId}>
-                    <Chip tone={tool.status === "done" ? "ok" : "info"}>{tool.status}</Chip>
+                    <Chip tone={tool.status === "done" ? "ok" : "info"}>{messages.chat.toolStatus[tool.status]}</Chip>
                     <code>{tool.name}</code>
                     {tool.output !== undefined ? <pre>{tool.output.slice(0, 400)}</pre> : null}
                   </li>
@@ -131,7 +132,7 @@ export function ChatView(): ReactNode {
             {work.progressText !== undefined && work.progressText.length > 0 ? (
               <pre className="stream">{work.progressText}</pre>
             ) : (
-              <p className="hint">已开始处理，输出会实时出现在这里。</p>
+              <p className="hint">{messages.chat.startedHint}</p>
             )}
           </article>
         ))}
@@ -140,8 +141,8 @@ export function ChatView(): ReactNode {
 
       <footer className="composer">
         {room.kind === "channel" ? (
-          <select value={target} onChange={(event) => setTarget(event.target.value)} aria-label="指派员工">
-            <option value="">（只记录，不指派员工）</option>
+          <select value={target} onChange={(event) => setTarget(event.target.value)} aria-label={messages.chat.assignEmployee}>
+            <option value="">{messages.chat.recordOnly}</option>
             {state.employees.map((employee) => (
               <option key={employee.id} value={employee.id}>
                 @{employee.name} · {employee.role}
@@ -151,8 +152,8 @@ export function ChatView(): ReactNode {
         ) : null}
         <textarea
           value={draft}
-          placeholder={room.kind === "channel" ? "写点什么，选中一位员工让他跟进…" : "发消息给这位员工…"}
-          aria-label="消息内容"
+          placeholder={room.kind === "channel" ? messages.chat.channelPlaceholder : messages.chat.directPlaceholder}
+          aria-label={messages.chat.messageLabel}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -163,7 +164,7 @@ export function ChatView(): ReactNode {
         />
         <button type="button" className="primary" disabled={sending || draft.trim().length === 0} onClick={() => void send()}>
           <Icon name="send" />
-          发送
+          {messages.chat.send}
         </button>
       </footer>
       {editingDirectories ? (

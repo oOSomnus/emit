@@ -4,8 +4,11 @@
  */
 
 import { useEffect, useState, type ReactNode } from "react";
+import { errorDisplay } from "../../shared/i18n.ts";
 import { api } from "../api.ts";
 import { useApp } from "../state.tsx";
+import { LanguagePicker, useI18n } from "../i18n.tsx";
+import { uiText } from "../messages.ts";
 import { Chip, ConnectionCheckButton, EffortPicker, ModelPicker, modelKey } from "./ui.tsx";
 import { ProviderManager } from "./ProviderManager.tsx";
 import { ThemePicker } from "../theme.tsx";
@@ -19,6 +22,7 @@ function effortForModel(models: readonly ModelInfoDTO[], key: string, current: s
 
 export function SettingsView(): ReactNode {
   const { state, dispatch, setError } = useApp();
+  const { messages, text } = useI18n();
   const [workspaceName, setWorkspaceName] = useState(state.app?.workspace.name ?? "");
   const [userName, setUserName] = useState(state.app?.user.name ?? "");
   const [skillDir, setSkillDir] = useState("");
@@ -38,7 +42,7 @@ export function SettingsView(): ReactNode {
   }, [state.app?.workspace.name, state.app?.user.name]);
 
   const app = state.app;
-  if (app === undefined) return <div className="boot">载入中…</div>;
+  if (app === undefined) return <div className="boot">{messages.common.loading}</div>;
 
   const chatModels = state.models.filter((model) => model.kind === "chat");
   const approval = app.approval;
@@ -52,7 +56,7 @@ export function SettingsView(): ReactNode {
     try {
       dispatch({ type: "app", app: await api.updateApp({ approval: next }) });
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(errorDisplay(error));
     }
   };
 
@@ -60,28 +64,35 @@ export function SettingsView(): ReactNode {
     <div className="pane">
       <header className="pane-header">
         <div>
-          <h2>设置</h2>
+          <h2>{messages.settings.title}</h2>
           <p className="topic">
-            数据目录：<code>{state.storagePath}</code>
+            {messages.settings.dataDirectory}
+            <code>{state.storagePath}</code>
           </p>
         </div>
       </header>
 
       <div className="scroll settings">
         <section>
-          <h3>工作台</h3>
+          <h3>{messages.settings.workspace}</h3>
           <div className="row">
             <label>
-              工作区名称
+              {messages.settings.workspaceName}
               <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} />
             </label>
             <label>
-              你的名字
+              {messages.settings.yourName}
               <input value={userName} onChange={(event) => setUserName(event.target.value)} />
             </label>
           </div>
-          <p className="hint">你的邮箱地址：{app.user.address}</p>
-          <ThemePicker label="外观主题" />
+          <p className="hint">
+            {messages.settings.yourAddress}
+            {app.user.address}
+          </p>
+          <div className="row">
+            <ThemePicker />
+            <LanguagePicker />
+          </div>
           <div className="row">
             <button
               type="button"
@@ -90,16 +101,16 @@ export function SettingsView(): ReactNode {
                 void api
                   .updateApp({ workspaceName, userName })
                   .then((next) => dispatch({ type: "app", app: next }))
-                  .catch((error: unknown) => setError(error instanceof Error ? error.message : String(error)));
+                  .catch((error: unknown) => setError(errorDisplay(error)));
               }}
             >
-              保存
+              {messages.common.save}
             </button>
           </div>
         </section>
 
         <section>
-          <h3>默认模型</h3>
+          <h3>{messages.settings.defaultModel}</h3>
           <div className="row">
             <ModelPicker
               models={chatModels}
@@ -109,7 +120,7 @@ export function SettingsView(): ReactNode {
                   void api
                     .updateApp({ defaultExecutionModel: null })
                     .then((next) => dispatch({ type: "app", app: next }))
-                    .catch((error: unknown) => setError(error instanceof Error ? error.message : String(error)));
+                    .catch((error: unknown) => setError(errorDisplay(error)));
                   return;
                 }
                 const [providerId, modelId] = key.split("|");
@@ -118,10 +129,10 @@ export function SettingsView(): ReactNode {
                 void api
                   .updateApp({ defaultExecutionModel: { model: { providerId, modelId }, effort } })
                   .then((next) => dispatch({ type: "app", app: next }))
-                  .catch((error: unknown) => setError(error instanceof Error ? error.message : String(error)));
+                  .catch((error: unknown) => setError(errorDisplay(error)));
               }}
               allowEmpty
-              label="默认执行模型"
+              label={messages.settings.defaultExecutionModel}
             />
             {app.defaultExecutionModel !== null ? (
               <EffortPicker
@@ -134,23 +145,21 @@ export function SettingsView(): ReactNode {
                   void api
                     .updateApp({ defaultExecutionModel: { model: app.defaultExecutionModel!.model, effort } })
                     .then((next) => dispatch({ type: "app", app: next }))
-                    .catch((error: unknown) => setError(error instanceof Error ? error.message : String(error)));
+                    .catch((error: unknown) => setError(errorDisplay(error)));
                 }}
-                label="默认模型推理强度"
+                label={messages.settings.defaultModelEffort}
               />
             ) : null}
             <ConnectionCheckButton model={app.defaultExecutionModel?.model} kind="chat" />
           </div>
-          <p className="hint">新建员工时默认使用这个模型。「检查连接」会发起一次真实请求，可能产生费用。</p>
+          <p className="hint">{messages.settings.defaultModelHint}</p>
         </section>
 
         <section>
-          <h3>审批判断者</h3>
-          <p className="hint">
-            修改审批配置会提升策略版本（当前 v{app.policyVersion}），此前获批但未执行的调用会失效，需要重新请求。
-          </p>
-          <p className="hint">低/中风险自动通过，高风险转人工裁决，禁止动作自动拒绝，判断失败阻止执行。</p>
-          <p className="hint">审批判断模型单独配置；不会自动沿用员工模型。</p>
+          <h3>{messages.settings.approvalJudge}</h3>
+          <p className="hint">{messages.settings.policyVersionHint(app.policyVersion)}</p>
+          <p className="hint">{messages.settings.riskPolicyHint}</p>
+          <p className="hint">{messages.settings.separateJudgeHint}</p>
           <div className="row">
             <label className="inline">
               <input
@@ -159,7 +168,7 @@ export function SettingsView(): ReactNode {
                 onChange={() => {
                   const first = chatModels.find((model) => model.configured);
                   if (first === undefined) {
-                    setError("没有可用的对话模型作为 LLM 判断者，请先配置 Provider。");
+                    setError(uiText((m) => m.settings.noLlmJudge));
                     return;
                   }
                   void saveApproval({
@@ -170,7 +179,7 @@ export function SettingsView(): ReactNode {
                   });
                 }}
               />
-              LLM 判断
+              {messages.settings.llmJudge}
             </label>
             <label className="inline">
               <input
@@ -179,7 +188,7 @@ export function SettingsView(): ReactNode {
                 onChange={() => {
                   const first = state.models.find((model) => model.kind === "classifier" && model.configured);
                   if (first === undefined) {
-                    setError("没有可用的分类模型，请先配置支持 classifier 接口的 Provider。");
+                    setError(uiText((m) => m.settings.noClassifier));
                     return;
                   }
                   void saveApproval({
@@ -189,7 +198,7 @@ export function SettingsView(): ReactNode {
                   });
                 }}
               />
-              分类器
+              {messages.settings.classifier}
             </label>
           </div>
           {approval !== null && approval !== undefined ? (
@@ -211,7 +220,7 @@ export function SettingsView(): ReactNode {
                       void saveApproval({ ...approval, model: { providerId, modelId } });
                     }
                   }}
-                  label="审批判断模型"
+                  label={messages.settings.judgeModel}
                 />
                 {approval.kind === "llm" ? (
                   <EffortPicker
@@ -220,22 +229,22 @@ export function SettingsView(): ReactNode {
                     }
                     value={approval.effort}
                     onChange={(effort) => void saveApproval({ ...approval, effort })}
-                    label="判断模型推理强度"
+                    label={messages.settings.judgeEffort}
                   />
                 ) : null}
                 <ConnectionCheckButton model={approval.model} kind={approval.kind === "llm" ? "chat" : "classifier"} />
               </div>
             </>
           ) : (
-            <p className="hint">未配置审批判断者：自动审查不可用，有风险的调用会被阻止执行。</p>
+            <p className="hint">{messages.settings.noJudgeHint}</p>
           )}
         </section>
 
         <section>
-          <h3>协作上限</h3>
+          <h3>{messages.settings.collaboration}</h3>
           <div className="row">
             <label>
-              交办层数
+              {messages.settings.delegationDepth}
               <input
                 type="number"
                 min="1"
@@ -248,7 +257,7 @@ export function SettingsView(): ReactNode {
               />
             </label>
             <label>
-              跨员工唤醒次数
+              {messages.settings.crossEmployeeWakes}
               <input
                 type="number"
                 min="1"
@@ -263,7 +272,7 @@ export function SettingsView(): ReactNode {
               />
             </label>
             <label>
-              模型轮次
+              {messages.settings.modelTurns}
               <input
                 type="number"
                 min="1"
@@ -281,7 +290,7 @@ export function SettingsView(): ReactNode {
         <ProviderManager />
 
         <section>
-          <h3>技能</h3>
+          <h3>{messages.settings.skills}</h3>
           <ul className="plain">
             {state.skills.map((skill) => (
               <li key={skill.id}>
@@ -292,18 +301,18 @@ export function SettingsView(): ReactNode {
                   onClick={() => {
                     void api
                       .deleteSkill(skill.id)
-                      .catch((error: unknown) => setError(error instanceof Error ? error.message : String(error)));
+                      .catch((error: unknown) => setError(errorDisplay(error)));
                   }}
                 >
-                  移除
+                  {messages.common.remove}
                 </button>
               </li>
             ))}
-            {state.skills.length === 0 ? <li className="hint">还没有技能。</li> : null}
+            {state.skills.length === 0 ? <li className="hint">{messages.settings.noSkills}</li> : null}
           </ul>
           <div className="row">
             <input
-              placeholder="包含 SKILL.md 的目录，例如 ~/.claude/skills"
+              placeholder={messages.settings.skillDirPlaceholder}
               value={skillDir}
               onChange={(event) => setSkillDir(event.target.value)}
             />
@@ -316,10 +325,10 @@ export function SettingsView(): ReactNode {
                     setSkillDiagnostics(result.diagnostics);
                     setSkillDir("");
                   })
-                  .catch((error: unknown) => setError(error instanceof Error ? error.message : String(error)));
+                  .catch((error: unknown) => setError(errorDisplay(error)));
               }}
             >
-              导入
+              {messages.settings.importSkill}
             </button>
           </div>
           {skillDiagnostics.map((diagnostic) => (
@@ -330,17 +339,17 @@ export function SettingsView(): ReactNode {
         </section>
 
         <section>
-          <h3>MCP 服务</h3>
+          <h3>{messages.settings.mcp}</h3>
           <ul className="plain">
             {state.mcpServers.map((server) => (
               <li key={server.id}>
                 <strong>{server.name}</strong>{" "}
                 {server.connection.state === "connected" ? (
-                  <Chip tone="ok">{server.tools.length} 个工具</Chip>
+                  <Chip tone="ok">{messages.settings.mcpTools(server.tools.length)}</Chip>
                 ) : server.connection.state === "error" ? (
-                  <Chip tone="error">{server.connection.message ?? "连接失败"}</Chip>
+                  <Chip tone="error">{text(server.connection.message ?? messages.settings.mcpConnectionFailed)}</Chip>
                 ) : (
-                  <Chip tone="muted">未连接</Chip>
+                  <Chip tone="muted">{messages.settings.mcpNotConnected}</Chip>
                 )}
                 <code>{server.target}</code>
                 <button
@@ -350,27 +359,27 @@ export function SettingsView(): ReactNode {
                       .connectMcpServer(server.id)
                       .then(() => api.mcpServers())
                       .then((payload) => dispatch({ type: "mcp", servers: payload.servers }))
-                      .catch((error: unknown) => setError(error instanceof Error ? error.message : String(error)));
+                      .catch((error: unknown) => setError(errorDisplay(error)));
                   }}
                 >
-                  连接
+                  {messages.settings.mcpConnect}
                 </button>
                 <button
                   type="button"
                   onClick={() => {
                     void api
                       .deleteMcpServer(server.id)
-                      .catch((error: unknown) => setError(error instanceof Error ? error.message : String(error)));
+                      .catch((error: unknown) => setError(errorDisplay(error)));
                   }}
                 >
-                  删除
+                  {messages.common.delete}
                 </button>
               </li>
             ))}
-            {state.mcpServers.length === 0 ? <li className="hint">还没有 MCP 服务。</li> : null}
+            {state.mcpServers.length === 0 ? <li className="hint">{messages.settings.noMcpServers}</li> : null}
           </ul>
           <div className="row">
-            <input placeholder="名称" value={serverDraft.name} onChange={(event) => setServerDraft({ ...serverDraft, name: event.target.value })} />
+            <input placeholder={messages.settings.serverNamePlaceholder} value={serverDraft.name} onChange={(event) => setServerDraft({ ...serverDraft, name: event.target.value })} />
             <select
               value={serverDraft.transport}
               onChange={(event) => setServerDraft({ ...serverDraft, transport: event.target.value as "stdio" | "http" })}
@@ -382,12 +391,12 @@ export function SettingsView(): ReactNode {
           {serverDraft.transport === "stdio" ? (
             <div className="row">
               <input
-                placeholder="命令，例如 npx"
+                placeholder={messages.settings.serverCommandPlaceholder}
                 value={serverDraft.command}
                 onChange={(event) => setServerDraft({ ...serverDraft, command: event.target.value })}
               />
               <input
-                placeholder="参数，空格分隔"
+                placeholder={messages.settings.serverArgsPlaceholder}
                 value={serverDraft.args}
                 onChange={(event) => setServerDraft({ ...serverDraft, args: event.target.value })}
               />
@@ -413,10 +422,10 @@ export function SettingsView(): ReactNode {
                   dispatch({ type: "mcp", servers: payload.servers });
                   setServerDraft({ name: "", transport: "stdio", command: "", args: "", url: "", description: "" });
                 })
-                .catch((error: unknown) => setError(error instanceof Error ? error.message : String(error)));
+                .catch((error: unknown) => setError(errorDisplay(error)));
             }}
           >
-            添加服务
+            {messages.settings.addServer}
           </button>
         </section>
       </div>

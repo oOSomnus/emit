@@ -23,14 +23,16 @@ import type {
   WorkDTO,
 } from "../shared/contracts.ts";
 import type { BootstrapDTO } from "../shared/contracts.ts";
+import { errorDisplay, type DisplayText } from "../shared/i18n.ts";
 import { api, subscribeEvents } from "./api.ts";
+import { uiText } from "./messages.ts";
 
 export type View = "chat" | "mail" | "approvals" | "employees" | "work" | "settings";
 
 export type State = {
   ready: boolean;
   connected: boolean;
-  error: string | undefined;
+  error: DisplayText | undefined;
   app: AppConfigDTO | undefined;
   employees: EmployeeDTO[];
   rooms: RoomDTO[];
@@ -44,7 +46,7 @@ export type State = {
   activeRoomId: string | undefined;
   messages: MessageDTO[];
   view: View;
-  notice: { id: number; text: string } | undefined;
+  notice: { id: number; text: DisplayText } | undefined;
   /**
    * Bumped whenever a mail could have changed on the server: the mailbox is a
    * server-owned view, so it is refetched on this revision rather than patched.
@@ -78,7 +80,7 @@ const initialState: State = {
 type Action =
   | { type: "bootstrap"; payload: BootstrapDTO; models: ModelInfoDTO[] }
   | { type: "connected"; value: boolean }
-  | { type: "error"; message: string | undefined }
+  | { type: "error"; message: DisplayText | undefined }
   | { type: "view"; view: View }
   | { type: "app"; app: AppConfigDTO }
   | { type: "employees"; employees: EmployeeDTO[] }
@@ -100,7 +102,7 @@ type Action =
   | { type: "activeRoom"; roomId: string | undefined }
   | { type: "messages"; messages: MessageDTO[] }
   | { type: "message"; roomId: string; message: MessageDTO }
-  | { type: "notice"; text: string }
+  | { type: "notice"; text: DisplayText }
   | { type: "mailChanged" };
 
 function upsert<T extends { id: string }>(list: readonly T[], item: T): T[] {
@@ -208,7 +210,7 @@ type ContextValue = {
   refreshModels: () => Promise<void>;
   openRoom: (roomId: string) => Promise<void>;
   reload: () => Promise<void>;
-  setError: (message: string | undefined) => void;
+  setError: (message: DisplayText | undefined) => void;
 };
 
 const AppContext = createContext<ContextValue | undefined>(undefined);
@@ -271,7 +273,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (room.kind === "mail") dispatch({ type: "view", view: "mail" });
       await openRoom(room.id);
     } catch (error) {
-      dispatch({ type: "error", message: error instanceof Error ? error.message : String(error) });
+      dispatch({ type: "error", message: errorDisplay(error) });
     }
   }, [openRoom]);
 
@@ -298,7 +300,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
             )
           ) {
             dispatch({ type: "mailChanged" });
-            dispatch({ type: "notice", text: `收到新邮件：${event.message.mail.subject || "（无主题）"}` });
+            const subject = event.message.mail.subject;
+            dispatch({
+              type: "notice",
+              text: uiText((messages) => messages.app.newMail(subject.length > 0 ? subject : messages.app.emptySubject)),
+            });
           }
           break;
         }
@@ -343,7 +349,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           void api.bootstrap().then((payload) => dispatch({ type: "app", app: payload.app }));
           break;
         case "notice":
-          dispatch({ type: "notice", text: event.text });
+          dispatch({ type: "notice", text: event.textLocalized });
           break;
         default:
           break;
@@ -373,6 +379,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
 export function useApp(): ContextValue {
   const value = useContext(AppContext);
-  if (value === undefined) throw new Error("useApp 必须在 AppProvider 内使用");
+  if (value === undefined) throw new Error("useApp must be used within AppProvider");
   return value;
 }

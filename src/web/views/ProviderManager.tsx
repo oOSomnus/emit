@@ -8,7 +8,11 @@
  */
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { errorDisplay, type DisplayText } from "../../shared/i18n.ts";
 import { api } from "../api.ts";
+import { useI18n } from "../i18n.tsx";
+import { uiText } from "../messages.ts";
+import type { ProvidersMessages } from "../messages/providers.ts";
 import { useApp, type State } from "../state.tsx";
 import { Chip } from "./ui.tsx";
 import type {
@@ -115,27 +119,23 @@ function draftToConfig(draft: CustomDraft): CustomProviderConfigDTO {
   };
 }
 
-/** Configurations that still reference a provider's models. */
-function providerReferences(state: State, providerId: string): string[] {
+/** Configurations that still reference a provider's models, as display labels. */
+function providerReferences(state: State, providerId: string, messages: ProvidersMessages): string[] {
   const references: string[] = [];
   const defaultModel = state.app?.defaultExecutionModel;
   if (defaultModel !== null && defaultModel !== undefined && defaultModel.model.providerId === providerId) {
-    references.push(`默认模型：${defaultModel.model.modelId}`);
+    references.push(messages.referenceDefaultModel(defaultModel.model.modelId));
   }
   const approval = state.app?.approval;
   if (approval !== null && approval !== undefined && approval.model.providerId === providerId) {
-    references.push(`审批判断模型：${approval.model.modelId}`);
+    references.push(messages.referenceApprovalModel(approval.model.modelId));
   }
   for (const employee of state.employees) {
     if (employee.executionModel.model.providerId === providerId) {
-      references.push(`员工 ${employee.name}：${employee.executionModel.model.modelId}`);
+      references.push(messages.referenceEmployee(employee.name, employee.executionModel.model.modelId));
     }
   }
   return references;
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function safeUrl(url: string): string | undefined {
@@ -147,16 +147,9 @@ function safeUrl(url: string): string | undefined {
   }
 }
 
-const STATUS_LABELS: Record<AuthSessionDTO["status"], string> = {
-  running: "进行中",
-  waiting: "等待输入",
-  succeeded: "已保存",
-  failed: "失败",
-  cancelled: "已取消",
-};
-
 export function ProviderManager(): ReactNode {
   const { state, refreshModels, setError } = useApp();
+  const { messages } = useI18n();
   const [search, setSearch] = useState("");
   const [configuredOnly, setConfiguredOnly] = useState(false);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
@@ -165,8 +158,8 @@ export function ProviderManager(): ReactNode {
     () => sessionStorage.getItem(SESSION_KEY) ?? undefined,
   );
   const [busy, setBusy] = useState(false);
-  const [authError, setAuthError] = useState<string | undefined>(undefined);
-  const [providerMessage, setProviderMessage] = useState<{ tone: "ok" | "error"; text: string } | undefined>(
+  const [authError, setAuthError] = useState<DisplayText | undefined>(undefined);
+  const [providerMessage, setProviderMessage] = useState<{ tone: "ok" | "error"; text: DisplayText } | undefined>(
     undefined,
   );
   const [editor, setEditor] = useState<CustomDraft | undefined>(undefined);
@@ -212,7 +205,7 @@ export function ProviderManager(): ReactNode {
           setSession(undefined);
           return;
         }
-        setAuthError(message(error));
+        setAuthError(errorDisplay(error));
         timer = setTimeout(tick, 1500);
       }
     };
@@ -234,7 +227,7 @@ export function ProviderManager(): ReactNode {
       sessionStorage.setItem(SESSION_KEY, started.id);
       setSelectedId(providerId);
     } catch (error) {
-      setAuthError(message(error));
+      setAuthError(errorDisplay(error));
     } finally {
       setBusy(false);
     }
@@ -247,7 +240,7 @@ export function ProviderManager(): ReactNode {
     try {
       setSession(await api.respondAuthSession(session.id, session.prompt.id, value));
     } catch (error) {
-      setAuthError(message(error));
+      setAuthError(errorDisplay(error));
     } finally {
       setBusy(false);
     }
@@ -259,7 +252,7 @@ export function ProviderManager(): ReactNode {
     try {
       setSession(await api.cancelAuthSession(session.id));
     } catch (error) {
-      setAuthError(message(error));
+      setAuthError(errorDisplay(error));
     } finally {
       setSessionId(undefined);
       sessionStorage.removeItem(SESSION_KEY);
@@ -274,9 +267,9 @@ export function ProviderManager(): ReactNode {
     try {
       await api.deleteProviderCredential(providerId);
       await refreshModels();
-      setProviderMessage({ tone: "ok", text: "已移除保存的凭据" });
+      setProviderMessage({ tone: "ok", text: uiText((m) => m.providers.credentialRemoved) });
     } catch (error) {
-      setProviderMessage({ tone: "error", text: message(error) });
+      setProviderMessage({ tone: "error", text: errorDisplay(error) });
     } finally {
       setBusy(false);
     }
@@ -287,10 +280,10 @@ export function ProviderManager(): ReactNode {
     setProviderMessage(undefined);
     try {
       const result = await api.refreshProvider(providerId);
-      setProviderMessage({ tone: result.ok ? "ok" : "error", text: result.message });
+      setProviderMessage({ tone: result.ok ? "ok" : "error", text: result.messageLocalized ?? result.message });
       await refreshModels();
     } catch (error) {
-      setProviderMessage({ tone: "error", text: message(error) });
+      setProviderMessage({ tone: "error", text: errorDisplay(error) });
     } finally {
       setBusy(false);
     }
@@ -315,22 +308,19 @@ export function ProviderManager(): ReactNode {
       }
       setProviderMessage({
         tone: "ok",
-        text: draft.authMode === "key" ? "配置已保存，已保存的 API Key 保持不变" : "配置已保存（无需凭据）",
+        text: uiText((m) => (draft.authMode === "key" ? m.providers.savedKeepKey : m.providers.savedNoCredential)),
       });
     } catch (error) {
-      setProviderMessage({ tone: "error", text: message(error) });
+      setProviderMessage({ tone: "error", text: errorDisplay(error) });
     } finally {
       setBusy(false);
     }
   };
 
   const deleteCustom = async (providerId: string): Promise<void> => {
-    const references = providerReferences(state, providerId);
-    const note =
-      references.length > 0
-        ? `\n\n以下配置仍引用它，删除后这些模型将不可用（引用不会被改写）：\n${references.join("\n")}`
-        : "";
-    if (!window.confirm(`确定删除自定义接口 ${providerId}？${note}`)) return;
+    const references = providerReferences(state, providerId, messages.providers);
+    const note = references.length > 0 ? messages.providers.deleteReferencesNote(references) : "";
+    if (!window.confirm(messages.providers.deleteConfirm(providerId) + note)) return;
     setBusy(true);
     setProviderMessage(undefined);
     try {
@@ -339,7 +329,7 @@ export function ProviderManager(): ReactNode {
       setEditor(undefined);
       setSelectedId(undefined);
     } catch (error) {
-      setProviderMessage({ tone: "error", text: message(error) });
+      setProviderMessage({ tone: "error", text: errorDisplay(error) });
     } finally {
       setBusy(false);
     }
@@ -352,18 +342,15 @@ export function ProviderManager(): ReactNode {
 
   return (
     <fieldset className="provider-manager">
-      <legend>模型 Provider</legend>
-      <p className="hint">
-        这里列出 Pi 原生的全部 {state.providers.length} 个 Provider。认证只保存在本机数据目录；
-        「已配置认证」只表示凭据就绪，不代表连接已验证——用模型旁的「检查连接」实际验证。
-      </p>
+      <legend>{messages.providers.legend}</legend>
+      <p className="hint">{messages.providers.intro(state.providers.length)}</p>
 
       <div className="row">
         <input
           type="search"
           value={search}
-          placeholder="搜索 Provider…"
-          aria-label="搜索 Provider"
+          placeholder={messages.providers.searchPlaceholder}
+          aria-label={messages.providers.search}
           onChange={(event) => setSearch(event.target.value)}
         />
         <label className="inline">
@@ -372,18 +359,18 @@ export function ProviderManager(): ReactNode {
             checked={configuredOnly}
             onChange={(event) => setConfiguredOnly(event.target.checked)}
           />
-          只看已配置
+          {messages.providers.configuredOnly}
         </label>
         <button type="button" onClick={() => setEditor(emptyDraft())}>
-          添加自定义接口
+          {messages.providers.addCustom}
         </button>
       </div>
 
       {sessionActive && sessionProvider !== undefined && sessionProvider.providerId !== selectedProviderId ? (
         <div className="banner warn">
-          <span>有进行中的认证会话：{sessionProvider.name}</span>
+          <span>{messages.providers.activeSession(sessionProvider.name)}</span>
           <button type="button" onClick={() => setSelectedId(sessionProvider.providerId)}>
-            查看
+            {messages.providers.view}
           </button>
         </div>
       ) : null}
@@ -404,11 +391,11 @@ export function ProviderManager(): ReactNode {
                   {provider.name} <code>{provider.providerId}</code>
                 </span>
                 <span className="tags">
-                  {provider.custom ? <Chip tone="info">自定义</Chip> : null}
+                  {provider.custom ? <Chip tone="info">{messages.providers.chipCustom}</Chip> : null}
                   {provider.configured ? (
-                    <Chip tone="ok">{provider.authSource ?? "已配置"}</Chip>
+                    <Chip tone="ok">{provider.authSource ?? messages.providers.authSourceConfigured}</Chip>
                   ) : (
-                    <Chip tone="muted">未配置</Chip>
+                    <Chip tone="muted">{messages.providers.notConfigured}</Chip>
                   )}
                   {provider.storedAuthType !== null ? (
                     <Chip tone="info">{provider.storedAuthType === "oauth" ? "OAuth" : "API Key"}</Chip>
@@ -417,7 +404,7 @@ export function ProviderManager(): ReactNode {
               </button>
             </li>
           ))}
-          {listed.length === 0 ? <li className="hint">没有匹配的 Provider。</li> : null}
+          {listed.length === 0 ? <li className="hint">{messages.providers.noMatch}</li> : null}
         </ul>
 
         {selected !== undefined ? (
@@ -439,7 +426,7 @@ export function ProviderManager(): ReactNode {
             onCancel={() => void cancelAuth()}
           />
         ) : (
-          <p className="hint">选择左侧的 Provider 查看详情。</p>
+          <p className="hint">{messages.providers.selectHint}</p>
         )}
       </div>
 
@@ -474,8 +461,8 @@ function ProviderDetail({
   provider: ProviderStatusDTO;
   models: State["models"];
   busy: boolean;
-  message: { tone: "ok" | "error"; text: string } | undefined;
-  authError: string | undefined;
+  message: { tone: "ok" | "error"; text: DisplayText } | undefined;
+  authError: DisplayText | undefined;
   session: AuthSessionDTO | undefined;
   onStart: (type: "api_key" | "oauth") => void;
   onLogout: () => void;
@@ -485,16 +472,29 @@ function ProviderDetail({
   onRespond: (value: string) => void;
   onCancel: () => void;
 }): ReactNode {
+  const { messages, text } = useI18n();
   return (
     <section className="editor provider-detail">
       <h3>
         {provider.name} <code>{provider.providerId}</code>
       </h3>
       <p className="hint">
-        凭据来源：{provider.configured ? provider.authSource ?? "已配置" : "未配置"} · 已保存认证：
-        {provider.storedAuthType === null ? "无" : provider.storedAuthType === "oauth" ? "OAuth" : "API Key"}
+        {messages.providers.credentialSource(
+          provider.configured
+            ? provider.authSource ?? messages.providers.authSourceConfigured
+            : messages.providers.notConfigured,
+        )}{" "}
+        · {messages.providers.storedAuth(
+          provider.storedAuthType === null
+            ? messages.common.none
+            : provider.storedAuthType === "oauth"
+              ? "OAuth"
+              : "API Key",
+        )}
       </p>
-      {provider.authError !== null ? <p className="error-text">认证检查错误：{provider.authError}</p> : null}
+      {provider.authError !== null ? (
+        <p className="error-text">{messages.providers.authCheckError(provider.authError)}</p>
+      ) : null}
 
       <div className="row">
         {provider.authMethods
@@ -503,50 +503,56 @@ function ProviderDetail({
             <button key={method.type} type="button" disabled={busy} onClick={() => onStart(method.type)}>
               {method.type === "oauth"
                 ? method.subscription
-                  ? `订阅登录：${method.label}`
-                  : `登录：${method.label}`
-                : `设置 ${method.label}`}
+                  ? messages.providers.loginSubscription(method.label)
+                  : messages.providers.login(method.label)
+                : messages.providers.setupKey(method.label)}
             </button>
           ))}
         {provider.storedAuthType !== null ? (
           <button type="button" className="danger" disabled={busy} onClick={onLogout}>
-            移除已保存凭据
+            {messages.providers.removeCredential}
           </button>
         ) : null}
         <button type="button" disabled={busy} onClick={onRefresh}>
-          刷新模型目录
+          {messages.providers.refreshCatalog}
         </button>
         {provider.custom ? (
           <>
             <button type="button" disabled={busy} onClick={onEdit}>
-              编辑配置
+              {messages.providers.editConfig}
             </button>
             <button type="button" className="danger" disabled={busy} onClick={onDelete}>
-              删除接口
+              {messages.providers.deleteProvider}
             </button>
           </>
         ) : null}
       </div>
 
       {providerMessage !== undefined ? (
-        <p className={providerMessage.tone === "ok" ? "hint" : "error-text"}>{providerMessage.text}</p>
+        <p className={providerMessage.tone === "ok" ? "hint" : "error-text"}>{text(providerMessage.text)}</p>
       ) : null}
-      {authError !== undefined ? <p className="error-text">认证交互错误：{authError}</p> : null}
+      {authError !== undefined ? (
+        <p className="error-text">{messages.providers.authInteractionError(text(authError))}</p>
+      ) : null}
 
       {session !== undefined ? (
         <AuthSessionPanel session={session} busy={busy} onRespond={onRespond} onCancel={onCancel} />
       ) : null}
 
-      <h4>模型（{models.length}）</h4>
+      <h4>{messages.providers.modelsHeading(models.length)}</h4>
       <ul className="plain">
         {models.map((model) => (
           <li key={`${model.kind}|${model.modelId}`}>
             <code>{model.modelId}</code> {model.name} <Chip tone="muted">{model.kind}</Chip>{" "}
-            <span className="hint">上下文 {model.contextWindow}</span>{" "}
-            {model.configured ? <Chip tone="ok">可用</Chip> : <Chip tone="muted">当前凭据不可用</Chip>}
+            <span className="hint">{messages.providers.contextHint(model.contextWindow)}</span>{" "}
+            {model.configured ? (
+              <Chip tone="ok">{messages.providers.modelAvailable}</Chip>
+            ) : (
+              <Chip tone="muted">{messages.providers.modelCredentialUnavailable}</Chip>
+            )}
           </li>
         ))}
-        {models.length === 0 ? <li className="hint">该 Provider 没有可浏览的对话或分类模型。</li> : null}
+        {models.length === 0 ? <li className="hint">{messages.providers.noModels}</li> : null}
       </ul>
     </section>
   );
@@ -563,6 +569,7 @@ function AuthSessionPanel({
   onRespond: (value: string) => void;
   onCancel: () => void;
 }): ReactNode {
+  const { messages, text } = useI18n();
   const [value, setValue] = useState("");
   const promptId = session.prompt?.id;
   useEffect(() => {
@@ -573,25 +580,27 @@ function AuthSessionPanel({
   return (
     <div className="auth-session">
       <p className="hint">
-        认证状态：{STATUS_LABELS[session.status]}
-        {session.message !== null ? ` · ${session.message}` : ""}
+        {messages.providers.authStatus(messages.providers.status[session.status])}
+        {session.message !== null ? ` · ${text(session.messageLocalized ?? session.message)}` : ""}
       </p>
       {session.events.length > 0 ? (
         <ul className="plain">
           {session.events.map((event, index) => (
-            <li key={index}>{renderAuthEvent(event)}</li>
+            <li key={index}>{renderAuthEvent(event, messages.providers, text)}</li>
           ))}
         </ul>
       ) : null}
       {prompt !== null ? (
         <div>
-          <p className="hint">{prompt.message}</p>
+          <p className="hint">{text(prompt.messageLocalized ?? prompt.message)}</p>
           {prompt.type === "select" ? (
             <div className="row">
               {prompt.options?.map((option) => (
                 <button key={option.id} type="button" disabled={busy} onClick={() => onRespond(option.id)}>
-                  {option.label}
-                  {option.description !== undefined ? <span className="hint"> {option.description}</span> : null}
+                  {text(option.labelLocalized ?? option.label)}
+                  {option.description !== undefined ? (
+                    <span className="hint"> {text(option.descriptionLocalized ?? option.description)}</span>
+                  ) : null}
                 </button>
               ))}
             </div>
@@ -607,11 +616,11 @@ function AuthSessionPanel({
                 type={prompt.type === "secret" ? "password" : "text"}
                 value={value}
                 placeholder={prompt.placeholder ?? ""}
-                aria-label={prompt.message}
+                aria-label={text(prompt.messageLocalized ?? prompt.message)}
                 onChange={(event) => setValue(event.target.value)}
               />
               <button type="submit" disabled={busy || (prompt.type === "secret" && value.length === 0)}>
-                提交
+                {messages.providers.submit}
               </button>
             </form>
           )}
@@ -619,19 +628,23 @@ function AuthSessionPanel({
       ) : null}
       {session.status === "running" || session.status === "waiting" ? (
         <button type="button" className="danger" disabled={busy} onClick={onCancel}>
-          取消认证
+          {messages.providers.cancelAuth}
         </button>
       ) : null}
     </div>
   );
 }
 
-function renderAuthEvent(event: AuthEventDTO): ReactNode {
+function renderAuthEvent(
+  event: AuthEventDTO,
+  providers: ProvidersMessages,
+  text: (value: DisplayText) => string,
+): ReactNode {
   switch (event.type) {
     case "info":
       return (
         <>
-          {event.message}
+          {text(event.messageLocalized ?? event.message)}
           {event.links?.map((link) => {
             const url = safeUrl(link.url);
             return url === undefined ? null : (
@@ -652,7 +665,7 @@ function renderAuthEvent(event: AuthEventDTO): ReactNode {
           ) : (
             <>
               <a className="link" href={url} target="_blank" rel="noopener noreferrer">
-                打开授权页面
+                {providers.openAuthPage}
               </a>{" "}
               <code>{url}</code>
             </>
@@ -664,21 +677,24 @@ function renderAuthEvent(event: AuthEventDTO): ReactNode {
       const verificationUrl = safeUrl(event.verificationUri);
       return (
         <>
-          设备码 <code>{event.userCode}</code>，在{" "}
+          {providers.deviceCode} <code>{event.userCode}</code>
+          {providers.deviceCodeAt}
           {verificationUrl === undefined ? (
             <code>{event.verificationUri}</code>
           ) : (
             <a className="link" href={verificationUrl} target="_blank" rel="noopener noreferrer">
               {event.verificationUri}
             </a>
-          )}{" "}
-          输入
-          {event.expiresInSeconds !== undefined ? `（${Math.round(event.expiresInSeconds / 60)} 分钟内有效）` : ""}
+          )}
+          {providers.deviceCodeEnter}
+          {event.expiresInSeconds !== undefined
+            ? providers.deviceCodeExpiry(Math.round(event.expiresInSeconds / 60))
+            : ""}
         </>
       );
     }
     case "progress":
-      return <>{event.message}</>;
+      return <>{text(event.messageLocalized ?? event.message)}</>;
   }
 }
 
@@ -693,6 +709,7 @@ function CustomEditor({
   onCancel: () => void;
   onSave: (draft: CustomDraft) => void;
 }): ReactNode {
+  const { messages } = useI18n();
   const [draft, setDraft] = useState<CustomDraft>(initial);
   const editing = initial.id.length > 0;
 
@@ -705,14 +722,14 @@ function CustomEditor({
 
   return (
     <div className="editor">
-      <h4>{editing ? `编辑自定义接口 ${initial.id}` : "添加自定义接口"}</h4>
+      <h4>{editing ? messages.providers.editCustomTitle(initial.id) : messages.providers.addCustom}</h4>
       <div className="row">
         <label>
           Provider id
           <input
             value={draft.id}
             readOnly={editing}
-            placeholder="例如 my-gateway"
+            placeholder={messages.providers.idPlaceholder}
             onChange={(event) => {
               const id = event.target.value;
               setDraft({
@@ -727,7 +744,7 @@ function CustomEditor({
           />
         </label>
         <label>
-          名称
+          {messages.providers.nameLabel}
           <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
         </label>
       </div>
@@ -741,7 +758,7 @@ function CustomEditor({
       </label>
       <div className="row">
         <label>
-          接口协议
+          {messages.providers.apiLabel}
           <select
             value={draft.api}
             onChange={(event) => setDraft({ ...draft, api: event.target.value as CustomProviderApi })}
@@ -763,7 +780,7 @@ function CustomEditor({
               })
             }
           />
-          需要 API Key
+          {messages.providers.authModeKey}
         </label>
         <label className="inline">
           <input
@@ -771,18 +788,18 @@ function CustomEditor({
             checked={draft.authMode === "none"}
             onChange={() => setDraft({ ...draft, authMode: "none" })}
           />
-          无需凭据
+          {messages.providers.authModeNone}
         </label>
       </div>
       {draft.authMode === "key" ? (
         <label>
-          环境变量名（高级，可留默认）
+          {messages.providers.apiKeyEnvLabel}
           <input value={draft.apiKeyEnv} onChange={(event) => setDraft({ ...draft, apiKeyEnv: event.target.value })} />
         </label>
       ) : null}
 
       <fieldset>
-        <legend>模型</legend>
+        <legend>{messages.providers.modelsLegend}</legend>
         {draft.models.map((model, index) => (
           <div className="row" key={index}>
             <label>
@@ -790,7 +807,7 @@ function CustomEditor({
               <input value={model.id} onChange={(event) => updateModel(index, { id: event.target.value })} />
             </label>
             <label>
-              名称
+              {messages.providers.nameLabel}
               <input value={model.name} onChange={(event) => updateModel(index, { name: event.target.value })} />
             </label>
             <label>
@@ -839,21 +856,21 @@ function CustomEditor({
               disabled={draft.models.length <= 1}
               onClick={() => setDraft({ ...draft, models: draft.models.filter((_, position) => position !== index) })}
             >
-              移除
+              {messages.common.remove}
             </button>
           </div>
         ))}
         <button type="button" onClick={() => setDraft({ ...draft, models: [...draft.models, blankModelRow()] })}>
-          添加模型
+          {messages.providers.addModel}
         </button>
       </fieldset>
 
       <div className="row">
         <button type="button" className="primary" disabled={busy} onClick={() => onSave(draft)}>
-          {busy ? "保存中…" : "保存配置"}
+          {busy ? messages.common.saving : messages.providers.saveConfig}
         </button>
         <button type="button" disabled={busy} onClick={onCancel}>
-          取消
+          {messages.common.cancel}
         </button>
       </div>
     </div>

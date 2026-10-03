@@ -26,19 +26,20 @@ import {
 } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
+  CheckResultDTO,
   CustomProviderConfigDTO,
   ModelInfoDTO,
   ModelRefDTO,
   ProviderAuthMethodDTO,
   ProviderStatusDTO,
 } from "../shared/contracts.ts";
+import { type AppText } from "./messages.ts";
+import { modelMessages } from "./messages/models.ts";
 import { probeResources } from "./prompts/index.ts";
 import { configureBuiltinLogin, createCustomProviders, normalizeCustomProviders } from "./providers.ts";
 
 /** Reasoning efforts a model accepts, in ascending order, with `off` first. */
 const EFFORT_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-
-export type ConnectionCheck = { ok: boolean; message: string };
 
 export class ModelCatalog {
   readonly models: MutableModels;
@@ -158,15 +159,17 @@ export class ModelCatalog {
    * chat model, at an effort that model actually supports. Accepting anything
    * else would only surface later as a failed run.
    */
-  chatSelectionProblem(selection: { providerId: string; modelId: string; effort: string }): string | undefined {
-    if (selection.providerId.length === 0 || selection.modelId.length === 0) return "请选择执行模型";
+  chatSelectionProblem(selection: { providerId: string; modelId: string; effort: string }): AppText | undefined {
+    if (selection.providerId.length === 0 || selection.modelId.length === 0) {
+      return modelMessages.chatSelectionRequired();
+    }
     const model = this.models.getModel(selection.providerId, selection.modelId);
     if (model === undefined || getModelType(model) !== "chat") {
-      return `找不到可用的对话模型 ${selection.providerId}/${selection.modelId}`;
+      return modelMessages.chatModelUnresolved(selection.providerId, selection.modelId);
     }
     const supported = thinkingLevelsFor(model as Model<never>);
     if (!supported.includes(selection.effort)) {
-      return `模型 ${model.name} 不支持 effort「${selection.effort}」，可选：${supported.join("、")}`;
+      return modelMessages.effortUnsupported(model.name, selection.effort, supported);
     }
     return undefined;
   }
@@ -177,7 +180,7 @@ export class ModelCatalog {
     providerId: string;
     modelId: string;
     effort: string;
-  }): string | undefined {
+  }): AppText | undefined {
     if (config.kind === "llm") {
       return this.chatSelectionProblem({
         providerId: config.providerId,
@@ -186,7 +189,7 @@ export class ModelCatalog {
       });
     }
     if (this.classifierModel({ providerId: config.providerId, modelId: config.modelId }) === undefined) {
-      return `找不到分类模型 ${config.providerId}/${config.modelId}`;
+      return modelMessages.classifierModelUnresolved(config.providerId, config.modelId);
     }
     return undefined;
   }
@@ -202,24 +205,27 @@ export class ModelCatalog {
   /**
    * Real per-kind probe. A chat probe sends one tiny completion; a classifier
    * probe runs one bool question, because a chat request cannot verify a
-   * classifier endpoint.
+   * classifier endpoint. A provider's own error message stays raw; only the
+   * app-authored wrapping carries a pair.
    */
-  async check(ref: ModelRefDTO, kind: "chat" | "classifier"): Promise<ConnectionCheck> {
+  async check(ref: ModelRefDTO, kind: "chat" | "classifier"): Promise<CheckResultDTO> {
     if (kind === "classifier") {
       const model = this.classifierModel(ref);
-      if (model === undefined) return { ok: false, message: `未找到分类模型 ${ref.providerId}/${ref.modelId}` };
+      if (model === undefined) return appCheck(false, modelMessages.classifierModelMissing(ref.providerId, ref.modelId));
       const result = await this.models.classify(model, {
         state: probeResources.classifier.state,
         questions: { reachable: probeResources.classifier.question },
       });
       if (result.stopReason !== "stop") {
-        return { ok: false, message: result.errorMessage ?? `分类请求结束于 ${result.stopReason}` };
+        return result.errorMessage === undefined
+          ? appCheck(false, modelMessages.classifierRequestEnded(result.stopReason))
+          : { ok: false, message: result.errorMessage };
       }
-      return { ok: true, message: `${model.name} 已应答（${result.answers.reachable?.type ?? "unknown"}）` };
+      return appCheck(true, modelMessages.classifierResponded(model.name, result.answers.reachable?.type ?? "unknown"));
     }
 
     const model = this.chatModel(ref);
-    if (model === undefined) return { ok: false, message: `未找到对话模型 ${ref.providerId}/${ref.modelId}` };
+    if (model === undefined) return appCheck(false, modelMessages.chatModelMissing(ref.providerId, ref.modelId));
     // Each check is its own one-shot conversation, so it carries a fresh
     // session id; the native OpenCode provider turns it into the required
     // `x-opencode-session` header. A single request's internal retries reuse
@@ -230,9 +236,11 @@ export class ModelCatalog {
       { maxTokens: 16, sessionId: randomUUID() },
     );
     if (message.stopReason === "error" || message.stopReason === "aborted") {
-      return { ok: false, message: message.errorMessage ?? `请求结束于 ${message.stopReason}` };
+      return message.errorMessage === undefined
+        ? appCheck(false, modelMessages.requestEnded(message.stopReason))
+        : { ok: false, message: message.errorMessage };
     }
-    return { ok: true, message: `${model.name} 已应答（${message.stopReason}）` };
+    return appCheck(true, modelMessages.chatResponded(model.name, message.stopReason));
   }
 
   /**
@@ -290,6 +298,11 @@ function authMethodsOf(provider: Provider): ProviderAuthMethodDTO[] {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** A probe result whose message is an app-authored pair. */
+function appCheck(ok: boolean, message: AppText): CheckResultDTO {
+  return { ok, message: message.text, messageLocalized: message.localized };
 }
 
 /** Supported efforts for a chat model, ordered, `off` first. */

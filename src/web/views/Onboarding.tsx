@@ -2,6 +2,9 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api.ts";
+import { errorDisplay } from "../../shared/i18n.ts";
+import { LanguagePicker, useI18n } from "../i18n.tsx";
+import { uiText } from "../messages.ts";
 import { useApp } from "../state.tsx";
 import { ConnectionCheckButton, EffortPicker, ModelPicker, modelKey } from "./ui.tsx";
 import { ProviderManager } from "./ProviderManager.tsx";
@@ -10,7 +13,12 @@ import type { ApprovalEvaluatorConfigDTO, ModelInfoDTO } from "../../shared/cont
 
 export function Onboarding(): ReactNode {
   const { state, reload, setError } = useApp();
-  const [workspaceName, setWorkspaceName] = useState("我的数字团队");
+  const { messages } = useI18n();
+  // An untouched workspace name follows the interface language; any edit —
+  // including clearing the field — pins the value so a switch cannot overwrite
+  // what the user typed.
+  const [workspaceName, setWorkspaceName] = useState("");
+  const [workspaceNameEdited, setWorkspaceNameEdited] = useState(false);
   const [userName, setUserName] = useState("");
   const [chatModel, setChatModel] = useState<string>("");
   const [effort, setEffort] = useState("off");
@@ -48,15 +56,15 @@ export function Onboarding(): ReactNode {
 
   const submit = async (): Promise<void> => {
     if (userName.trim().length === 0) {
-      setError("请填写你的名字");
+      setError(uiText((m) => m.onboarding.errorName));
       return;
     }
     if (selectedChat === undefined || !selectedChat.configured) {
-      setError("请选择一个可用的对话模型（先在上面的 Provider 列表中完成认证）");
+      setError(uiText((m) => m.onboarding.errorChatModel));
       return;
     }
     if (selectedApproval === undefined || !selectedApproval.configured) {
-      setError("请选择一个可用的审批判断模型");
+      setError(uiText((m) => m.onboarding.errorJudgeModel));
       return;
     }
     setBusy(true);
@@ -76,7 +84,8 @@ export function Onboarding(): ReactNode {
               criteriaVersion: 3,
             };
       await api.setup({
-        workspaceName: workspaceName.trim().length > 0 ? workspaceName.trim() : "我的数字团队",
+        workspaceName:
+          workspaceName.trim().length > 0 ? workspaceName.trim() : messages.onboarding.defaultWorkspace,
         userName: userName.trim(),
         defaultExecutionModel: {
           model: { providerId: selectedChat.providerId, modelId: selectedChat.modelId },
@@ -86,7 +95,7 @@ export function Onboarding(): ReactNode {
       });
       await reload();
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(errorDisplay(error));
     } finally {
       setBusy(false);
     }
@@ -95,49 +104,58 @@ export function Onboarding(): ReactNode {
   return (
     <div className="onboarding">
       <h1>Emit</h1>
-      <p className="lede">
-        一个只在本地运行的数字员工工作台。员工用消息即时协作，用邮件异步交付；每一次工具调用、审批和回复都持久保存，进程重启后可以继续。
-      </p>
+      <p className="lede">{messages.onboarding.lede}</p>
 
       <fieldset>
-        <legend>外观</legend>
-        <ThemePicker label="主题" />
-        <p className="hint">可以随时在左侧栏底部切换浅色、深色或跟随系统。</p>
+        <legend>{messages.onboarding.appearanceLegend}</legend>
+        <ThemePicker label={messages.onboarding.themeLabel} />
+        <LanguagePicker />
+        <p className="hint">{messages.onboarding.appearanceHint}</p>
       </fieldset>
 
       <label>
-        工作区名称
-        <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} />
+        {messages.onboarding.workspaceNameLabel}
+        <input
+          value={workspaceNameEdited ? workspaceName : messages.onboarding.defaultWorkspace}
+          onChange={(event) => {
+            setWorkspaceName(event.target.value);
+            setWorkspaceNameEdited(true);
+          }}
+        />
       </label>
 
       <label>
-        你的名字
-        <input value={userName} onChange={(event) => setUserName(event.target.value)} placeholder="用于生成你的邮箱地址" />
+        {messages.onboarding.userNameLabel}
+        <input
+          value={userName}
+          onChange={(event) => setUserName(event.target.value)}
+          placeholder={messages.onboarding.userNamePlaceholder}
+        />
       </label>
 
       <ProviderManager />
 
       <div className="row">
         <label>
-          员工默认模型
-          <ModelPicker models={chatModels} value={chatModel} onChange={selectChat} label="员工默认模型" />
+          {messages.onboarding.defaultModelLabel}
+          <ModelPicker models={chatModels} value={chatModel} onChange={selectChat} label={messages.onboarding.defaultModelLabel} />
         </label>
         <label>
-          推理强度
+          {messages.model.effortLabel}
           <EffortPicker
             efforts={selectedChat?.efforts ?? []}
             value={effort}
             onChange={setEffort}
-            label="默认模型推理强度"
+            label={messages.onboarding.defaultEffortLabel}
           />
         </label>
         <ConnectionCheckButton model={selectedChat} kind="chat" />
       </div>
 
       <fieldset>
-        <legend>审批判断者</legend>
-        <p className="hint">低/中风险自动通过，高风险转人工裁决，禁止动作自动拒绝，判断失败阻止执行。</p>
-        <p className="hint">请为自动审查单独选择一个可用模型，不会自动沿用员工模型。</p>
+        <legend>{messages.onboarding.approvalLegend}</legend>
+        <p className="hint">{messages.onboarding.approvalRiskHint}</p>
+        <p className="hint">{messages.onboarding.approvalModelHint}</p>
         <div className="row">
           <label className="inline">
             <input
@@ -148,7 +166,7 @@ export function Onboarding(): ReactNode {
                 setApprovalModel("");
               }}
             />
-            LLM 判断
+            {messages.onboarding.llmJudge}
           </label>
           <label className="inline">
             <input
@@ -159,31 +177,29 @@ export function Onboarding(): ReactNode {
                 setApprovalModel("");
               }}
             />
-            分类器（需要模型支持 classifier 接口）
+            {messages.onboarding.classifierJudge}
           </label>
         </div>
         <label>
-          判断模型
+          {messages.onboarding.judgeModelLabel}
           <ModelPicker
             models={approvalModels}
             value={approvalModel}
             onChange={setApprovalModel}
-            label="审批判断模型"
+            label={messages.onboarding.judgeModelPickerLabel}
           />
         </label>
         {approvalModels.length === 0 ? (
-          <p className="hint">
-            没有{approvalKind === "llm" ? "对话" : "分类"}模型可用；请先配置一个可用的 Provider 和判断模型，才能继续。
-          </p>
+          <p className="hint">{messages.onboarding.noModels(approvalKind === "llm" ? "chat" : "classifier")}</p>
         ) : null}
       </fieldset>
 
       <div className="row">
         <button type="button" className="primary" disabled={busy} onClick={() => void submit()}>
-          {busy ? "正在创建…" : "进入工作台"}
+          {busy ? messages.onboarding.busyButton : messages.onboarding.enterButton}
         </button>
         {state.providers.some((provider) => provider.configured) ? null : (
-          <span className="hint">还没有可用的 Provider 凭据：在上面的列表中选择 Provider 并完成认证。</span>
+          <span className="hint">{messages.onboarding.noCredentialsHint}</span>
         )}
       </div>
     </div>

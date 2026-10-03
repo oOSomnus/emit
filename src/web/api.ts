@@ -7,11 +7,13 @@
  */
 
 import type {
+  ApiErrorBody,
   ApprovalDTO,
   AppConfigDTO,
   AuthSessionDTO,
   BootstrapDTO,
   ChatSelectionDTO,
+  CheckResultDTO,
   CustomProviderConfigDTO,
   CustomProviderDraftDTO,
   EmployeeDTO,
@@ -28,8 +30,21 @@ import type {
   WorkDTO,
   WorkExecutionDTO,
 } from "../shared/contracts.ts";
+import { isLocalizedText, type LocalizedText } from "../shared/i18n.ts";
+import { uiText } from "./messages.ts";
 
-export type ApiError = { status: number; message: string };
+/** One failed HTTP request; `messageLocalized` is present for app-authored errors. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly messageLocalized?: LocalizedText;
+
+  constructor(status: number, message: string, messageLocalized?: LocalizedText) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.messageLocalized = messageLocalized;
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // A bodyless request (DELETE, or a POST with no payload) must not advertise a
@@ -42,11 +57,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const text = await response.text();
   const payload = text.length > 0 ? (JSON.parse(text) as unknown) : undefined;
   if (!response.ok) {
-    const message =
-      typeof payload === "object" && payload !== null && "message" in payload && typeof payload.message === "string"
-        ? payload.message
-        : `请求失败（${response.status}）`;
-    throw Object.assign(new Error(message), { status: response.status }) satisfies ApiError;
+    const body = (typeof payload === "object" && payload !== null ? payload : {}) as Partial<ApiErrorBody>;
+    const messageLocalized = isLocalizedText(body.messageLocalized) ? body.messageLocalized : undefined;
+    if (typeof body.message === "string") {
+      throw new ApiError(response.status, body.message, messageLocalized);
+    }
+    // A response without a message is a failed request, not an application
+    // error: name the status in the user's language.
+    const fallback = uiText((messages) => messages.common.requestFailed(response.status));
+    throw new ApiError(response.status, fallback["zh-CN"], fallback);
   }
   return payload as T;
 }
@@ -67,7 +86,7 @@ export const api = {
   models: () => request<{ models: ModelInfoDTO[]; providers: ProviderStatusDTO[] }>("/api/models"),
 
   checkModel: (model: { providerId: string; modelId: string }, kind: "chat" | "classifier") =>
-    request<{ ok: boolean; message: string }>("/api/models/check", {
+    request<CheckResultDTO>("/api/models/check", {
       method: "POST",
       body: JSON.stringify({ model, kind }),
     }),
@@ -107,16 +126,19 @@ export const api = {
       inReplyTo?: string;
     },
   ) =>
-    request<{ message: MessageDTO; workId?: string; workIds?: string[]; error?: string }>(
+    request<{ message: MessageDTO; workId?: string; workIds?: string[]; error?: string; errorLocalized?: LocalizedText }>(
       `/api/rooms/${roomId}/messages`,
       { method: "POST", body: JSON.stringify(input) },
     ),
 
   sendDraft: (roomId: string, entryId: string) =>
-    request<{ message: MessageDTO; workIds: string[] }>(`/api/rooms/${roomId}/mail-send`, {
-      method: "POST",
-      body: JSON.stringify({ entryId }),
-    }),
+    request<{ message: MessageDTO; workIds: string[]; error?: string; errorLocalized?: LocalizedText }>(
+      `/api/rooms/${roomId}/mail-send`,
+      {
+        method: "POST",
+        body: JSON.stringify({ entryId }),
+      },
+    ),
 
   mailbox: () => request<{ items: MailboxItemDTO[] }>("/api/mail"),
 
@@ -162,10 +184,13 @@ export const api = {
   deleteMcpServer: (id: string) => request<{ ok: true }>(`/api/mcp/${id}`, { method: "DELETE" }),
 
   connectMcpServer: (id: string) =>
-    request<{ ok: boolean; message: string; tools: string[] }>(`/api/mcp/${id}/connect`, {
-      method: "POST",
-      body: "{}",
-    }),
+    request<{ ok: boolean; message: string; messageLocalized?: LocalizedText; tools: string[] }>(
+      `/api/mcp/${id}/connect`,
+      {
+        method: "POST",
+        body: "{}",
+      },
+    ),
 
   customProviders: () => request<{ providers: CustomProviderConfigDTO[] }>("/api/providers/custom"),
 
@@ -179,10 +204,13 @@ export const api = {
     request<{ ok: true }>(`/api/providers/${encodeURIComponent(id)}/credential`, { method: "DELETE" }),
 
   refreshProvider: (id: string) =>
-    request<{ ok: boolean; message: string }>(`/api/providers/${encodeURIComponent(id)}/refresh`, {
-      method: "POST",
-      body: "{}",
-    }),
+    request<{ ok: boolean; message: string; messageLocalized?: LocalizedText }>(
+      `/api/providers/${encodeURIComponent(id)}/refresh`,
+      {
+        method: "POST",
+        body: "{}",
+      },
+    ),
 
   startAuthSession: (providerId: string, type: "api_key" | "oauth") =>
     request<AuthSessionDTO>("/api/auth/sessions", {

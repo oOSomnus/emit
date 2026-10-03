@@ -10,6 +10,7 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useI18n } from "./i18n.tsx";
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
@@ -106,27 +107,29 @@ export function ThemeProvider({ children }: { children: ReactNode }): ReactNode 
 
 export function useTheme(): ThemeContextValue {
   const value = useContext(ThemeContext);
-  if (value === undefined) throw new Error("useTheme 必须在 ThemeProvider 内使用");
+  if (value === undefined) throw new Error("useTheme must be used within ThemeProvider");
   return value;
 }
 
 /** The one theme control, reused in the sidebar, settings, and first-run setup. */
-export function ThemePicker({ label = "外观" }: { label?: string }): ReactNode {
+export function ThemePicker({ label }: { label?: string } = {}): ReactNode {
   const { preference, setPreference } = useTheme();
+  const { messages } = useI18n();
+  const title = label ?? messages.theme.label;
   return (
     <label className="theme-picker">
-      {label}
+      {title}
       <select
         value={preference}
-        aria-label={label}
+        aria-label={title}
         onChange={(event) => {
           if (!isThemePreference(event.target.value)) return;
           setPreference(event.target.value);
         }}
       >
-        <option value="system">跟随系统</option>
-        <option value="light">浅色</option>
-        <option value="dark">深色</option>
+        <option value="system">{messages.theme.system}</option>
+        <option value="light">{messages.theme.light}</option>
+        <option value="dark">{messages.theme.dark}</option>
       </select>
     </label>
   );

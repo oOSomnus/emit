@@ -9,6 +9,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api.ts";
+import { errorDisplay, type DisplayText } from "../../shared/i18n.ts";
+import { useI18n } from "../i18n.tsx";
 import { useApp } from "../state.tsx";
 import { Chip, IconButton, WorkStatus, timeAgo } from "./ui.tsx";
 import { ACTIVE_WORK_STATUSES } from "./WorkView.tsx";
@@ -16,19 +18,13 @@ import type { ApprovalDTO, WorkExecutionDTO, WorkExecutionStepDTO } from "../../
 
 const REFRESH_INTERVAL_MS = 120;
 
-const STEP_LABELS: Record<WorkExecutionStepDTO["kind"], string> = {
-  input: "输入",
-  assistant: "回答",
-  "tool-call": "调用工具",
-  "tool-result": "工具结果",
-};
-
 function StepBody({ step }: { step: WorkExecutionStepDTO }): ReactNode {
+  const { messages } = useI18n();
   if (step.kind === "tool-call") {
     return (
       <>
         <div className="line">
-          <code>{step.toolName ?? "工具"}</code>
+          <code>{step.toolName ?? messages.execution.toolFallback}</code>
           {step.toolCallId !== undefined ? <span className="hint">{step.toolCallId}</span> : null}
         </div>
         {step.arguments !== undefined && step.arguments.length > 0 ? (
@@ -42,7 +38,7 @@ function StepBody({ step }: { step: WorkExecutionStepDTO }): ReactNode {
       {step.kind === "tool-result" && step.toolName !== undefined ? (
         <div className="line">
           <code>{step.toolName}</code>
-          {step.isError === true ? <Chip tone="danger">失败</Chip> : null}
+          {step.isError === true ? <Chip tone="danger">{messages.execution.stepFailed}</Chip> : null}
         </div>
       ) : null}
       {step.text !== undefined && step.text.length > 0 ? <pre className="step-payload">{step.text}</pre> : null}
@@ -57,25 +53,16 @@ function approvalTone(approval: ApprovalDTO): string {
   return "muted";
 }
 
-const APPROVAL_LABELS: Record<ApprovalDTO["status"], string> = {
-  evaluating: "判定中",
-  "pending-human": "等待人工",
-  approved: "已批准",
-  rejected: "已拒绝",
-  blocked: "已阻止",
-  cancelled: "已取消",
-  invalidated: "已失效",
-};
-
 export function WorkExecution({ workId, onClose }: { workId: string; onClose: () => void }): ReactNode {
   const { state, dispatch, setError } = useApp();
+  const { messages, text, locale } = useI18n();
   const [execution, setExecution] = useState<WorkExecutionDTO | undefined>(undefined);
   const [olderSteps, setOlderSteps] = useState<WorkExecutionStepDTO[]>([]);
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [error, setLocalError] = useState("");
+  const [error, setLocalError] = useState<DisplayText>("");
   const requestSeq = useRef(0);
-  const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const refreshTimer = useRef<number | undefined>(undefined);
   const work = state.work.find((item) => item.id === workId);
 
   const load = useCallback(
@@ -88,7 +75,7 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
         setLocalError("");
       } catch (cause) {
         if (seq !== requestSeq.current) return;
-        setLocalError(cause instanceof Error ? cause.message : String(cause));
+        setLocalError(errorDisplay(cause));
       }
     },
     [workId],
@@ -105,10 +92,10 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
   // the refresh is coalesced so a streaming run cannot spam the server.
   const workRevision = `${state.work.length}|${work?.status ?? ""}|${work?.progressText?.length ?? 0}|${state.approvals.length}`;
   useEffect(() => {
-    if (refreshTimer.current !== undefined) clearTimeout(refreshTimer.current);
+    clearTimeout(refreshTimer.current);
     refreshTimer.current = setTimeout(() => void load(), REFRESH_INTERVAL_MS);
     return () => {
-      if (refreshTimer.current !== undefined) clearTimeout(refreshTimer.current);
+      clearTimeout(refreshTimer.current);
     };
   }, [workRevision, load]);
 
@@ -123,7 +110,7 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
       });
       setCursor(payload.nextCursor);
     } catch (cause) {
-      setLocalError(cause instanceof Error ? cause.message : String(cause));
+      setLocalError(errorDisplay(cause));
     } finally {
       setLoadingOlder(false);
     }
@@ -140,7 +127,7 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
       await api.stopWork(workId);
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorDisplay(cause));
     }
   };
 
@@ -150,57 +137,57 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
     <div className="work-execution-backdrop">
       <section className="work-execution" role="dialog" aria-modal="true" aria-labelledby="work-execution-title">
       <div className="work-execution-head">
-        <h2 id="work-execution-title">执行详情</h2>
+        <h2 id="work-execution-title">{messages.execution.title}</h2>
         {shown !== undefined ? <WorkStatus status={shown.status} /> : null}
         {shown !== undefined ? <span className="hint">{shown.employeeName}</span> : null}
         {shown?.kind === "mail" && shown.roomName.length > 0 ? <span className="hint">{shown.roomName}</span> : null}
         <span className="spacer" />
         {shown !== undefined && ACTIVE_WORK_STATUSES.includes(shown.status) ? (
           <button type="button" onClick={() => void stop()}>
-            停止
+            {messages.work.stop}
           </button>
         ) : null}
-        <IconButton icon="close" label="关闭" onClick={onClose} />
+        <IconButton icon="close" label={messages.common.close} onClick={onClose} />
       </div>
 
       <div className="work-execution-body">
         {shown !== undefined ? (
           <div className="work-execution-meta">
-            <span>工作 {shown.id}</span>
-            <span>开始 {timeAgo(shown.startedAt)}</span>
-            {shown.finishedAt !== undefined ? <span>结束 {timeAgo(shown.finishedAt)}</span> : null}
-            {shown.usage !== undefined ? <span>token {shown.usage.input}/{shown.usage.output}</span> : null}
+            <span>{messages.execution.meta.work(shown.id)}</span>
+            <span>{messages.execution.meta.started(timeAgo(shown.startedAt, locale))}</span>
+            {shown.finishedAt !== undefined ? <span>{messages.execution.meta.ended(timeAgo(shown.finishedAt, locale))}</span> : null}
+            {shown.usage !== undefined ? <span>{messages.execution.meta.tokens(shown.usage.input, shown.usage.output)}</span> : null}
             {shown.awaitedMailWorkIds.length > 0 ? (
-              <span>等待 {shown.awaitedMailWorkIds.length} 封回信</span>
+              <span>{messages.execution.meta.awaitingReplies(shown.awaitedMailWorkIds.length)}</span>
             ) : null}
           </div>
         ) : null}
         {shown?.error !== undefined && shown.error.length > 0 ? (
           <p className="error">
-            <Chip tone="danger">错误</Chip> {shown.error}
+            <Chip tone="danger">{messages.execution.workError}</Chip> {text(shown.errorLocalized ?? shown.error)}
           </p>
         ) : null}
 
-        {error.length > 0 ? (
+        {error !== "" ? (
           <p className="error">
-            <Chip tone="danger">读取失败</Chip> {error}
+            <Chip tone="danger">{messages.execution.loadFailed}</Chip> {text(error)}
             <button type="button" className="link" onClick={() => void load()}>
-              重新载入
+              {messages.execution.reload}
             </button>
           </p>
         ) : null}
 
         {execution !== undefined && cursor !== undefined ? (
           <button type="button" className="link" disabled={loadingOlder} onClick={() => void loadOlder()}>
-            {loadingOlder ? "载入中…" : "加载更早的步骤"}
+            {loadingOlder ? messages.common.loading : messages.execution.loadOlder}
           </button>
         ) : null}
 
-        {execution === undefined && error.length === 0 ? (
-          <p className="hint">正在读取执行记录…</p>
+        {execution === undefined && error === "" ? (
+          <p className="hint">{messages.execution.loadingRecord}</p>
         ) : steps.length === 0 ? (
           <p className="hint">
-            {shown !== undefined && shown.status === "queued" ? "尚未开始执行。" : "这次运行没有留下可见步骤。"}
+            {shown !== undefined && shown.status === "queued" ? messages.execution.notStarted : messages.execution.noSteps}
           </p>
         ) : (
           <ol className="work-steps">
@@ -208,15 +195,15 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
               <li key={step.id} className={`work-step kind-${step.kind}`}>
                 <div className="line">
                   <Chip tone={step.kind === "tool-result" && step.isError === true ? "danger" : "muted"}>
-                    {STEP_LABELS[step.kind]}
+                    {messages.execution.step[step.kind]}
                   </Chip>
-                  {step.taskStatus !== undefined ? <span className="hint">任务 {step.taskStatus}</span> : null}
-                  {step.truncated === true ? <span className="hint">已截断</span> : null}
+                  {step.taskStatus !== undefined ? <span className="hint">{messages.execution.task(step.taskStatus)}</span> : null}
+                  {step.truncated === true ? <span className="hint">{messages.execution.truncated}</span> : null}
                 </div>
                 <StepBody step={step} />
                 {step.taskError !== undefined ? (
                   <p className="error">
-                    <Chip tone="danger">任务错误</Chip> {step.taskError}
+                    <Chip tone="danger">{messages.execution.taskError}</Chip> {step.taskError}
                   </p>
                 ) : null}
               </li>
@@ -226,11 +213,11 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
 
         {execution !== undefined && execution.approvals.length > 0 ? (
           <div className="work-approvals">
-            <h3>关联审批</h3>
+            <h3>{messages.execution.approvalsTitle}</h3>
             <ul>
               {execution.approvals.map((approval) => (
                 <li key={approval.id}>
-                  <Chip tone={approvalTone(approval)}>{APPROVAL_LABELS[approval.status]}</Chip>
+                  <Chip tone={approvalTone(approval)}>{messages.execution.approval[approval.status]}</Chip>
                   <code>{approval.toolName}</code>
                   <span className="hint">{approval.risk}</span>
                   <button
@@ -241,7 +228,7 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
                       onClose();
                     }}
                   >
-                    去审批页
+                    {messages.execution.openApprovals}
                   </button>
                 </li>
               ))}

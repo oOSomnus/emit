@@ -57,6 +57,9 @@ import {
 import { toWorkDTO } from "./dto.ts";
 import { toThinkingLevel } from "./agents.ts";
 import { renderMailContinuation } from "./prompts/index.ts";
+import { AppError, fromError, type AppText } from "./app-text.ts";
+import { appMessages } from "./messages.ts";
+import type { LocalizedText } from "../shared/i18n.ts";
 import type { MessageDTO } from "../shared/contracts.ts";
 
 export type MailDispatchInput = { workId: string };
@@ -70,6 +73,8 @@ export type MailResumeInput = {
   entryId: string;
   outcome: "reply" | "failed" | "stopped";
   error: string;
+  /** Display pair for an application-authored `error`; absent for raw reasons. */
+  errorLocalized?: LocalizedText;
 };
 export type MailResumeState = { phase: "submit" };
 export type MailResumeResult = { submitted: boolean };
@@ -95,13 +100,13 @@ async function failDispatch(
   resume: Resume,
   taskRuntime: TaskRuntime<MailDispatchInput, MailDispatchState, MailDispatchResult, object>,
   work: WorkRecord,
-  reason: string,
+  reason: AppText,
   context: ChordContext,
 ): Promise<void> {
   if (!isTerminal(work.status) && work.status !== "stopped") {
     await markFailed(resume, work, reason);
   }
-  await commitTerminal(taskRuntime, { status: "failed", error: { message: reason } }, context);
+  await commitTerminal(taskRuntime, { status: "failed", error: { message: reason.text } }, context);
 }
 
 /**
@@ -133,16 +138,16 @@ export function buildMailTasks(resolve: () => Resume): MailTasks {
         }
         const app = await runtime.readSession(AppDoc);
         if (work.depth > app.collaboration.maxDepth) {
-          await failDispatch(resume, taskRuntime, work, `交办层数超过上限（${app.collaboration.maxDepth} 层）`, context);
+          await failDispatch(resume, taskRuntime, work, appMessages.work.depthOverLimit(app.collaboration.maxDepth), context);
           return;
         }
         const employee = await runtime.readFamily(EmployeeDoc, work.employeeId, { id: work.employeeId });
         if (employee === undefined) {
-          await failDispatch(resume, taskRuntime, work, `找不到员工 ${work.employeeId}`, context);
+          await failDispatch(resume, taskRuntime, work, appMessages.work.employeeNotFound(work.employeeId), context);
           return;
         }
         if (!employee.enabled) {
-          await failDispatch(resume, taskRuntime, work, `员工 ${employee.name} 已停用`, context);
+          await failDispatch(resume, taskRuntime, work, appMessages.work.employeeDisabled(employee.name), context);
           return;
         }
         const modelProblem = runtime.catalog.chatSelectionProblem({
@@ -151,7 +156,7 @@ export function buildMailTasks(resolve: () => Resume): MailTasks {
           effort: employee.executionModel.effort,
         });
         if (modelProblem !== undefined) {
-          await failDispatch(resume, taskRuntime, work, `员工 ${employee.name} 的模型不可用：${modelProblem}`, context);
+          await failDispatch(resume, taskRuntime, work, appMessages.work.modelUnavailable(employee.name, modelProblem), context);
           return;
         }
         try {
@@ -168,7 +173,7 @@ export function buildMailTasks(resolve: () => Resume): MailTasks {
                 room.directories === undefined ||
                 room.directories.version !== work.directoryScope.version
               ) {
-                throw new Error("会话工作目录已变更，请停止并重新发送任务");
+                throw new AppError(appMessages.work.directoryChanged());
               }
               await ensureWorkConversationIn(tx, work.id, {
                 extension: extension!,
@@ -184,13 +189,13 @@ export function buildMailTasks(resolve: () => Resume): MailTasks {
             await commitTerminal(taskRuntime, { status: "completed", result: { workId: task.input.workId } }, context);
             return;
           }
-          const reason = error instanceof Error ? error.message : String(error);
+          const reason = fromError(error);
           const current = await findWork(runtime, task.input.workId);
           if (current !== undefined && !isTerminal(current.status) && current.status !== "stopped") {
             await failDispatch(resume, taskRuntime, current, reason, context);
             return;
           }
-          await commitTerminal(taskRuntime, { status: "failed", error: { message: reason } }, context);
+          await commitTerminal(taskRuntime, { status: "failed", error: { message: reason.text } }, context);
         }
       },
       submit: async (task, taskRuntime, context) => {
@@ -202,13 +207,13 @@ export function buildMailTasks(resolve: () => Resume): MailTasks {
             await commitTerminal(taskRuntime, { status: "completed", result: { workId: task.input.workId } }, context);
             return;
           }
-          const reason = error instanceof Error ? error.message : String(error);
+          const reason = fromError(error);
           const current = await findWork(resume.runtime, task.input.workId);
           if (current !== undefined && !isTerminal(current.status) && current.status !== "stopped") {
             await failDispatch(resume, taskRuntime, current, reason, context);
             return;
           }
-          await commitTerminal(taskRuntime, { status: "failed", error: { message: reason } }, context);
+          await commitTerminal(taskRuntime, { status: "failed", error: { message: reason.text } }, context);
           return;
         }
         await commitTerminal(taskRuntime, { status: "completed", result: { workId: task.input.workId } }, context);
@@ -261,7 +266,7 @@ export function buildMailTasks(resolve: () => Resume): MailTasks {
           room.directories !== undefined &&
           room.directories.version !== parent.directoryScope.version
         ) {
-          await markFailed(resume, parent, "会话工作目录已变更，回信无法续接原任务");
+          await markFailed(resume, parent, appMessages.mail.resumeDirectoryChanged());
           await commitTerminal(taskRuntime, { status: "completed", result: { submitted: false } }, context);
           return;
         }
@@ -368,7 +373,7 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
   const { runtime } = resume;
   const envelope = input.data.mail;
   if (envelope === null || envelope === undefined || envelope.draft) {
-    throw new Error("sendQueuedMail 只接受已发送的邮件");
+    throw new AppError(appMessages.mail.sentMailInvariant());
   }
   const recipients = [...new Set(envelope.recipients)];
 
@@ -383,19 +388,19 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
     // Reads before the first table write: the entry table rejects reads that
     // follow a write inside the same transaction.
     if ("create" in input.room && envelope.inReplyTo.length > 0) {
-      throw new RoomDirectoryError(400, "新邮件会话不能引用旧会话的 inReplyTo");
+      throw new RoomDirectoryError(400, appMessages.mail.newSessionInReplyTo());
     }
     let room: RoomRecord | undefined;
     if (!("create" in input.room)) {
       const doc = await tx.doc(RoomDoc, input.room.id, { id: input.room.id });
-      if (doc === undefined) throw new RoomDirectoryError(404, `会话不存在：${input.room.id}`);
+      if (doc === undefined) throw new RoomDirectoryError(404, appMessages.rooms.roomNotFoundWithId(input.room.id));
       room = plainRoom(doc);
     }
 
     // A draft send retires the draft in the same transaction that appends the
     // sent entry, so two concurrent sends cannot both pass the check.
     if (input.retireDraftId !== undefined && input.retireDraftId.length > 0) {
-      if (room === undefined) throw new RoomDirectoryError(400, "新邮件会话不能退役草稿");
+      if (room === undefined) throw new RoomDirectoryError(400, appMessages.mail.draftNeedsExistingRoom());
       const draftEntry = await tx.entry(Number(input.retireDraftId) as EntryId);
       if (
         draftEntry === undefined ||
@@ -404,16 +409,16 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
         draftEntry.data.mail === null ||
         !draftEntry.data.mail.draft
       ) {
-        throw new RoomDirectoryError(409, "草稿不存在或已失效，请刷新后重试");
+        throw new RoomDirectoryError(409, appMessages.mail.draftGone());
       }
       const flagKey = `${room.id}|${input.retireDraftId}`;
       const flag = await tx.doc(MailFlagDoc, flagKey, { key: flagKey });
-      if (flag.active === false) throw new RoomDirectoryError(409, "这封邮件已经发送");
+      if (flag.active === false) throw new RoomDirectoryError(409, appMessages.api.mailAlreadySent);
     }
 
     // The envelope's parent must be a sent mail of this very room.
     if (envelope.inReplyTo.length > 0) {
-      if (room === undefined) throw new RoomDirectoryError(400, "新邮件会话不能引用旧会话的 inReplyTo");
+      if (room === undefined) throw new RoomDirectoryError(400, appMessages.mail.newSessionInReplyTo());
       const parent = await tx.entry(Number(envelope.inReplyTo) as EntryId);
       if (
         parent === undefined ||
@@ -423,7 +428,7 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
         !parent.data.mail.sent ||
         parent.data.mail.draft
       ) {
-        throw new RoomDirectoryError(400, "inReplyTo 必须引用当前会话内的已发送邮件");
+        throw new RoomDirectoryError(400, appMessages.api.inReplyToNotSentMail);
       }
     }
 
@@ -433,9 +438,9 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
     let parentDraft: Draft<WorkRecord> | undefined;
     if (input.parentWorkId !== undefined && input.parentWorkId.length > 0) {
       const parentWork = await tx.doc(WorkDoc, input.parentWorkId, { id: input.parentWorkId });
-      if (parentWork === undefined) throw new Error(`找不到当前工作 ${input.parentWorkId}`);
+      if (parentWork === undefined) throw new AppError(appMessages.mail.callerWorkMissing(input.parentWorkId));
       if (isTerminal(parentWork.status) || parentWork.status === "stopped") {
-        throw new Error("当前工作已结束，不能再发送邮件");
+        throw new AppError(appMessages.mail.callerWorkFinished());
       }
       parentDraft = parentWork;
       depth = input.awaitReply === true ? parentWork.depth + 1 : parentWork.depth;
@@ -443,7 +448,7 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
       if (input.awaitReply === true) {
         const app = await tx.doc(AppDoc);
         if (depth > app.collaboration.maxDepth) {
-          throw new RoomDirectoryError(400, `交办层数超过上限（${app.collaboration.maxDepth} 层）`);
+          throw new RoomDirectoryError(400, appMessages.work.depthOverLimit(app.collaboration.maxDepth));
         }
       }
       // A continuation shares the caller's room: the send-time snapshot must
@@ -454,14 +459,14 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
         parentWork.directoryScope.roomId === room.id &&
         room.directories.version !== parentWork.directoryScope.version
       ) {
-        throw new RoomDirectoryError(409, "会话工作目录已变更，请停止并重新发送任务");
+        throw new RoomDirectoryError(409, appMessages.work.directoryChanged());
       }
     } else if (input.awaitReply === true) {
-      throw new RoomDirectoryError(400, "只有员工之间的邮件才能等待回信");
+      throw new RoomDirectoryError(400, appMessages.mail.awaitReplyEmployeeOnly());
     }
 
     if (room === undefined) {
-      if (!("create" in input.room)) throw new RoomDirectoryError(404, `会话不存在：${input.room.id}`);
+      if (!("create" in input.room)) throw new RoomDirectoryError(404, appMessages.rooms.roomNotFoundWithId(input.room.id));
       room = await createRoomIn(tx, { ...input.room.create, directories: input.room.create.directories });
     }
 
@@ -514,7 +519,7 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
       collaboration.rootWorkId = scope;
       collaboration.crossEmployeeWakes += workIds.length;
       if (collaboration.crossEmployeeWakes > app.collaboration.maxCrossEmployeeWakes) {
-        throw new RoomDirectoryError(409, `本次协作已达到跨员工唤醒上限（${app.collaboration.maxCrossEmployeeWakes} 次）`);
+        throw new RoomDirectoryError(409, appMessages.mail.wakeLimit(app.collaboration.maxCrossEmployeeWakes));
       }
       parentDraft!.awaitedMailWorkIds = [...parentDraft!.awaitedMailWorkIds, ...workIds];
     }
@@ -537,7 +542,7 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
   }, runtime.ctx);
 
   const dto = toMessageDTO(committed.entry);
-  if (dto === undefined) throw new Error("写入的消息类型不正确");
+  if (dto === undefined) throw new AppError(appMessages.rooms.messageUnexpectedType);
   dto.roomId = committed.room.id;
   runtime.emit({ type: "message", roomId: committed.room.id, message: dto });
   runtime.emit({ type: "room", room: await roomDTOWithUnread(runtime, committed.room) });
@@ -576,7 +581,7 @@ async function replayedSend(
       : undefined;
   const entry = page?.items[0];
   const dto = entry !== undefined ? toMessageDTO(entry) : undefined;
-  if (room === undefined || dto === undefined) throw new Error("找不到已发送的邮件记录，无法重放发送结果");
+  if (room === undefined || dto === undefined) throw new AppError(appMessages.mail.replayRecordMissing());
   dto.roomId = room.id;
   return { message: dto, workIds: [...receipt.workIds] };
 }

@@ -11,17 +11,9 @@ import { useState, type ReactNode } from "react";
 import { api } from "../api.ts";
 import { useApp } from "../state.tsx";
 import { Chip, timeAgo } from "./ui.tsx";
-import type { ApprovalDTO, ApprovalStatusDTO } from "../../shared/contracts.ts";
-
-const STATUS_LABELS: Record<ApprovalStatusDTO, string> = {
-  evaluating: "自动判断中",
-  "pending-human": "等待你的裁决",
-  approved: "已批准",
-  rejected: "已拒绝",
-  blocked: "自动审查受阻",
-  cancelled: "已取消",
-  invalidated: "已失效",
-};
+import { useI18n } from "../i18n.tsx";
+import { errorDisplay } from "../../shared/i18n.ts";
+import type { ApprovalDTO, ApprovalStatusDTO, RiskLevel } from "../../shared/contracts.ts";
 
 const STATUS_TONES: Record<ApprovalStatusDTO, string> = {
   evaluating: "info",
@@ -33,8 +25,24 @@ const STATUS_TONES: Record<ApprovalStatusDTO, string> = {
   invalidated: "muted",
 };
 
+const RISK_LEVELS: readonly RiskLevel[] = ["low", "medium", "high", "critical", "unknown"];
+
+/** Outcome class keys come from the classifier's vocabulary: enum keys get labels, the rest stay raw. */
+function outcomeClassLabel(labels: { allow: string; deny: string }, key: string): string {
+  if (key === "allow") return labels.allow;
+  if (key === "deny") return labels.deny;
+  return key;
+}
+
+/** Risk class keys likewise. */
+function riskClassLabel(labels: Record<RiskLevel, string>, key: string): string {
+  const level = RISK_LEVELS.find((candidate) => candidate === key);
+  return level !== undefined ? labels[level] : key;
+}
+
 export function ApprovalsView(): ReactNode {
   const { state, dispatch, setError } = useApp();
+  const { messages, locale, text } = useI18n();
   const [comments, setComments] = useState<Record<string, string>>({});
 
   const decide = async (approval: ApprovalDTO, decision: "approved" | "rejected") => {
@@ -42,7 +50,7 @@ export function ApprovalsView(): ReactNode {
       const updated = await api.decideApproval(approval.id, decision, comments[approval.id] ?? "");
       dispatch({ type: "approval", approval: updated });
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(errorDisplay(error));
     }
   };
 
@@ -52,105 +60,132 @@ export function ApprovalsView(): ReactNode {
   const renderCard = (approval: ApprovalDTO) => (
     <article key={approval.id} className={`approval ${approval.status}`}>
       <header className="approval-head">
-        <Chip tone={STATUS_TONES[approval.status]}>{STATUS_LABELS[approval.status]}</Chip>
+        <Chip tone={STATUS_TONES[approval.status]}>{messages.approvals.status[approval.status]}</Chip>
         <strong>{approval.employeeName}</strong>
         <code>{approval.toolName}</code>
-        <span className="time">{timeAgo(approval.createdAt)}</span>
+        <span className="time">{timeAgo(approval.createdAt, locale)}</span>
         {approval.decidedBy !== undefined ? <Chip tone="muted">{approval.decidedBy}</Chip> : null}
       </header>
 
       <div className="approval-body">
         {approval.autoDecision !== undefined ? (
           <p className="hint">
-            {approval.autoDecision.source} · {approval.autoDecision.reason}
+            {messages.approvals.decisionSource[approval.autoDecision.source]} ·{" "}
+            {text(approval.autoDecision.reasonLocalized ?? approval.autoDecision.reason)}
           </p>
         ) : null}
         <pre className="args">{approval.argumentsPreview}</pre>
-        <p className="hint">风险判断：{approval.risk}</p>
-        <p className="hint">实际执行目录：{approval.cwd.length > 0 ? approval.cwd : "未记录"}</p>
+        <p className="hint">{messages.approvals.riskJudged(messages.approvals.risk[approval.risk])}</p>
         <p className="hint">
-          会话目录来源：{approval.directoryRoomId || "未绑定会话"} · 版本 v{approval.directoryVersion}
+          {messages.approvals.workingDirectory(
+            approval.cwd.length > 0 ? approval.cwd : messages.common.notRecorded,
+          )}
+        </p>
+        <p className="hint">
+          {messages.approvals.sessionDirectories(
+            approval.directoryRoomId || messages.approvals.notBoundToSession,
+            approval.directoryVersion,
+          )}
         </p>
         {approval.directoryPaths.length > 0 ? (
           <div>
-            <p className="hint">本会话授权目录</p>
+            <p className="hint">{messages.approvals.authorizedPathsHeading}</p>
             <ul className="plain">{approval.directoryPaths.map((path) => <li key={path}><code>{path}</code></li>)}</ul>
           </div>
         ) : (
-          <p className="hint">本会话没有授权本地目录</p>
+          <p className="hint">{messages.approvals.noAuthorizedPaths}</p>
         )}
         {approval.targetPaths.length > 0 ? (
           <div>
-            <p className="hint">本次目标路径</p>
+            <p className="hint">{messages.approvals.targetPathsHeading}</p>
             <ul className="plain">{approval.targetPaths.map((path) => <li key={path}><code>{path}</code></li>)}</ul>
           </div>
         ) : null}
         {approval.evidence !== undefined ? (
           <details>
-            <summary>自动判断依据</summary>
+            <summary>{messages.approvals.evidenceSummary}</summary>
             {approval.evidence.kind === "policy" ? (
               <div className="evidence-grid">
-                <p>{approval.evidence.rationale}</p>
-                <p>只读：未记录</p>
-                <p>用户授权：未记录</p>
+                <p>{text(approval.evidence.rationaleLocalized ?? approval.evidence.rationale)}</p>
+                <p>{messages.approvals.readOnlyNotRecorded}</p>
+                <p>{messages.approvals.authorizationNotRecorded}</p>
               </div>
             ) : null}
             {approval.evidence.kind === "llm" ? (
               <div className="evidence-grid">
-                <p>标准版本：v{approval.evidence.criteriaVersion}</p>
-                <p>结果：{approval.evidence.outcome === "allow" ? "允许" : "拒绝"}</p>
-                <p>实际风险：{approval.evidence.risk}</p>
-                <p>理由：{approval.evidence.rationale}</p>
-                <p>只读：{approval.evidence.readOnly ? "是" : "否"}</p>
-                <p>用户授权：{approval.evidence.userAuthorization}</p>
+                <p>{messages.approvals.criteriaVersion(approval.evidence.criteriaVersion)}</p>
+                <p>{messages.approvals.outcomeLine(messages.approvals.outcome[approval.evidence.outcome])}</p>
+                <p>{messages.approvals.riskLine(messages.approvals.risk[approval.evidence.risk])}</p>
+                <p>{messages.approvals.rationaleLine(approval.evidence.rationale)}</p>
+                <p>
+                  {messages.approvals.readOnlyLine(
+                    approval.evidence.readOnly ? messages.common.yes : messages.common.no,
+                  )}
+                </p>
+                <p>
+                  {messages.approvals.authorizationLine(
+                    messages.approvals.authorization[approval.evidence.userAuthorization],
+                  )}
+                </p>
               </div>
             ) : null}
             {approval.evidence.kind === "classifier" ? (
               <div>
-                <p>标准版本 v{approval.evidence.criteriaVersion}</p>
+                <p>{messages.approvals.criteriaVersionShort(approval.evidence.criteriaVersion)}</p>
                 <div className="evidence-grid">
-                  <p>结果：{approval.evidence.outcome === "allow" ? "允许" : "拒绝"}</p>
-                  <p>实际风险：{approval.evidence.risk}</p>
+                  <p>{messages.approvals.outcomeLine(messages.approvals.outcome[approval.evidence.outcome])}</p>
+                  <p>{messages.approvals.riskLine(messages.approvals.risk[approval.evidence.risk])}</p>
                   <p>
-                    结果概率：
-                    {typeof approval.evidence.outcomeProbability === "number"
-                      ? approval.evidence.outcomeProbability.toFixed(3)
-                      : "未记录"}
+                    {messages.approvals.outcomeProbability(
+                      typeof approval.evidence.outcomeProbability === "number"
+                        ? approval.evidence.outcomeProbability.toFixed(3)
+                        : messages.common.notRecorded,
+                    )}
                   </p>
                   <p>
-                    结果类别概率：
-                    {Object.entries(approval.evidence.outcomeProbabilities).map(([outcome, probability]) => (
-                      <span key={outcome}> {outcome}={probability.toFixed(3)}</span>
-                    ))}
+                    {messages.approvals.outcomeClassProbabilities(
+                      Object.entries(approval.evidence.outcomeProbabilities)
+                        .map(([key, probability]) => ` ${outcomeClassLabel(messages.approvals.outcome, key)}=${probability.toFixed(3)}`)
+                        .join(""),
+                    )}
                   </p>
                   <p>
-                    风险概率：
-                    {typeof approval.evidence.riskProbability === "number"
-                      ? approval.evidence.riskProbability.toFixed(3)
-                      : "未记录"}
+                    {messages.approvals.riskProbability(
+                      typeof approval.evidence.riskProbability === "number"
+                        ? approval.evidence.riskProbability.toFixed(3)
+                        : messages.common.notRecorded,
+                    )}
                   </p>
                   <p>
-                    风险类别概率：
-                    {Object.entries(approval.evidence.riskProbabilities).map(([risk, probability]) => (
-                      <span key={risk}> {risk}={probability.toFixed(3)}</span>
-                    ))}
+                    {messages.approvals.riskClassProbabilities(
+                      Object.entries(approval.evidence.riskProbabilities)
+                        .map(([key, probability]) => ` ${riskClassLabel(messages.approvals.risk, key)}=${probability.toFixed(3)}`)
+                        .join(""),
+                    )}
                   </p>
                   <p>
-                    只读：{approval.evidence.readOnly === null ? "未记录" : approval.evidence.readOnly ? "是" : "否"}
-                    {" · "}
-                    概率：
-                    {typeof approval.evidence.readOnlyProbability === "number"
-                      ? approval.evidence.readOnlyProbability.toFixed(3)
-                      : "未记录"}
+                    {messages.approvals.readOnlyWithProbability(
+                      approval.evidence.readOnly === null
+                        ? messages.common.notRecorded
+                        : approval.evidence.readOnly
+                          ? messages.common.yes
+                          : messages.common.no,
+                      typeof approval.evidence.readOnlyProbability === "number"
+                        ? approval.evidence.readOnlyProbability.toFixed(3)
+                        : messages.common.notRecorded,
+                    )}
                   </p>
                   <p>
-                    用户授权：
-                    {approval.evidence.authorized === null ? "未记录" : approval.evidence.authorized ? "是" : "否"}
-                    {" · "}
-                    概率：
-                    {typeof approval.evidence.authorizedProbability === "number"
-                      ? approval.evidence.authorizedProbability.toFixed(3)
-                      : "未记录"}
+                    {messages.approvals.authorizedWithProbability(
+                      approval.evidence.authorized === null
+                        ? messages.common.notRecorded
+                        : approval.evidence.authorized
+                          ? messages.common.yes
+                          : messages.common.no,
+                      typeof approval.evidence.authorizedProbability === "number"
+                        ? approval.evidence.authorizedProbability.toFixed(3)
+                        : messages.common.notRecorded,
+                    )}
                   </p>
                 </div>
                 <ul>
@@ -170,7 +205,7 @@ export function ApprovalsView(): ReactNode {
                   {approval.evidence.answers.map((answer) => (
                     <li key={answer.key}>
                       <code>{answer.key}</code>
-                      {answer.choice !== undefined ? <> · 选择 {answer.choice}</> : null}
+                      {answer.choice !== undefined ? messages.approvals.answerChoice(answer.choice) : null}
                       {answer.probabilities !== undefined
                         ? Object.entries(answer.probabilities).map(([choice, probability]) => (
                             <span key={choice}>
@@ -189,30 +224,35 @@ export function ApprovalsView(): ReactNode {
         ) : null}
 
         <details className="timeline">
-          <summary>时间线（{approval.timeline.length}）</summary>
+          <summary>{messages.approvals.timelineSummary(approval.timeline.length)}</summary>
           <ol>
             {approval.timeline.map((entry) => (
               <li key={`${entry.at}-${entry.text}`}>
-                <span className="time">{new Date(entry.at).toLocaleTimeString("zh-CN")}</span> {entry.actor} · {entry.text}
+                <span className="time">{new Date(entry.at).toLocaleTimeString(locale)}</span>{" "}
+                {text(entry.actorLocalized ?? entry.actor)} · {text(entry.textLocalized ?? entry.text)}
               </li>
             ))}
           </ol>
         </details>
 
-        {approval.execution.detail !== undefined ? <p className="hint">执行：{approval.execution.detail}</p> : null}
+        {approval.execution.detail !== undefined ? (
+          <p className="hint">
+            {messages.approvals.executionLine(text(approval.execution.detailLocalized ?? approval.execution.detail))}
+          </p>
+        ) : null}
 
         {approval.status === "pending-human" ? (
           <div className="approval-actions row">
             <input
-              placeholder="备注（会写入记录）"
+              placeholder={messages.approvals.commentPlaceholder}
               value={comments[approval.id] ?? ""}
               onChange={(event) => setComments((current) => ({ ...current, [approval.id]: event.target.value }))}
             />
             <button type="button" onClick={() => void decide(approval, "approved")}>
-              批准
+              {messages.approvals.approve}
             </button>
             <button type="button" onClick={() => void decide(approval, "rejected")}>
-              拒绝
+              {messages.approvals.reject}
             </button>
           </div>
         ) : null}
@@ -224,15 +264,18 @@ export function ApprovalsView(): ReactNode {
     <div className="pane">
       <header className="pane-header">
         <div>
-          <h2>审批</h2>
-          <p className="topic">{pending.length} 项等待你裁决 · 策略版本 v{state.app?.policyVersion ?? 0}</p>
+          <h2>{messages.approvals.title}</h2>
+          <p className="topic">
+            {messages.approvals.pendingCount(pending.length)} ·{" "}
+            {messages.approvals.policyVersion(state.app?.policyVersion ?? 0)}
+          </p>
         </div>
       </header>
       <div className="scroll">
-        {pending.length === 0 ? <p className="hint">没有等待裁决的调用。</p> : pending.map(renderCard)}
+        {pending.length === 0 ? <p className="hint">{messages.approvals.emptyQueue}</p> : pending.map(renderCard)}
         {settled.length > 0 ? (
           <details className="history">
-            <summary>历史（{settled.length}，显示最近 {Math.min(settled.length, 50)} 条）</summary>
+            <summary>{messages.approvals.historySummary(settled.length, Math.min(settled.length, 50))}</summary>
             {settled.slice(0, 50).map(renderCard)}
           </details>
         ) : null}

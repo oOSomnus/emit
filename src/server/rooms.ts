@@ -22,6 +22,8 @@ import {
 import { configure } from "@earendil-works/pi-durable";
 import type { ConversationId, EntryRecord, EntryId, Tx } from "@earendil-works/pi-durable";
 import type { EmitRuntime } from "./runtime.ts";
+import { AppError, type AppText } from "./messages.ts";
+import { roomMessages } from "./messages/rooms.ts";
 import type {
   MailMetaDTO,
   MessageAuthorDTO,
@@ -30,6 +32,7 @@ import type {
   RoomDirectoryPatchDTO,
   RoomDTO,
 } from "../shared/contracts.ts";
+import type { LocalizedText } from "../shared/i18n.ts";
 
 /** One address on a mail envelope. */
 export type MailAddress = { name: string; address: string };
@@ -72,10 +75,10 @@ export function mailAddresses(envelope: MailEnvelope, address: string): boolean 
 }
 export const ROOM_PAGE_SIZE = 200;
 
-export class RoomDirectoryError extends Error {
+export class RoomDirectoryError extends AppError {
   constructor(
     readonly status: 400 | 404 | 409,
-    message: string,
+    message: AppText,
   ) {
     super(message);
   }
@@ -84,32 +87,34 @@ export class RoomDirectoryError extends Error {
 async function canonicalDirectoryPath(path: string): Promise<string> {
   const trimmed = path.trim();
   if (trimmed.length === 0 || !isAbsolute(trimmed)) {
-    throw new RoomDirectoryError(400, `工作目录必须是服务器本地绝对路径：${trimmed || "(空)"}`);
+    throw new RoomDirectoryError(400, roomMessages.directoryNotAbsolutePath(trimmed));
   }
   try {
     const canonical = await realpath(trimmed);
     const info = await stat(canonical);
-    if (!info.isDirectory()) throw new RoomDirectoryError(400, `工作目录不是目录：${trimmed}`);
+    if (!info.isDirectory()) throw new RoomDirectoryError(400, roomMessages.directoryNotADirectory(trimmed));
     return canonical;
   } catch (error) {
     if (error instanceof RoomDirectoryError) throw error;
     const reason = error instanceof Error ? error.message : String(error);
-    throw new RoomDirectoryError(400, `工作目录不存在或无法访问 ${trimmed}：${reason}`);
+    throw new RoomDirectoryError(400, roomMessages.directoryUnreadable(trimmed, reason));
   }
 }
 
 async function canonicalizeRoomDirectories(draft: unknown): Promise<RoomDirectoriesRecord> {
   if (typeof draft !== "object" || draft === null || Array.isArray(draft)) {
-    throw new RoomDirectoryError(400, "工作目录配置必须是对象");
+    throw new RoomDirectoryError(400, roomMessages.directoriesNotAnObject);
   }
   const value = draft as Record<string, unknown>;
-  if (!Array.isArray(value.paths)) throw new RoomDirectoryError(400, "工作目录 paths 必须是数组");
-  if (typeof value.defaultPath !== "string") throw new RoomDirectoryError(400, "默认工作目录必须是字符串");
+  if (!Array.isArray(value.paths)) throw new RoomDirectoryError(400, roomMessages.directoryPathsNotAnArray);
+  if (typeof value.defaultPath !== "string") {
+    throw new RoomDirectoryError(400, roomMessages.defaultDirectoryNotAString);
+  }
 
   const paths: string[] = [];
   const seen = new Set<string>();
   for (const item of value.paths) {
-    if (typeof item !== "string") throw new RoomDirectoryError(400, "工作目录路径必须是字符串");
+    if (typeof item !== "string") throw new RoomDirectoryError(400, roomMessages.directoryPathNotAString);
     const path = await canonicalDirectoryPath(item);
     if (seen.has(path)) continue;
     seen.add(path);
@@ -119,14 +124,16 @@ async function canonicalizeRoomDirectories(draft: unknown): Promise<RoomDirector
   const defaultInput = value.defaultPath.trim();
   if (paths.length === 0) {
     if (defaultInput.length > 0) {
-      throw new RoomDirectoryError(400, `默认工作目录不在授权目录列表中：${defaultInput}`);
+      throw new RoomDirectoryError(400, roomMessages.defaultDirectoryNotAuthorized(defaultInput));
     }
     return { paths, defaultPath: "", version: 1 };
   }
-  if (defaultInput.length === 0) throw new RoomDirectoryError(400, "请从授权目录列表中选择默认工作目录");
+  if (defaultInput.length === 0) {
+    throw new RoomDirectoryError(400, roomMessages.chooseDefaultDirectory);
+  }
   const defaultPath = await canonicalDirectoryPath(defaultInput);
   if (!seen.has(defaultPath)) {
-    throw new RoomDirectoryError(400, `默认工作目录不在授权目录列表中：${defaultPath}`);
+    throw new RoomDirectoryError(400, roomMessages.defaultDirectoryNotAuthorized(defaultPath));
   }
   return { paths, defaultPath, version: 1 };
 }
@@ -186,6 +193,8 @@ export function messageData(input: {
   workId?: string;
   notice?: boolean;
   mail?: MailEnvelope;
+  /** Display pair for application-authored notice bodies; raw bodies carry none. */
+  bodyLocalized?: LocalizedText;
 }): RoomMessageData {
   return {
     authorType: input.author.type,
@@ -197,6 +206,7 @@ export function messageData(input: {
     workId: input.workId ?? "",
     notice: input.notice === true,
     mail: input.mail ?? null,
+    ...(input.bodyLocalized === undefined ? {} : { bodyLocalized: input.bodyLocalized }),
   };
 }
 
@@ -229,9 +239,11 @@ export function toMessageDTO(
       type: data.authorType,
       id: data.authorId,
       name: data.authorName,
+      ...authorNameLocalized(data),
       ...(data.address.length > 0 ? { address: data.address } : {}),
     },
     body: data.body,
+    ...(data.bodyLocalized === undefined ? {} : { bodyLocalized: data.bodyLocalized }),
     createdAt: data.createdAt,
   };
   if (data.workId.length > 0) dto.workId = data.workId;
@@ -243,6 +255,22 @@ export function toMessageDTO(
     dto.mail = meta;
   }
   return dto;
+}
+
+/**
+ * The display pair of a message author.
+ *
+ * Only application-generated labels are localized: a system author is known by
+ * its type (never by its stored name), and the user's fallback label is the
+ * name the app wrote for an unnamed user. Employees and named users keep
+ * their real name untranslated — it is record data, not application text.
+ */
+function authorNameLocalized(data: RoomMessageData): { nameLocalized?: LocalizedText } {
+  if (data.authorType === "system") return { nameLocalized: roomMessages.systemAuthorName };
+  if (data.authorType === "user" && data.authorName === roomMessages.userFallbackAuthorName["zh-CN"]) {
+    return { nameLocalized: roomMessages.userFallbackAuthorName };
+  }
+  return {};
 }
 
 /** Append one message to a room transcript inside an existing transaction. */
@@ -277,7 +305,7 @@ export async function appendRoomMessage(
 ): Promise<MessageDTO> {
   const entry = await runtime.harness.commit((tx) => appendRoomMessageIn(tx, room, data), runtime.ctx);
   const dto = toMessageDTO(entry);
-  if (dto === undefined) throw new Error("写入的消息类型不正确");
+  if (dto === undefined) throw new AppError(roomMessages.messageUnexpectedType);
   dto.roomId = room.id;
   runtime.emit({ type: "message", roomId: room.id, message: dto });
   runtime.emit({
@@ -479,10 +507,10 @@ export async function updateRoomDirectories(
   draft: RoomDirectoryPatchDTO,
 ): Promise<RoomRecord> {
   if (typeof draft !== "object" || draft === null || !Number.isInteger(draft.expectedVersion)) {
-    throw new RoomDirectoryError(400, "expectedVersion 必须是整数");
+    throw new RoomDirectoryError(400, roomMessages.expectedVersionNotAnInteger);
   }
   const current = await findRoom(runtime, roomId);
-  if (current === undefined) throw new RoomDirectoryError(404, `会话不存在：${roomId}`);
+  if (current === undefined) throw new RoomDirectoryError(404, roomMessages.roomNotFoundWithId(roomId));
   if (
     current.directories === undefined ||
     !Number.isInteger(current.directories.version) ||
@@ -490,10 +518,10 @@ export async function updateRoomDirectories(
     !Array.isArray(current.directories.paths) ||
     typeof current.directories.defaultPath !== "string"
   ) {
-    throw new RoomDirectoryError(400, "该会话缺少目录配置，请重新创建会话");
+    throw new RoomDirectoryError(400, roomMessages.directoriesMissingRecreate);
   }
   if (current.directories.version !== draft.expectedVersion) {
-    throw new RoomDirectoryError(409, "会话工作目录已被其他更改，请重新载入");
+    throw new RoomDirectoryError(409, roomMessages.directoriesChangedReload);
   }
   const normalized = await canonicalizeRoomDirectories(draft);
   return runtime.updateFamily(RoomDoc, roomId, { id: roomId }, (doc) => {
@@ -505,10 +533,10 @@ export async function updateRoomDirectories(
       !Array.isArray(directories.paths) ||
       typeof directories.defaultPath !== "string"
     ) {
-      throw new RoomDirectoryError(400, "该会话缺少目录配置，请重新创建会话");
+      throw new RoomDirectoryError(400, roomMessages.directoriesMissingRecreate);
     }
     if (directories.version !== draft.expectedVersion) {
-      throw new RoomDirectoryError(409, "会话工作目录已被其他更改，请重新载入");
+      throw new RoomDirectoryError(409, roomMessages.directoriesChangedReload);
     }
     const changed =
       directories.defaultPath !== normalized.defaultPath ||

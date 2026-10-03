@@ -27,6 +27,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import { AppError } from "../src/server/app-text.ts";
 import { EmitCredentialStore } from "../src/server/credentials.ts";
 import { ProviderAuthError, ProviderAuthSessions } from "../src/server/provider-auth.ts";
 import { configureBuiltinLogin, normalizeCustomProviders } from "../src/server/providers.ts";
@@ -76,6 +77,27 @@ function requirePrompt(snapshot: AuthSessionDTO): NonNullable<AuthSessionDTO["pr
   if (snapshot.prompt === null) throw new Error(`期望有提示，实际状态是 ${snapshot.status}：${snapshot.message ?? ""}`);
   return snapshot.prompt;
 }
+
+function captureThrownError(action: () => unknown): Error {
+  let caught: unknown;
+  expect(() => {
+    try {
+      action();
+    } catch (error) {
+      caught = error;
+      throw error;
+    }
+  }).toThrow();
+  if (!(caught instanceof Error)) throw new Error("Expected action to throw an Error");
+  return caught;
+}
+
+function appErrorText(error: AppError): string {
+  return [error.message, error.messageLocalized?.en, error.messageLocalized?.["zh-CN"]]
+    .filter((value): value is string => value !== undefined)
+    .join("\n");
+}
+
 
 /** Answer the current prompt and return the next state (prompt or terminal). */
 async function answer(
@@ -259,14 +281,42 @@ describe("custom provider validation", () => {
     });
 
     const base = { id: "a", baseUrl: "https://x.test/v1", api: "openai-completions", models: [{ id: "m" }] };
-    expect(() => normalizeCustomProviders([{ ...base, id: "openai" }], builtins)).toThrow(/内置/);
-    expect(() => normalizeCustomProviders([{ ...base, baseUrl: "https://user:pass@x.test/v1" }], builtins)).toThrow(/用户名/);
-    expect(() => normalizeCustomProviders([{ ...base, baseUrl: "ftp://x.test" }], builtins)).toThrow(/http/);
-    expect(() => normalizeCustomProviders([{ ...base, api: "nope" }], builtins)).toThrow(/api/);
-    expect(() => normalizeCustomProviders([{ ...base, models: [] }], builtins)).toThrow(/至少/);
-    expect(() => normalizeCustomProviders([{ ...base, models: [{ id: "m" }, { id: "m" }] }], builtins)).toThrow(/重复/);
-    expect(() => normalizeCustomProviders([{ ...base, apiKeyEnv: "lower" }], builtins)).toThrow(/apiKeyEnv/);
-    expect(() => normalizeCustomProviders([{ ...base, models: [{ id: "m", contextWindow: -1 }] }], builtins)).toThrow(/contextWindow/);
+
+    const conflictingBuiltin = captureThrownError(() =>
+      normalizeCustomProviders([{ ...base, id: "openai" }], builtins),
+    );
+    expect(conflictingBuiltin).toBeInstanceOf(AppError);
+    expect(appErrorText(conflictingBuiltin as AppError)).toContain("openai");
+
+    expect(
+      captureThrownError(() =>
+        normalizeCustomProviders([{ ...base, baseUrl: "https://user:pass@x.test/v1" }], builtins),
+      ),
+    ).toBeInstanceOf(AppError);
+    expect(
+      captureThrownError(() => normalizeCustomProviders([{ ...base, baseUrl: "ftp://x.test" }], builtins)),
+    ).toBeInstanceOf(AppError);
+    expect(
+      captureThrownError(() => normalizeCustomProviders([{ ...base, api: "nope" }], builtins)),
+    ).toBeInstanceOf(AppError);
+    expect(captureThrownError(() => normalizeCustomProviders([{ ...base, models: [] }], builtins))).toBeInstanceOf(
+      AppError,
+    );
+
+    const duplicateModelId = captureThrownError(() =>
+      normalizeCustomProviders([{ ...base, models: [{ id: "m" }, { id: "m" }] }], builtins),
+    );
+    expect(duplicateModelId).toBeInstanceOf(AppError);
+    expect(appErrorText(duplicateModelId as AppError)).toContain("m");
+
+    expect(
+      captureThrownError(() => normalizeCustomProviders([{ ...base, apiKeyEnv: "lower" }], builtins)),
+    ).toBeInstanceOf(AppError);
+    expect(
+      captureThrownError(() =>
+        normalizeCustomProviders([{ ...base, models: [{ id: "m", contextWindow: -1 }] }], builtins),
+      ),
+    ).toBeInstanceOf(AppError);
   });
 
   it("resolves a keyless endpoint and leaves native providers alone when customs are cleared", async () => {
@@ -326,9 +376,12 @@ describe("provider auth sessions", () => {
     const started = sessions.start("test-key", "api_key");
     const prompt = requirePrompt(sessions.get(started.id));
     sessions.respond(started.id, prompt.id, "sk");
+
     const done = await waitForStatus(sessions, started.id, "succeeded");
-    expect(done.message).toContain("认证已保存");
+    expect(done.status).toBe("succeeded");
+    expect(await store.read("test-key")).toEqual({ type: "api_key", key: "sk" });
     expect(done.message).toContain("目录不可用");
+    expect(done.messageLocalized?.en).toContain("目录不可用");
   });
 
   it("allows only one login at a time and rejects stale or empty answers", async () => {
@@ -346,8 +399,13 @@ describe("provider auth sessions", () => {
     }
 
     const prompt = requirePrompt(sessions.get(started.id));
-    expect(() => sessions.respond(started.id, "wrong-id", "x")).toThrow(/失效/);
-    expect(() => sessions.respond(started.id, prompt.id, "")).toThrow(/不能为空/);
+    const stalePrompt = captureThrownError(() => sessions.respond(started.id, "wrong-id", "x"));
+    expect(stalePrompt).toBeInstanceOf(ProviderAuthError);
+    expect((stalePrompt as ProviderAuthError).status).toBe(409);
+
+    const emptySecret = captureThrownError(() => sessions.respond(started.id, prompt.id, ""));
+    expect(emptySecret).toBeInstanceOf(ProviderAuthError);
+    expect((emptySecret as ProviderAuthError).status).toBe(400);
     sessions.respond(started.id, prompt.id, "ok");
     await waitForStatus(sessions, started.id, "succeeded");
   });
@@ -409,11 +467,25 @@ describe("native login flows", () => {
     const started = sessions.start("azure-openai-responses", "api_key");
     const secret = requirePrompt(sessions.get(started.id));
     expect(secret.type).toBe("secret");
+    expect(secret.id.length).toBeGreaterThan(0);
+    expect(secret.message).toBe("Enter Azure OpenAI API key");
+    expect(secret.messageLocalized).toBeUndefined();
+    expect(secret.options).toBeUndefined();
     sessions.respond(started.id, secret.id, "azure-key");
 
     let next = await waitForPrompt(sessions, started.id);
-    expect(requirePrompt(next).type).toBe("select");
-    sessions.respond(started.id, requirePrompt(next).id, "base-url");
+    const endpointMode = requirePrompt(next);
+    expect(endpointMode.id.length).toBeGreaterThan(0);
+    expect(endpointMode.type).toBe("select");
+    expect(endpointMode.messageLocalized?.["zh-CN"]).toBe(endpointMode.message);
+    expect(endpointMode.options?.map((option) => option.id)).toEqual(["base-url", "resource-name"]);
+    expect(endpointMode.options?.map((option) => option.label)).toEqual(["Base URL", "Resource name"]);
+    expect(
+      endpointMode.options?.every(
+        (option) => option.descriptionLocalized?.["zh-CN"] === option.description,
+      ),
+    ).toBe(true);
+    sessions.respond(started.id, endpointMode.id, "base-url");
 
     next = await waitForPrompt(sessions, started.id);
     sessions.respond(started.id, requirePrompt(next).id, "not a url");
@@ -422,12 +494,20 @@ describe("native login flows", () => {
     sessions.respond(started.id, requirePrompt(retry).id, "https://res.openai.azure.com/openai/v1");
 
     next = await waitForPrompt(sessions, started.id);
-    expect(requirePrompt(next).message).toContain("API version");
-    sessions.respond(started.id, requirePrompt(next).id, "");
+    const apiVersion = requirePrompt(next);
+    expect(apiVersion.id.length).toBeGreaterThan(0);
+    expect(apiVersion.type).toBe("text");
+    expect(apiVersion.options).toBeUndefined();
+    expect(apiVersion.messageLocalized?.["zh-CN"]).toBe(apiVersion.message);
+    sessions.respond(started.id, apiVersion.id, "");
 
     next = await waitForPrompt(sessions, started.id);
-    expect(requirePrompt(next).message).toContain("部署映射");
-    sessions.respond(started.id, requirePrompt(next).id, "gpt-4o=deploy-a");
+    const deploymentMap = requirePrompt(next);
+    expect(deploymentMap.id.length).toBeGreaterThan(0);
+    expect(deploymentMap.type).toBe("text");
+    expect(deploymentMap.options).toBeUndefined();
+    expect(deploymentMap.messageLocalized?.["zh-CN"]).toBe(deploymentMap.message);
+    sessions.respond(started.id, deploymentMap.id, "gpt-4o=deploy-a");
 
     const done = await waitForStatus(sessions, started.id, "succeeded");
     expect(JSON.stringify(done)).not.toContain("azure-key");

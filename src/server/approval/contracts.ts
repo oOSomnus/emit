@@ -9,6 +9,7 @@
  * authorization, or the hard execution checks.
  */
 
+import type { LocalizedText } from "../../shared/i18n.ts";
 import type { ModelRefDTO } from "../../shared/contracts.ts";
 import type { WorkDirectoryScopeRecord } from "../documents.ts";
 
@@ -114,7 +115,20 @@ export type EvaluationOutcome =
       model: ModelRefDTO;
       usage?: ModelUsage;
     }
-  | { status: "unavailable"; reason: "configuration" | "provider" | "invalid-output"; message: string };
+  | {
+      status: "unavailable";
+      reason: "configuration" | "provider" | "invalid-output";
+      message: string;
+      /** Present when the message is application-authored rather than a provider's raw text. */
+      messageLocalized?: LocalizedText;
+      /**
+       * True only for messages that are complete sentences on their own (tool
+       * arguments over the review budget, an approval context over the budget,
+       * a missing execution context); the persisted reason is then stored
+       * verbatim instead of wrapped in a generic unavailable sentence.
+       */
+      verbatim?: true;
+    };
 
 export interface ApprovalEvaluator {
   evaluate(

@@ -2,7 +2,10 @@
 
 import { useEffect, useId, useMemo, useState, type ReactNode, type Ref } from "react";
 import { api } from "../api.ts";
-import type { ModelInfoDTO, WorkStatusDTO } from "../../shared/contracts.ts";
+import type { CheckResultDTO, ModelInfoDTO, WorkStatusDTO } from "../../shared/contracts.ts";
+import { errorDisplay, type DisplayText, type Locale } from "../../shared/i18n.ts";
+import { useI18n } from "../i18n.tsx";
+import { chineseMessages, englishMessages } from "../messages.ts";
 
 export type IconName =
   | "mail"
@@ -115,16 +118,6 @@ export function Chip({ tone, children }: { tone?: string; children: ReactNode })
   return <span className={`chip ${tone ?? ""}`}>{children}</span>;
 }
 
-const WORK_LABELS: Record<WorkStatusDTO, string> = {
-  queued: "排队中",
-  running: "进行中",
-  succeeded: "已完成",
-  failed: "失败",
-  stopped: "已停止",
-  "waiting-approval": "等待审批",
-  "waiting-mail": "等待回信",
-};
-
 const WORK_TONES: Record<WorkStatusDTO, string> = {
   queued: "muted",
   running: "info",
@@ -136,18 +129,20 @@ const WORK_TONES: Record<WorkStatusDTO, string> = {
 };
 
 export function WorkStatus({ status }: { status: WorkStatusDTO }): ReactNode {
-  return <Chip tone={WORK_TONES[status]}>{WORK_LABELS[status]}</Chip>;
+  const { messages } = useI18n();
+  return <Chip tone={WORK_TONES[status]}>{messages.work.status[status]}</Chip>;
 }
 
-export function timeAgo(value: number): string {
+export function timeAgo(value: number, locale: Locale): string {
   if (value <= 0) return "";
+  const messages = locale === "zh-CN" ? chineseMessages : englishMessages;
   const seconds = Math.max(0, Math.round((Date.now() - value) / 1000));
-  if (seconds < 60) return `${seconds} 秒前`;
+  if (seconds < 60) return messages.common.secondsAgo(seconds);
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 60) return messages.common.minutesAgo(minutes);
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
-  return new Date(value).toLocaleDateString("zh-CN");
+  if (hours < 24) return messages.common.hoursAgo(hours);
+  return new Date(value).toLocaleDateString(locale);
 }
 
 export function modelKey(model: { providerId: string; modelId: string }): string {
@@ -181,6 +176,7 @@ export function ModelPicker({
   label?: string;
 }): ReactNode {
   const base = useId();
+  const { messages } = useI18n();
   const [search, setSearch] = useState("");
   const [providerId, setProviderId] = useState("");
 
@@ -210,17 +206,17 @@ export function ModelPicker({
         id={`${base}-search`}
         type="search"
         value={search}
-        placeholder="搜索模型…"
-        aria-label="搜索模型"
+        placeholder={messages.model.searchPlaceholder}
+        aria-label={messages.model.search}
         onChange={(event) => setSearch(event.target.value)}
       />
       <select
         id={`${base}-provider`}
         value={providerId}
-        aria-label="按 Provider 筛选"
+        aria-label={messages.model.providerFilter}
         onChange={(event) => setProviderId(event.target.value)}
       >
-        <option value="">全部 Provider</option>
+        <option value="">{messages.model.allProviders}</option>
         {providers.map((provider) => (
           <option key={provider.id} value={provider.id}>
             {provider.name}
@@ -231,19 +227,19 @@ export function ModelPicker({
         id={`${base}-model`}
         value={value}
         size={filtering ? 6 : undefined}
-        aria-label={label ?? "选择模型"}
+        aria-label={label ?? messages.model.select}
         aria-describedby={filtering ? `${base}-results` : undefined}
         onChange={(event) => onChange(event.target.value)}
       >
-        {allowEmpty === true ? <option value="">（不设置）</option> : null}
+        {allowEmpty === true ? <option value="">{messages.model.notSet}</option> : null}
         {stale ? (
           <option value={value} disabled>
-            模型不可用：{value}
+            {messages.model.unavailable(value)}
           </option>
         ) : null}
         {allowEmpty !== true && !stale && options.length === 0 ? (
           <option value="" disabled>
-            （没有匹配的模型）
+            {messages.model.noMatch}
           </option>
         ) : null}
         {allowEmpty !== true &&
@@ -251,20 +247,20 @@ export function ModelPicker({
         options.length > 0 &&
         (value.length === 0 || !options.some((model) => modelKey(model) === value)) ? (
           <option value="" disabled>
-            请选择模型
+            {messages.model.selectPrompt}
           </option>
         ) : null}
         {options.map((model) => (
           <option key={modelKey(model)} value={modelKey(model)} disabled={!model.configured}>
             {model.providerName} · {model.name}
-            {model.configured ? "" : "（当前凭据不可用）"}
-            {filtering && modelKey(model) === value && !filtered.includes(model) ? "（当前选择，不匹配筛选）" : ""}
+            {model.configured ? "" : messages.model.credentialUnavailable}
+            {filtering && modelKey(model) === value && !filtered.includes(model) ? messages.model.filterMismatch : ""}
           </option>
         ))}
       </select>
       {filtering ? (
         <p id={`${base}-results`} className="hint model-picker-results" role="status">
-          {filtered.length === 0 ? "（没有匹配的模型）" : `${filtered.length} 个匹配模型`}
+          {filtered.length === 0 ? messages.model.noMatch : messages.model.matchingModels(filtered.length)}
         </p>
       ) : null}
     </div>
@@ -289,15 +285,16 @@ export function EffortPicker({
   onChange: (value: string) => void;
   label?: string;
 }): ReactNode {
+  const { messages } = useI18n();
   if (efforts.length === 0) {
     return (
-      <select disabled value="" aria-label={label ?? "推理强度"}>
-        <option value="">（无可用强度）</option>
+      <select disabled value="" aria-label={label ?? messages.model.effortLabel}>
+        <option value="">{messages.model.noEfforts}</option>
       </select>
     );
   }
   return (
-    <select value={value} aria-label={label ?? "推理强度"} onChange={(event) => onChange(event.target.value)}>
+    <select value={value} aria-label={label ?? messages.model.effortLabel} onChange={(event) => onChange(event.target.value)}>
       {efforts.map((level) => (
         <option key={level} value={level}>
           {level}
@@ -320,9 +317,10 @@ export function ConnectionCheckButton({
   model: { providerId: string; modelId: string } | undefined;
   kind: "chat" | "classifier";
 }): ReactNode {
-  const [result, setResult] = useState<{ status: "running" | "ok" | "error"; message?: string } | undefined>(
+  const [result, setResult] = useState<{ status: "running" | "ok" | "error"; message?: DisplayText } | undefined>(
     undefined,
   );
+  const { messages, text } = useI18n();
   const key = model === undefined ? "" : modelKey(model);
 
   useEffect(() => {
@@ -333,10 +331,10 @@ export function ConnectionCheckButton({
   const run = async (): Promise<void> => {
     setResult({ status: "running" });
     try {
-      const outcome = await api.checkModel(model, kind);
-      setResult({ status: outcome.ok ? "ok" : "error", message: outcome.message });
+      const outcome: CheckResultDTO = await api.checkModel(model, kind);
+      setResult({ status: outcome.ok ? "ok" : "error", message: outcome.messageLocalized ?? outcome.message });
     } catch (error) {
-      setResult({ status: "error", message: error instanceof Error ? error.message : String(error) });
+      setResult({ status: "error", message: errorDisplay(error) });
     }
   };
 
@@ -344,14 +342,14 @@ export function ConnectionCheckButton({
     <span className="connection-check">
       <button
         type="button"
-        title="会发起一次真实的远程模型请求，可能产生费用"
+        title={messages.model.costWarning}
         disabled={result?.status === "running"}
         onClick={() => void run()}
       >
-        {result?.status === "running" ? "检查中…" : "检查连接"}
+        {result?.status === "running" ? messages.model.checking : messages.model.check}
       </button>
       {result?.message !== undefined ? (
-        <span className={result.status === "ok" ? "hint" : "error-text"}>{result.message}</span>
+        <span className={result.status === "ok" ? "hint" : "error-text"}>{text(result.message)}</span>
       ) : null}
     </span>
   );

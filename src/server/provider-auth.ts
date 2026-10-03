@@ -25,6 +25,35 @@ import type {
   AuthSessionDTO,
   AuthSessionStatusDTO,
 } from "../shared/contracts.ts";
+import type { LocalizedText } from "../shared/i18n.ts";
+import { AppError, fromError, type AppText } from "./messages.ts";
+import { authMessages } from "./messages/auth.ts";
+
+/** A select option that may carry app-authored translations beside its fields. */
+export type LocalizedAuthOption = {
+  id: string;
+  label: string;
+  description?: string;
+  labelLocalized?: LocalizedText;
+  descriptionLocalized?: LocalizedText;
+};
+
+/**
+ * A native login prompt widened with app-authored translations.
+ *
+ * Application login flows (the built-in Azure endpoint questions) build
+ * prompts of this type; native provider prompts arrive without the optional
+ * fields and are copied exactly as they are. The SDK type is untouched.
+ */
+export type LocalizedAuthPrompt =
+  | (Extract<AuthPrompt, { type: "text" | "secret" | "manual_code" }> & { messageLocalized?: LocalizedText })
+  | (Omit<Extract<AuthPrompt, { type: "select" }>, "options"> & {
+      messageLocalized?: LocalizedText;
+      options: readonly LocalizedAuthOption[];
+    });
+
+/** A native login event widened with an app-authored message translation. */
+export type LocalizedAuthEvent = AuthEvent & { messageLocalized?: LocalizedText };
 
 const MAX_EVENTS = 32;
 /** A login left open for half an hour is abandoned, not still in progress. */
@@ -33,9 +62,9 @@ const SESSION_TTL_MS = 30 * 60_000;
 const TERMINAL_TTL_MS = 5 * 60_000;
 
 /** An auth error carrying the HTTP status the API must answer with. */
-export class ProviderAuthError extends Error {
+export class ProviderAuthError extends AppError {
   readonly status: number;
-  constructor(status: number, message: string) {
+  constructor(status: number, message: AppText) {
     super(message);
     this.status = status;
   }
@@ -45,8 +74,18 @@ type PendingPrompt = {
   id: string;
   type: AuthPrompt["type"];
   message: string;
+  /** Present when the prompt text is application-authored. */
+  messageLocalized?: LocalizedText;
   placeholder: string | undefined;
-  options: { id: string; label: string; description?: string }[] | undefined;
+  options:
+    | {
+        id: string;
+        label: string;
+        description?: string;
+        labelLocalized?: LocalizedText;
+        descriptionLocalized?: LocalizedText;
+      }[]
+    | undefined;
   optionIds: string[] | undefined;
   resolve: (value: string) => void;
   reject: (error: unknown) => void;
@@ -61,6 +100,8 @@ type Session = {
   prompt: PendingPrompt | null;
   events: AuthEventDTO[];
   message: string | null;
+  /** Present when the terminal message is application-authored. */
+  messageLocalized?: LocalizedText;
   controller: AbortController;
   task: Promise<void>;
   expiry: NodeJS.Timeout;
@@ -86,15 +127,15 @@ export class ProviderAuthSessions {
 
   /** Begin one native login. Only a single login may be in flight at a time. */
   start(providerId: string, type: AuthType): AuthSessionDTO {
-    if (this.#closed) throw new ProviderAuthError(500, "服务正在关闭");
+    if (this.#closed) throw new ProviderAuthError(500, authMessages.serverClosing());
     const provider = this.#models.getProvider(providerId);
-    if (provider === undefined) throw new ProviderAuthError(404, `Provider 不存在：${providerId}`);
+    if (provider === undefined) throw new ProviderAuthError(404, authMessages.providerMissing(providerId));
     const method = type === "oauth" ? provider.auth.oauth : provider.auth.apiKey;
     if (method?.login === undefined) {
-      throw new ProviderAuthError(400, `${provider.name} 不支持 ${type === "oauth" ? "OAuth" : "API Key"} 登录`);
+      throw new ProviderAuthError(400, authMessages.loginUnsupported(provider.name, type));
     }
     if (this.#activeSession() !== undefined) {
-      throw new ProviderAuthError(409, "已有一个进行中的认证会话，请先完成或取消它");
+      throw new ProviderAuthError(409, authMessages.sessionActive());
     }
 
     const id = randomUUID();
@@ -119,24 +160,24 @@ export class ProviderAuthSessions {
 
   get(sessionId: string): AuthSessionDTO {
     const session = this.#sessions.get(sessionId);
-    if (session === undefined) throw new ProviderAuthError(404, "认证会话不存在或已过期");
+    if (session === undefined) throw new ProviderAuthError(404, authMessages.sessionMissing());
     return this.#snapshot(session);
   }
 
   /** Answer the current prompt. Rejects a stale prompt rather than guessing. */
   respond(sessionId: string, promptId: string, value: string): AuthSessionDTO {
     const session = this.#sessions.get(sessionId);
-    if (session === undefined) throw new ProviderAuthError(404, "认证会话不存在或已过期");
+    if (session === undefined) throw new ProviderAuthError(404, authMessages.sessionMissing());
     const pending = session.prompt;
     if (pending === null || pending.id !== promptId) {
-      throw new ProviderAuthError(409, "该提示已失效，请刷新会话状态");
+      throw new ProviderAuthError(409, authMessages.promptStale());
     }
-    if (typeof value !== "string") throw new ProviderAuthError(400, "回答必须是字符串");
+    if (typeof value !== "string") throw new ProviderAuthError(400, authMessages.answerNotString());
     if (pending.type === "select" && (pending.optionIds === undefined || !pending.optionIds.includes(value))) {
-      throw new ProviderAuthError(400, "选项无效");
+      throw new ProviderAuthError(400, authMessages.optionInvalid());
     }
     if (pending.type === "secret" && value.length === 0) {
-      throw new ProviderAuthError(400, "密钥不能为空");
+      throw new ProviderAuthError(400, authMessages.secretEmpty());
     }
     pending.release();
     session.prompt = null;
@@ -154,8 +195,8 @@ export class ProviderAuthSessions {
    */
   async cancel(sessionId: string): Promise<AuthSessionDTO> {
     const session = this.#sessions.get(sessionId);
-    if (session === undefined) throw new ProviderAuthError(404, "认证会话不存在或已过期");
-    session.controller.abort(new Error("已取消"));
+    if (session === undefined) throw new ProviderAuthError(404, authMessages.sessionMissing());
+    session.controller.abort(new AppError(authMessages.cancelled()));
     await session.task.catch(() => undefined);
     return this.#snapshot(session);
   }
@@ -172,7 +213,7 @@ export class ProviderAuthSessions {
   async close(): Promise<void> {
     this.#closed = true;
     const sessions = [...this.#sessions.values()];
-    for (const session of sessions) session.controller.abort(new Error("服务正在关闭"));
+    for (const session of sessions) session.controller.abort(new AppError(authMessages.serverClosing()));
     await Promise.all(sessions.map((session) => session.task.catch(() => undefined)));
     for (const session of sessions) {
       clearTimeout(session.expiry);
@@ -188,8 +229,8 @@ export class ProviderAuthSessions {
   async #run(session: Session, login: (interaction: ProviderAuthInteraction) => Promise<unknown>): Promise<void> {
     const interaction: AuthInteraction = {
       signal: session.controller.signal,
-      prompt: (prompt) => this.#prompt(session, prompt),
-      notify: (event) => this.#notify(session, event),
+      prompt: (prompt: LocalizedAuthPrompt) => this.#prompt(session, prompt),
+      notify: (event: LocalizedAuthEvent) => this.#notify(session, event),
     };
     try {
       await this.#models.login(session.providerId, session.authType, interaction, {
@@ -198,24 +239,24 @@ export class ProviderAuthSessions {
       this.#settle(session, "succeeded", await this.#refreshNote(session));
     } catch (error) {
       if (session.controller.signal.aborted) this.#settle(session, "cancelled", null);
-      else this.#settle(session, "failed", describeError(error));
+      else this.#settle(session, "failed", fromError(error));
     }
   }
 
-  async #refreshNote(session: Session): Promise<string | null> {
+  async #refreshNote(session: Session): Promise<AppText | null> {
     try {
       const result = await this.#refresh(session.providerId, session.controller.signal);
       if (result.errors.size === 0) return null;
-      return `认证已保存，但模型目录刷新失败：${[...result.errors.values()].map(describeError).join("；")}`;
+      return authMessages.refreshFailed([...result.errors.values()].map(describeError));
     } catch (error) {
       if (session.controller.signal.aborted) return null;
-      return `认证已保存，但模型目录刷新失败：${describeError(error)}`;
+      return authMessages.refreshFailed([describeError(error)]);
     }
   }
 
-  #prompt(session: Session, prompt: AuthPrompt): Promise<string> {
+  #prompt(session: Session, prompt: LocalizedAuthPrompt): Promise<string> {
     if (session.controller.signal.aborted || !isActive(session)) {
-      return Promise.reject(session.controller.signal.reason ?? new Error("认证会话已结束"));
+      return Promise.reject(session.controller.signal.reason ?? new AppError(authMessages.sessionEnded()));
     }
     const id = randomUUID();
     const { promise, resolve, reject } = Promise.withResolvers<string>();
@@ -226,13 +267,14 @@ export class ProviderAuthSessions {
       if (session.prompt?.id !== id) return;
       session.prompt = null;
       session.status = "running";
-      reject(prompt.signal?.reason ?? new Error("该提示已被原生流程取消"));
+      reject(prompt.signal?.reason ?? new AppError(authMessages.promptCancelledByNativeFlow()));
     };
     prompt.signal?.addEventListener("abort", onAbort, { once: true });
     session.prompt = {
       id,
       type: prompt.type,
       message: prompt.message,
+      ...(prompt.messageLocalized !== undefined ? { messageLocalized: prompt.messageLocalized } : {}),
       placeholder: prompt.type === "select" ? undefined : prompt.placeholder,
       options:
         prompt.type === "select"
@@ -240,6 +282,10 @@ export class ProviderAuthSessions {
               id: option.id,
               label: option.label,
               ...(option.description !== undefined ? { description: option.description } : {}),
+              ...(option.labelLocalized !== undefined ? { labelLocalized: option.labelLocalized } : {}),
+              ...(option.descriptionLocalized !== undefined
+                ? { descriptionLocalized: option.descriptionLocalized }
+                : {}),
             }))
           : undefined,
       optionIds: prompt.type === "select" ? prompt.options.map((option) => option.id) : undefined,
@@ -251,19 +297,20 @@ export class ProviderAuthSessions {
     return promise;
   }
 
-  #notify(session: Session, event: AuthEvent): void {
+  #notify(session: Session, event: LocalizedAuthEvent): void {
     session.events = [...session.events, toEventDTO(event)].slice(-MAX_EVENTS);
   }
 
-  #settle(session: Session, status: AuthSessionStatusDTO, message: string | null): void {
+  #settle(session: Session, status: AuthSessionStatusDTO, message: AppText | null): void {
     const pending = session.prompt;
     if (pending !== null) {
       session.prompt = null;
       pending.release();
-      pending.reject(new Error("认证流程已结束"));
+      pending.reject(new AppError(authMessages.flowEnded()));
     }
     session.status = status;
-    session.message = message;
+    session.message = message?.text ?? null;
+    session.messageLocalized = message?.localized;
     clearTimeout(session.expiry);
     if (session.discard === undefined) {
       session.discard = setTimeout(() => {
@@ -281,6 +328,7 @@ export class ProviderAuthSessions {
       prompt: session.prompt === null ? null : promptToDTO(session.prompt),
       events: [...session.events],
       message: session.message,
+      ...(session.messageLocalized !== undefined ? { messageLocalized: session.messageLocalized } : {}),
     };
   }
 }
@@ -294,17 +342,19 @@ function promptToDTO(prompt: PendingPrompt): AuthPromptDTO {
     id: prompt.id,
     type: prompt.type,
     message: prompt.message,
+    ...(prompt.messageLocalized !== undefined ? { messageLocalized: prompt.messageLocalized } : {}),
     ...(prompt.placeholder !== undefined ? { placeholder: prompt.placeholder } : {}),
     ...(prompt.options !== undefined ? { options: prompt.options } : {}),
   };
 }
 
-function toEventDTO(event: AuthEvent): AuthEventDTO {
+function toEventDTO(event: LocalizedAuthEvent): AuthEventDTO {
   switch (event.type) {
     case "info":
       return {
         type: "info",
         message: event.message,
+        ...(event.messageLocalized !== undefined ? { messageLocalized: event.messageLocalized } : {}),
         ...(event.links !== undefined
           ? { links: event.links.map((link) => ({ url: link.url, ...(link.label !== undefined ? { label: link.label } : {}) })) }
           : {}),
@@ -324,7 +374,11 @@ function toEventDTO(event: AuthEvent): AuthEventDTO {
         ...(event.expiresInSeconds !== undefined ? { expiresInSeconds: event.expiresInSeconds } : {}),
       };
     case "progress":
-      return { type: "progress", message: event.message };
+      return {
+        type: "progress",
+        message: event.message,
+        ...(event.messageLocalized !== undefined ? { messageLocalized: event.messageLocalized } : {}),
+      };
   }
 }
 

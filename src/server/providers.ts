@@ -26,7 +26,11 @@ import {
   type CustomProviderApi,
   type CustomProviderConfigDTO,
 } from "../shared/contracts.ts";
+import type { LocalizedText } from "../shared/i18n.ts";
+import { AppError, type AppText } from "./messages.ts";
+import { providerMessages } from "./messages/providers.ts";
 import { ValidationError } from "./workspace.ts";
+import type { LocalizedAuthEvent, LocalizedAuthPrompt } from "./provider-auth.ts";
 
 const API_IMPLEMENTATIONS: Record<CustomProviderApi, () => ProviderStreams> = {
   "openai-completions": openAICompletionsApi,
@@ -51,7 +55,7 @@ export function normalizeCustomProviders(
   value: unknown,
   builtinIds: ReadonlySet<string>,
 ): CustomProviderConfigDTO[] {
-  if (!Array.isArray(value)) throw new ValidationError("providers 必须是数组");
+  if (!Array.isArray(value)) throw new ValidationError(providerMessages.validate.mustBeArray());
   const result: CustomProviderConfigDTO[] = [];
   const seenIds = new Set<string>();
 
@@ -59,16 +63,16 @@ export function normalizeCustomProviders(
     const where = `providers[${index}]`;
     const draft = value[index];
     if (typeof draft !== "object" || draft === null || Array.isArray(draft)) {
-      throw new ValidationError(`${where} 不是对象`);
+      throw new ValidationError(providerMessages.validate.entryNotObject(where));
     }
     const entry = draft as Record<string, unknown>;
 
     const id = typeof entry.id === "string" ? entry.id.trim() : "";
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) {
-      throw new ValidationError(`${where}.id 无效：${id.length > 0 ? id : "(空)"}`);
+      throw new ValidationError(providerMessages.validate.idInvalid(where, id));
     }
-    if (builtinIds.has(id)) throw new ValidationError(`${where}.id 与内置 Provider 冲突：${id}`);
-    if (seenIds.has(id)) throw new ValidationError(`自定义 Provider id 重复：${id}`);
+    if (builtinIds.has(id)) throw new ValidationError(providerMessages.validate.idConflictsBuiltin(where, id));
+    if (seenIds.has(id)) throw new ValidationError(providerMessages.validate.idDuplicate(id));
     seenIds.add(id);
 
     const baseUrl = typeof entry.baseUrl === "string" ? entry.baseUrl.trim() : "";
@@ -76,29 +80,29 @@ export function normalizeCustomProviders(
     try {
       parsedUrl = new URL(baseUrl);
     } catch {
-      throw new ValidationError(`${where}.baseUrl 不是合法 URL：${baseUrl.length > 0 ? baseUrl : "(空)"}`);
+      throw new ValidationError(providerMessages.validate.baseUrlNotUrl(where, baseUrl));
     }
     if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
-      throw new ValidationError(`${where}.baseUrl 必须是 http(s) 地址：${baseUrl}`);
+      throw new ValidationError(providerMessages.validate.baseUrlNotHttp(where, baseUrl));
     }
     if (parsedUrl.username.length > 0 || parsedUrl.password.length > 0) {
-      throw new ValidationError(`${where}.baseUrl 不能包含用户名或密码`);
+      throw new ValidationError(providerMessages.validate.baseUrlNoCredentials(where));
     }
 
     const api = entry.api;
     if (typeof api !== "string" || !(CUSTOM_PROVIDER_APIS as readonly string[]).includes(api)) {
-      throw new ValidationError(`${where}.api 必须是 ${CUSTOM_PROVIDER_APIS.join(" / ")} 之一`);
+      throw new ValidationError(providerMessages.validate.apiUnsupported(where, CUSTOM_PROVIDER_APIS));
     }
 
     const apiKeyEnv = entry.apiKeyEnv === undefined ? "" : entry.apiKeyEnv;
     if (typeof apiKeyEnv !== "string" || (apiKeyEnv !== "" && !/^[A-Z][A-Z0-9_]*$/.test(apiKeyEnv))) {
-      throw new ValidationError(`${where}.apiKeyEnv 必须是大写环境变量名或空字符串`);
+      throw new ValidationError(providerMessages.validate.apiKeyEnvInvalid(where));
     }
 
     const name = typeof entry.name === "string" && entry.name.trim().length > 0 ? entry.name.trim() : id;
 
     if (!Array.isArray(entry.models) || entry.models.length === 0) {
-      throw new ValidationError(`${where}.models 至少需要一个模型`);
+      throw new ValidationError(providerMessages.validate.modelsAtLeastOne(where));
     }
     const modelIds = new Set<string>();
     const models: CustomProviderConfigDTO["models"] = [];
@@ -106,25 +110,29 @@ export function normalizeCustomProviders(
       const modelWhere = `${where}.models[${modelIndex}]`;
       const rawModel = entry.models[modelIndex];
       if (typeof rawModel !== "object" || rawModel === null || Array.isArray(rawModel)) {
-        throw new ValidationError(`${modelWhere} 不是对象`);
+        throw new ValidationError(providerMessages.validate.modelNotObject(modelWhere));
       }
       const modelDraft = rawModel as Record<string, unknown>;
       const modelId = typeof modelDraft.id === "string" ? modelDraft.id.trim() : "";
-      if (modelId.length === 0) throw new ValidationError(`${modelWhere}.id 不能为空`);
-      if (modelId.includes("|")) throw new ValidationError(`${modelWhere}.id 不能包含「|」`);
-      if (modelIds.has(modelId)) throw new ValidationError(`${where}.models 中模型 id 重复：${modelId}`);
+      if (modelId.length === 0) throw new ValidationError(providerMessages.validate.modelIdEmpty(modelWhere));
+      if (modelId.includes("|")) throw new ValidationError(providerMessages.validate.modelIdNoPipe(modelWhere));
+      if (modelIds.has(modelId)) {
+        throw new ValidationError(providerMessages.validate.modelIdDuplicate(where, modelId));
+      }
       modelIds.add(modelId);
 
       const contextWindow = modelDraft.contextWindow === undefined ? DEFAULT_CONTEXT_WINDOW : modelDraft.contextWindow;
       if (typeof contextWindow !== "number" || !Number.isInteger(contextWindow) || contextWindow <= 0) {
-        throw new ValidationError(`${modelWhere}.contextWindow 必须是正整数`);
+        throw new ValidationError(providerMessages.validate.contextWindowPositive(modelWhere));
       }
       const maxTokens = modelDraft.maxTokens === undefined ? DEFAULT_MAX_TOKENS : modelDraft.maxTokens;
       if (typeof maxTokens !== "number" || !Number.isInteger(maxTokens) || maxTokens <= 0) {
-        throw new ValidationError(`${modelWhere}.maxTokens 必须是正整数`);
+        throw new ValidationError(providerMessages.validate.maxTokensPositive(modelWhere));
       }
       const reasoning = modelDraft.reasoning === undefined ? false : modelDraft.reasoning;
-      if (typeof reasoning !== "boolean") throw new ValidationError(`${modelWhere}.reasoning 必须是布尔值`);
+      if (typeof reasoning !== "boolean") {
+        throw new ValidationError(providerMessages.validate.reasoningBoolean(modelWhere));
+      }
 
       const input = modelDraft.input === undefined ? ["text"] : modelDraft.input;
       if (
@@ -132,7 +140,7 @@ export function normalizeCustomProviders(
         input.length === 0 ||
         !input.every((part) => part === "text" || part === "image")
       ) {
-        throw new ValidationError(`${modelWhere}.input 只能包含 text 或 image，且不能为空`);
+        throw new ValidationError(providerMessages.validate.inputTextOrImage(modelWhere));
       }
 
       const modelName =
@@ -206,57 +214,85 @@ export function configureBuiltinLogin(models: MutableModels): void {
     const credential = await nativeLogin(interaction);
     const env: Record<string, string> = { ...credential.env };
 
-    const mode = await interaction.prompt({
-      type: "select",
-      message: "Azure OpenAI 端点方式",
-      options: [
-        { id: "base-url", label: "Base URL", description: "例如 https://my-resource.openai.azure.com/openai/v1" },
-        { id: "resource-name", label: "Resource name", description: "例如 my-resource" },
-      ],
-    });
+    const mode = await interaction.prompt(
+      selectPrompt(providerMessages.azure.endpointModePrompt(), [
+        providerMessages.azure.baseUrlOption(),
+        providerMessages.azure.resourceNameOption(),
+      ]),
+    );
 
     if (mode === "base-url") {
       for (;;) {
+        // The prompt reads the same in both languages, so it carries no pair.
         const value = (await interaction.prompt({ type: "text", message: "Azure OpenAI Base URL" })).trim();
         if (isHttpUrl(value)) {
           env.AZURE_OPENAI_BASE_URL = value;
           break;
         }
-        interaction.notify({ type: "info", message: "Base URL 必须是以 http:// 或 https:// 开头的绝对地址，请重试。" });
+        interaction.notify(notifyEvent(providerMessages.azure.baseUrlRetry()));
       }
     } else if (mode === "resource-name") {
       for (;;) {
+        // The prompt reads the same in both languages, so it carries no pair.
         const value = (await interaction.prompt({ type: "text", message: "Azure OpenAI resource name" })).trim();
         if (value.length > 0) {
           env.AZURE_OPENAI_RESOURCE_NAME = value;
           break;
         }
-        interaction.notify({ type: "info", message: "resource name 不能为空，请重试。" });
+        interaction.notify(notifyEvent(providerMessages.azure.resourceNameRetry()));
       }
     } else {
-      throw new Error(`未知的 Azure 端点方式：${mode}`);
+      throw new AppError(providerMessages.azure.unknownEndpointMode(mode));
     }
 
-    const apiVersion = (await interaction.prompt({ type: "text", message: "API version（留空使用 v1）" })).trim();
+    const apiVersion = (await interaction.prompt(textPrompt(providerMessages.azure.apiVersionPrompt()))).trim();
     if (apiVersion.length > 0) env.AZURE_OPENAI_API_VERSION = apiVersion;
 
     for (;;) {
-      const map = (
-        await interaction.prompt({
-          type: "text",
-          message: "部署映射，格式 model-id=deployment-name,model-id=deployment-name（留空使用模型 id）",
-        })
-      ).trim();
+      const map = (await interaction.prompt(textPrompt(providerMessages.azure.deploymentMapPrompt()))).trim();
       if (map.length === 0) break;
       if (isDeploymentMap(map)) {
         env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP = map;
         break;
       }
-      interaction.notify({ type: "info", message: "部署映射每一项都必须是 model-id=deployment-name，请重试。" });
+      interaction.notify(notifyEvent(providerMessages.azure.deploymentMapRetry()));
     }
 
     return { ...credential, env };
   };
+}
+
+/** Attach an application translation to a select prompt's message and options. */
+function selectPrompt(
+  message: AppText,
+  options: readonly {
+    id: string;
+    label: string;
+    description: string;
+    descriptionLocalized: LocalizedText;
+  }[],
+): LocalizedAuthPrompt {
+  return {
+    type: "select",
+    message: message.text,
+    messageLocalized: message.localized,
+    options: options.map((option) => ({
+      id: option.id,
+      label: option.label,
+      description: option.description,
+      descriptionLocalized: option.descriptionLocalized,
+    })),
+  };
+}
+
+/** Attach an application translation to a text prompt. */
+function textPrompt(message: AppText): LocalizedAuthPrompt {
+  return { type: "text", message: message.text, messageLocalized: message.localized };
+}
+
+/** Attach an application translation to an info event. */
+function notifyEvent(message: AppText): LocalizedAuthEvent {
+  return { type: "info", message: message.text, messageLocalized: message.localized };
 }
 
 function isHttpUrl(value: string): boolean {

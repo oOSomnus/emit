@@ -10,7 +10,7 @@
  */
 
 import { createServer, type Server, type ServerResponse } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -32,6 +32,7 @@ import {
 import { RoomMessageEntry, type EmployeeRecord, type RoomRecord } from "../src/server/documents.ts";
 import { WorkExecutionCursorError, readWorkExecution } from "../src/server/work-execution.ts";
 import type { EmployeeDraftDTO, MessageDTO } from "../src/shared/contracts.ts";
+import { toWorkDTO } from "../src/server/dto.ts";
 
 /** The employee with this name, or a test failure. */
 function employeeNamed(employees: EmployeeRecord[], name: string): EmployeeRecord {
@@ -785,6 +786,123 @@ describe("durable mail delivery", () => {
     expect(retired).toBeInstanceOf(RoomDirectoryError);
     expect((retired as RoomDirectoryError).status).toBe(409);
   }, 60_000);
+
+  it("localized failure text survives a restart while model and user originals do not change", async () => {
+    const fixture = await startFixture();
+    cleanups.push(() => fixture.close());
+    const dir = mkdtempSync(join(tmpdir(), "emit-mail-localized-failure-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const workDir = join(dir, "work");
+    mkdirSync(workDir);
+
+    const first = await openRuntime(dir, fixture.baseUrl);
+    cleanups.push(async () => {
+      await first.runtime.close();
+    });
+    await first.runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
+    await setupWorkspace(first.runtime, {
+      workspaceName: "邮件测试",
+      userName: "测试者",
+      defaultExecutionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
+      approval: { kind: "llm", model: { providerId: "fake", modelId: "fake-reviewer" }, effort: "off", criteriaVersion: 3 },
+    });
+    await createEmployee(first.runtime, {
+      name: "乙",
+      role: "研究",
+      executionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
+    } satisfies EmployeeDraftDTO);
+    let employee = employeeNamed(await listEmployees(first.runtime), "乙");
+    await updateEmployee(first.runtime, employee.id, { enabled: false });
+    const employees = await listEmployees(first.runtime);
+    employee = employeeNamed(employees, "乙");
+    for (const current of employees) await installEmployeeExtension(first.resume, current);
+    const room = await createRoom(first.runtime, {
+      kind: "mail",
+      name: "邮件测试",
+      directories: { paths: [workDir], defaultPath: workDir },
+    });
+
+    first.runtime.resume();
+    const queuedMail = mailInput(room, [employee]);
+    const requestsBeforeDispatch = fixture.requests.length;
+    const sent = await sendQueuedMail(first.resume, {
+      ...queuedMail,
+      data: { ...queuedMail.data, body: "原文 乙 中文" },
+    });
+    expect(sent.workIds).toHaveLength(1);
+    const workId = sent.workIds[0]!;
+    await waitFor(
+      async () => (await listWorks(first.runtime)).some((work) => work.id === workId && work.status === "failed"),
+      "乙 的邮件工作失败",
+      15_000,
+    );
+
+    const works = await listWorks(first.runtime);
+    expect(works).toHaveLength(1);
+    const record = works.find((work) => work.id === workId);
+    if (record === undefined) throw new Error(`Missing failed work ${workId}`);
+    const rawError = record.error;
+    const workDTO = toWorkDTO(record, "乙", room.name);
+    expect(rawError).toContain("已停用");
+    expect(workDTO.error).toBe(rawError);
+    expect(workDTO.errorLocalized?.["zh-CN"]).toContain("乙");
+    expect(workDTO.errorLocalized?.en).toContain("乙");
+    expect(workDTO.errorLocalized?.en).toMatch(/\b(?:disabled|failed)\b/i);
+    expect((workDTO.errorLocalized?.en ?? "").replaceAll("乙", "")).not.toMatch(/\p{Script=Han}/u);
+
+    let entries = await roomMessages(first.runtime, room);
+    const notices = entries.filter((message) => message.author.type === "system" && message.notice === true);
+    expect(notices).toHaveLength(1);
+    const notice = notices[0];
+    if (notice === undefined) throw new Error("Missing failed system notice");
+    expect(notice.body).toContain("乙");
+    expect(notice.bodyLocalized?.["zh-CN"]).toBe(notice.body);
+    expect(notice.bodyLocalized?.en).toContain("乙");
+    expect(notice.bodyLocalized?.en).toMatch(/\b(?:disabled|failed)\b/i);
+    expect((notice.bodyLocalized?.en ?? "").replaceAll("乙", "")).not.toMatch(/\p{Script=Han}/u);
+
+    const userMessages = entries.filter((message) => message.author.type === "user");
+    expect(userMessages).toHaveLength(1);
+    expect(userMessages[0]?.body).toBe("原文 乙 中文");
+    expect(userMessages[0]).not.toHaveProperty("bodyLocalized");
+    expect(fixture.requests).toHaveLength(requestsBeforeDispatch);
+
+    const oldBody = "旧系统消息原文：保留中文";
+    await appendRoomMessage(
+      first.runtime,
+      room,
+      messageData({
+        author: { type: "system", id: "system", name: "系统", address: "" },
+        body: oldBody,
+      }),
+    );
+    entries = await roomMessages(first.runtime, room);
+    const oldMessage = entries.find((message) => message.body === oldBody);
+    expect(oldMessage?.body).toBe(oldBody);
+    expect(oldMessage).not.toHaveProperty("bodyLocalized");
+
+    await first.runtime.close();
+    const reopened = await openRuntime(dir, fixture.baseUrl);
+    cleanups.push(async () => {
+      await reopened.runtime.close();
+    });
+    const persistedWorks = await listWorks(reopened.runtime);
+    expect(persistedWorks).toHaveLength(1);
+    const persistedRecord = persistedWorks.find((work) => work.id === workId);
+    if (persistedRecord === undefined) throw new Error(`Missing reopened work ${workId}`);
+    const persistedDTO = toWorkDTO(persistedRecord, "乙", room.name);
+    expect(persistedDTO.error).toBe(rawError);
+    expect(persistedDTO.errorLocalized).toEqual(workDTO.errorLocalized);
+
+    const persistedEntries = await roomMessages(reopened.runtime, room);
+    const persistedNotice = persistedEntries.find(
+      (message) => message.author.type === "system" && message.notice === true,
+    );
+    expect(persistedNotice?.bodyLocalized).toEqual(notice.bodyLocalized);
+    const persistedOldMessage = persistedEntries.find((message) => message.body === oldBody);
+    expect(persistedOldMessage?.body).toBe(oldBody);
+    expect(persistedOldMessage).not.toHaveProperty("bodyLocalized");
+  }, 30_000);
 });
 
 /** Every message entry in a room, oldest first, as DTOs. */

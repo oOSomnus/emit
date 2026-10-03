@@ -10,6 +10,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api.ts";
+import { errorDisplay } from "../../shared/i18n.ts";
+import { useI18n } from "../i18n.tsx";
+import { chineseMail, englishMail } from "../messages/mail.ts";
+import { uiText } from "../messages.ts";
 import { useApp } from "../state.tsx";
 import { Chip, Icon, IconButton, WorkStatus, timeAgo } from "./ui.tsx";
 import { WorkExecution } from "./WorkExecution.tsx";
@@ -21,19 +25,12 @@ const USER_ID = "user";
 
 type Folder = "inbox" | "sent" | "drafts" | "archived";
 
-const FOLDERS: { id: Folder; label: string; icon: "inbox" | "send" | "draft" | "archive" }[] = [
-  { id: "inbox", label: "收件箱", icon: "inbox" },
-  { id: "sent", label: "已发送", icon: "send" },
-  { id: "drafts", label: "草稿", icon: "draft" },
-  { id: "archived", label: "归档", icon: "archive" },
+const FOLDERS: { id: Folder; icon: "inbox" | "send" | "draft" | "archive" }[] = [
+  { id: "inbox", icon: "inbox" },
+  { id: "sent", icon: "send" },
+  { id: "drafts", icon: "draft" },
+  { id: "archived", icon: "archive" },
 ];
-
-const FOLDER_LABELS: Record<Folder, string> = {
-  inbox: "收件箱",
-  sent: "已发送",
-  drafts: "草稿",
-  archived: "归档",
-};
 
 function inFolder(item: MailboxItemDTO, folder: Folder): boolean {
   const mail = item.message.mail;
@@ -74,10 +71,10 @@ function addressedToUser(message: MessageDTO, userAddress: string): boolean {
   return [...mail.to, ...mail.cc].some((entry) => entry.address === userAddress);
 }
 
-function recipientNames(message: MessageDTO): string {
+function recipientNames(message: MessageDTO, separator: string): string {
   const mail = message.mail;
   if (mail === undefined) return "";
-  return [...mail.to, ...mail.cc].map((entry) => entry.name || entry.address).join("、");
+  return [...mail.to, ...mail.cc].map((entry) => entry.name || entry.address).join(separator);
 }
 
 /** One row of the list: a whole thread, or one draft. */
@@ -131,6 +128,10 @@ function snapshot(compose: Compose): string {
 
 export function MailView(): ReactNode {
   const { state, dispatch, setError } = useApp();
+  const { messages, locale } = useI18n();
+  const namesSeparator = (locale === "zh-CN" ? chineseMail : englishMail).namesSeparator;
+  /** The room name a new mail with no subject gets; it is record data from then on. */
+  const noSubjectRoomName = (locale === "zh-CN" ? chineseMail : englishMail).noSubject;
   const [folder, setFolder] = useState<Folder>("inbox");
   const [query, setQuery] = useState("");
   const [mailbox, setMailbox] = useState<MailboxItemDTO[]>([]);
@@ -153,7 +154,7 @@ export function MailView(): ReactNode {
     try {
       setMailbox((await api.mailbox()).items);
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(errorDisplay(error));
     }
   }, [setError]);
 
@@ -166,10 +167,10 @@ export function MailView(): ReactNode {
 
   const candidates = useMemo(
     () => [
-      { id: USER_ID, name: `${state.app?.user.name ?? "你"}（我）`, address: userAddress },
+      { id: USER_ID, name: messages.mail.selfName(state.app?.user.name), address: userAddress },
       ...state.employees.map((employee) => ({ id: employee.id, name: employee.name, address: employee.address })),
     ],
-    [state.app?.user.name, userAddress, state.employees],
+    [state.app?.user.name, userAddress, state.employees, messages],
   );
 
   /**
@@ -191,8 +192,8 @@ export function MailView(): ReactNode {
           key: `${item.roomId}|${item.message.id}`,
           roomId: item.roomId,
           entryId: item.message.id,
-          subject: mail.subject.length > 0 ? mail.subject : "（无主题）",
-          who: recipientNames(item.message) || "（无收件人）",
+          subject: mail.subject.length > 0 ? mail.subject : messages.mail.noSubject,
+          who: recipientNames(item.message, namesSeparator) || messages.mail.noRecipients,
           snippet: item.message.body,
           at: item.message.createdAt,
           count: 1,
@@ -219,8 +220,10 @@ export function MailView(): ReactNode {
         key: roomId,
         roomId,
         entryId: latest.message.id,
-        subject: mail.subject.length > 0 ? mail.subject : "（无主题）",
-        who: mine ? recipientNames(latest.message) || "（无收件人）" : latest.message.author.name,
+        subject: mail.subject.length > 0 ? mail.subject : messages.mail.noSubject,
+        who: mine
+          ? recipientNames(latest.message, namesSeparator) || messages.mail.noRecipients
+          : latest.message.author.name,
         snippet: latest.message.body,
         at: latest.message.createdAt,
         count: items.length,
@@ -232,7 +235,7 @@ export function MailView(): ReactNode {
       });
     }
     return [...grouped, ...drafts].sort((a, b) => b.at - a.at);
-  }, [mailbox, folder, term, userAddress, state.employees.length]);
+  }, [mailbox, folder, term, userAddress, state.employees.length, namesSeparator, messages]);
 
   const inboxUnread = useMemo(
     () => mailbox.filter((item) => inFolder(item, "inbox") && item.message.mail?.read !== true).length,
@@ -263,7 +266,7 @@ export function MailView(): ReactNode {
           if (roomId === state.activeRoomId) dispatch({ type: "messages", messages: payload.messages });
           return refreshMailbox();
         })
-        .catch((error: unknown) => setError(error instanceof Error ? error.message : String(error)));
+        .catch((error: unknown) => setError(errorDisplay(error)));
     },
     [dispatch, refreshMailbox, setError, state.activeRoomId],
   );
@@ -287,7 +290,7 @@ export function MailView(): ReactNode {
           dispatch({ type: "view", view: "mail" });
           dispatch({ type: "messages", messages: payload.messages });
         } catch (error) {
-          setError(error instanceof Error ? error.message : String(error));
+          setError(errorDisplay(error));
         }
       })();
     },
@@ -319,7 +322,7 @@ export function MailView(): ReactNode {
         }
         await refreshMailbox();
       } catch (error) {
-        setError(error instanceof Error ? error.message : String(error));
+        setError(errorDisplay(error));
       }
     })();
   }, [state.activeRoomId, state.messages, reading, userAddress, dispatch, refreshMailbox, setError]);
@@ -382,7 +385,7 @@ export function MailView(): ReactNode {
       setComposeBase(snapshot(next));
       setAskClose(false);
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(errorDisplay(error));
     }
   };
 
@@ -392,7 +395,7 @@ export function MailView(): ReactNode {
       const name = draft.subject.trim();
       const created = await api.createRoom({
         kind: "mail",
-        name: name.length > 0 ? name : "（无主题）",
+        name: name.length > 0 ? name : noSubjectRoomName,
         directories: draft.directories,
       });
       dispatch({ type: "room", room: created });
@@ -420,7 +423,7 @@ export function MailView(): ReactNode {
   const saveDraft = async (): Promise<boolean> => {
     if (compose === undefined || busy) return false;
     if (compose.body.trim().length === 0) {
-      setError("草稿需要正文");
+      setError(uiText((m) => m.mail.draftNeedsBody));
       return false;
     }
     setBusy(true);
@@ -435,7 +438,7 @@ export function MailView(): ReactNode {
         ...(compose.inReplyTo.length > 0 ? { inReplyTo: compose.inReplyTo } : {}),
       });
       if (result.error !== undefined) {
-        setError(result.error);
+        setError(result.errorLocalized ?? result.error);
         return false;
       }
       // An edited draft is retired, never rewritten: entries are immutable, so
@@ -446,10 +449,10 @@ export function MailView(): ReactNode {
       setFolder("drafts");
       setReading(false);
       await refreshMailbox();
-      dispatch({ type: "notice", text: "草稿已保存" });
+      dispatch({ type: "notice", text: uiText((m) => m.mail.draftSavedNotice) });
       return true;
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(errorDisplay(error));
       return false;
     } finally {
       setBusy(false);
@@ -459,7 +462,7 @@ export function MailView(): ReactNode {
   const sendComposed = async () => {
     if (compose === undefined || busy) return;
     if (compose.body.trim().length === 0) {
-      setError("邮件需要正文");
+      setError(uiText((m) => m.mail.mailNeedsBody));
       return;
     }
     setBusy(true);
@@ -473,7 +476,7 @@ export function MailView(): ReactNode {
         ...(compose.inReplyTo.length > 0 ? { inReplyTo: compose.inReplyTo } : {}),
       });
       if (result.error !== undefined) {
-        setError(result.error);
+        setError(result.errorLocalized ?? result.error);
         return;
       }
       if (compose.draftId.length > 0) await api.mailFlag(roomId, compose.draftId, { active: false });
@@ -483,10 +486,10 @@ export function MailView(): ReactNode {
       // user is not dropped into a live wait.
       setReading(false);
       setFolder("sent");
-      dispatch({ type: "notice", text: "邮件已发送，回复将送达收件箱" });
+      dispatch({ type: "notice", text: uiText((m) => m.mail.sentNotice) });
       await refreshMailbox();
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(errorDisplay(error));
     } finally {
       setBusy(false);
     }
@@ -504,13 +507,15 @@ export function MailView(): ReactNode {
   const sendDraftNow = async (item: MailboxItemDTO) => {
     try {
       const result = await api.sendDraft(item.roomId, item.message.id);
-      if (result.workIds.length === 0) {
-        dispatch({ type: "notice", text: "邮件已发送，没有收件人需要执行" });
+      if (result.error !== undefined) {
+        setError(result.errorLocalized ?? result.error);
+      } else if (result.workIds.length === 0) {
+        dispatch({ type: "notice", text: uiText((m) => m.mail.sentNoWorkNotice) });
       }
       await refreshMailbox();
       setFolder("sent");
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(errorDisplay(error));
     }
   };
 
@@ -580,10 +585,10 @@ export function MailView(): ReactNode {
     <div className="pane">
       <header className="pane-header">
         <div>
-          <h2>邮箱</h2>
+          <h2>{messages.mail.title}</h2>
           <p className="topic">
-            {userAddress.length > 0 ? `你的地址：${userAddress} · ` : ""}
-            {inboxUnread > 0 ? `${inboxUnread} 封未读` : "没有未读邮件"}
+            {userAddress.length > 0 ? messages.mail.yourAddress(userAddress) : ""}
+            {inboxUnread > 0 ? messages.mail.unreadCount(inboxUnread) : messages.mail.noUnread}
           </p>
         </div>
         <div className="pane-header-actions">
@@ -591,14 +596,14 @@ export function MailView(): ReactNode {
             className="search"
             type="search"
             value={query}
-            placeholder="搜索邮件…"
-            aria-label="搜索邮件"
+            placeholder={messages.mail.searchPlaceholder}
+            aria-label={messages.mail.searchLabel}
             onChange={(event) => setQuery(event.target.value)}
           />
-          <IconButton icon="refresh" label="刷新" onClick={() => void refreshMailbox()} />
+          <IconButton icon="refresh" label={messages.common.refresh} onClick={() => void refreshMailbox()} />
           <button type="button" className="primary" disabled={busy} onClick={() => (compose === undefined ? startCompose() : closeCompose())}>
             <Icon name="draft" />
-            写邮件
+            {messages.mail.compose}
           </button>
         </div>
       </header>
@@ -617,7 +622,7 @@ export function MailView(): ReactNode {
               }}
             >
               <Icon name={entry.icon} />
-              <span className="label">{entry.label}</span>
+              <span className="label">{messages.mail.folders[entry.id]}</span>
               {entry.id === "inbox" && inboxUnread > 0 ? <span className="count">{inboxUnread}</span> : null}
             </button>
           ))}
@@ -629,7 +634,7 @@ export function MailView(): ReactNode {
               <select
                 className="mail-folder-select"
                 value={folder}
-                aria-label="文件夹"
+                aria-label={messages.mail.folderSelectLabel}
                 onChange={(event) => {
                   setFolder(event.target.value as Folder);
                   setReading(false);
@@ -637,13 +642,12 @@ export function MailView(): ReactNode {
               >
                 {FOLDERS.map((entry) => (
                   <option key={entry.id} value={entry.id}>
-                    {entry.label}
+                    {messages.mail.folders[entry.id]}
                   </option>
                 ))}
               </select>
               <span className="hint">
-                {FOLDER_LABELS[folder]} · {rows.length} 封
-                {term.length > 0 ? ` · 搜索“${query.trim()}”` : ""}
+                {messages.mail.toolbarSummary(folder, rows.length, term.length > 0 ? query.trim() : undefined)}
               </span>
               <span className="spacer" />
             </div>
@@ -651,8 +655,8 @@ export function MailView(): ReactNode {
             <div className="mail-list">
               {rows.length === 0 ? (
                 <div className="empty">
-                  <h2>{term.length > 0 ? "没有匹配的邮件" : "这个文件夹是空的"}</h2>
-                  <p>{term.length > 0 ? "换一个关键词，或清空搜索。" : "写一封邮件，或换一个文件夹看看。"}</p>
+                  <h2>{term.length > 0 ? messages.mail.noMatchTitle : messages.mail.emptyTitle}</h2>
+                  <p>{term.length > 0 ? messages.mail.noMatchHint : messages.mail.emptyHint}</p>
                 </div>
               ) : null}
               {rows.map((row) => (
@@ -665,7 +669,7 @@ export function MailView(): ReactNode {
                 >
                   <span className="who">
                     <span className="dot" />
-                    {row.draft ? <Chip tone="warn">草稿</Chip> : null}
+                    {row.draft ? <Chip tone="warn">{messages.mail.draftChip}</Chip> : null}
                     {row.who}
                     {row.count > 1 ? <span className="hint">{row.count}</span> : null}
                   </span>
@@ -674,13 +678,13 @@ export function MailView(): ReactNode {
                     <span className="snippet">{row.snippet.replace(/\s+/g, " ").slice(0, 200)}</span>
                   </span>
                   <span className="right">
-                    <span className="time">{timeAgo(row.at)}</span>
+                    <span className="time">{timeAgo(row.at, locale)}</span>
                     <span className="actions">
                       {row.draft ? (
                         <>
                           <IconButton
                             icon="draft"
-                            label="编辑草稿"
+                            label={messages.mail.editDraftLabel}
                             onClick={() => {
                               const item = draftItem(row);
                               if (item !== undefined) editDraft(item);
@@ -688,7 +692,7 @@ export function MailView(): ReactNode {
                           />
                           <IconButton
                             icon="send"
-                            label="发送草稿"
+                            label={messages.mail.sendDraftLabel}
                             onClick={() => {
                               const item = draftItem(row);
                               if (item !== undefined) void sendDraftNow(item);
@@ -696,7 +700,7 @@ export function MailView(): ReactNode {
                           />
                           <IconButton
                             icon="close"
-                            label="丢弃草稿"
+                            label={messages.mail.discardDraftLabel}
                             onClick={() => flag(row.roomId, row.entryId, { active: false })}
                           />
                         </>
@@ -705,13 +709,13 @@ export function MailView(): ReactNode {
                           {row.whoIsUser ? null : (
                             <IconButton
                               icon="mail"
-                              label={row.read ? "标为未读" : "标为已读"}
+                              label={row.read ? messages.mail.markUnread : messages.mail.markRead}
                               onClick={() => flag(row.roomId, row.entryId, { read: !row.read })}
                             />
                           )}
                           <IconButton
                             icon="archive"
-                            label={row.archived ? "移出归档" : "归档"}
+                            label={row.archived ? messages.mail.unarchive : messages.mail.archive}
                             onClick={() => flag(row.roomId, row.entryId, { archived: !row.archived })}
                           />
                         </>
@@ -726,14 +730,14 @@ export function MailView(): ReactNode {
           {reading && room?.kind === "mail" ? (
             <section className="mail-reader">
               <div className="mail-reader-head">
-                <IconButton icon="back" label="返回列表" className="mail-back" onClick={() => setReading(false)} />
-                <h2>{threadSubject.length > 0 ? threadSubject : "（无主题）"}</h2>
+                <IconButton icon="back" label={messages.mail.backToList} className="mail-back" onClick={() => setReading(false)} />
+                <h2>{threadSubject.length > 0 ? threadSubject : messages.mail.noSubject}</h2>
                 <button type="button" onClick={() => setEditingRoomDirectories(true)}>
-                  会话工作目录（{room.directories.paths.length}）
+                  {messages.mail.sessionDirectoriesCount(room.directories.paths.length)}
                 </button>
                 <IconButton
                   icon="archive"
-                  label={newest?.mail?.archived === true ? "移出归档" : "归档"}
+                  label={newest?.mail?.archived === true ? messages.mail.unarchive : messages.mail.archive}
                   onClick={() => {
                     if (newest?.mail !== undefined) flag(room.id, newest.id, { archived: !newest.mail.archived });
                   }}
@@ -750,16 +754,25 @@ export function MailView(): ReactNode {
                         {message.author.address !== undefined && message.author.address.length > 0 ? (
                           <span>{message.author.address}</span>
                         ) : null}
-                        <span className="time">{timeAgo(message.createdAt)}</span>
+                        <span className="time">{timeAgo(message.createdAt, locale)}</span>
                       </div>
                       {message.mail !== undefined ? (
                         <div className="line">
-                          <span>收件人：{message.mail.to.map((entry) => entry.name || entry.address).join("、") || "（无）"}</span>
+                          <span>
+                            {messages.mail.toLine(
+                              message.mail.to.map((entry) => entry.name || entry.address).join(namesSeparator) ||
+                                messages.mail.toNone,
+                            )}
+                          </span>
                           {message.mail.cc.length > 0 ? (
-                            <span>抄送：{message.mail.cc.map((entry) => entry.name || entry.address).join("、")}</span>
+                            <span>
+                              {messages.mail.ccLine(
+                                message.mail.cc.map((entry) => entry.name || entry.address).join(namesSeparator),
+                              )}
+                            </span>
                           ) : null}
-                          {message.mail.draft ? <Chip tone="warn">草稿</Chip> : null}
-                          {message.mail.archived ? <Chip tone="muted">已归档</Chip> : null}
+                          {message.mail.draft ? <Chip tone="warn">{messages.mail.draftChip}</Chip> : null}
+                          {message.mail.archived ? <Chip tone="muted">{messages.mail.archivedChip}</Chip> : null}
                         </div>
                       ) : null}
                       <div className="content">{message.body}</div>
@@ -771,7 +784,7 @@ export function MailView(): ReactNode {
                               className="link"
                               onClick={() => flag(room.id, message.id, { read: message.mail?.read !== true })}
                             >
-                              {message.mail?.read ? "标为未读" : "标为已读"}
+                              {message.mail?.read ? messages.mail.markUnread : messages.mail.markRead}
                             </button>
                           )}
                           <button
@@ -779,7 +792,7 @@ export function MailView(): ReactNode {
                             className="link"
                             onClick={() => flag(room.id, message.id, { archived: !message.mail!.archived })}
                           >
-                            {message.mail.archived ? "移出归档" : "归档"}
+                            {message.mail.archived ? messages.mail.unarchive : messages.mail.archive}
                           </button>
                           {message.mail.draft ? (
                             <button
@@ -792,15 +805,15 @@ export function MailView(): ReactNode {
                                 if (item !== undefined) editDraft(item);
                               }}
                             >
-                              继续编辑
+                              {messages.mail.continueEditing}
                             </button>
                           ) : (
                             <>
                               <button type="button" className="link" onClick={() => startReply(message, false)}>
-                                回复
+                                {messages.mail.reply}
                               </button>
                               <button type="button" className="link" onClick={() => startReply(message, true)}>
-                                回复全部
+                                {messages.mail.replyAll}
                               </button>
                             </>
                           )}
@@ -815,7 +828,7 @@ export function MailView(): ReactNode {
                               <WorkStatus status={work.status} />
                               <span className="hint">{work.employeeName}</span>
                               <button type="button" className="link" onClick={() => setExecutionWorkId(work.id)}>
-                                查看执行
+                                {messages.mail.viewExecution}
                               </button>
                             </span>
                           ))}
@@ -831,16 +844,20 @@ export function MailView(): ReactNode {
       </div>
 
       {compose !== undefined ? (
-        <section className="mail-compose" aria-label="写邮件">
+        <section className="mail-compose" aria-label={messages.mail.compose}>
           <div className="mail-compose-head">
             <span className="title">
-              {compose.draftId.length > 0 ? "编辑草稿" : compose.inReplyTo.length > 0 ? "回复邮件" : "新邮件"}
+              {compose.draftId.length > 0
+                ? messages.mail.editDraftTitle
+                : compose.inReplyTo.length > 0
+                  ? messages.mail.replyTitle
+                  : messages.mail.newTitle}
             </span>
-            <IconButton icon="close" label="关闭" disabled={busy} onClick={closeCompose} />
+            <IconButton icon="close" label={messages.common.close} disabled={busy} onClick={closeCompose} />
           </div>
           <div className="mail-compose-body">
             <div className="row recipients">
-              <span className="hint">收件人</span>
+              <span className="hint">{messages.mail.toHint}</span>
               {candidates.map((candidate) => (
                 <button
                   key={candidate.id}
@@ -860,8 +877,8 @@ export function MailView(): ReactNode {
                 </button>
               ))}
               <input
-                placeholder="其他地址（逗号分隔，仅记录）"
-                aria-label="其他收件人地址"
+                placeholder={messages.mail.extraToPlaceholder}
+                aria-label={messages.mail.extraToAria}
                 disabled={busy}
                 value={compose.extraTo}
                 onChange={(event) => update({ extraTo: event.target.value })}
@@ -870,7 +887,7 @@ export function MailView(): ReactNode {
             <div className="row">
               {compose.showCc ? (
                 <div className="row recipients">
-                  <span className="hint">抄送</span>
+                  <span className="hint">{messages.mail.ccHint}</span>
                   {candidates.map((candidate) => (
                     <button
                       key={candidate.id}
@@ -890,8 +907,8 @@ export function MailView(): ReactNode {
                     </button>
                   ))}
                   <input
-                    placeholder="其他抄送地址"
-                    aria-label="其他抄送地址"
+                    placeholder={messages.mail.extraCcPlaceholder}
+                    aria-label={messages.mail.extraCcAria}
                     disabled={busy}
                     value={compose.extraCc}
                     onChange={(event) => update({ extraCc: event.target.value })}
@@ -899,20 +916,20 @@ export function MailView(): ReactNode {
                 </div>
               ) : (
                 <button type="button" className="link" disabled={busy} onClick={() => update({ showCc: true })}>
-                  添加抄送
+                  {messages.mail.addCc}
                 </button>
               )}
             </div>
             <input
-              placeholder="主题"
-              aria-label="主题"
+              placeholder={messages.mail.subjectPlaceholder}
+              aria-label={messages.mail.subjectAria}
               disabled={busy}
               value={compose.subject}
               onChange={(event) => update({ subject: event.target.value })}
             />
             <details className="compose-directories">
-              <summary>会话工作目录（{compose.directories.paths.length}）</summary>
-              <p className="hint">新邮件使用独立会话，不会复制其他邮件或聊天的目录配置。</p>
+              <summary>{messages.mail.sessionDirectoriesCount(compose.directories.paths.length)}</summary>
+              <p className="hint">{messages.mail.newMailDirectoriesHint}</p>
               <DirectoryFields
                 value={compose.directories}
                 onChange={(directories) => update({ directories })}
@@ -920,8 +937,8 @@ export function MailView(): ReactNode {
               />
             </details>
             <textarea
-              placeholder="正文…"
-              aria-label="正文"
+              placeholder={messages.mail.bodyPlaceholder}
+              aria-label={messages.mail.bodyAria}
               disabled={busy}
               value={compose.body}
               onChange={(event) => update({ body: event.target.value })}
@@ -931,7 +948,7 @@ export function MailView(): ReactNode {
             {askClose ? (
               <>
                 <span className="hint">
-                  {pendingReply !== undefined ? "还有未保存的内容；丢弃后打开回复" : "还有未保存的内容"}
+                  {pendingReply !== undefined ? messages.mail.unsavedReplyHint : messages.mail.unsavedHint}
                 </span>
                 <span className="spacer" />
                 <button
@@ -943,7 +960,7 @@ export function MailView(): ReactNode {
                     });
                   }}
                 >
-                  保存草稿
+                  {messages.mail.saveDraftLabel}
                 </button>
                 <button
                   type="button"
@@ -958,7 +975,7 @@ export function MailView(): ReactNode {
                     setAskClose(false);
                   }}
                 >
-                  丢弃
+                  {messages.mail.discard}
                 </button>
                 <button
                   type="button"
@@ -968,7 +985,7 @@ export function MailView(): ReactNode {
                     setAskClose(false);
                   }}
                 >
-                  继续编辑
+                  {messages.mail.continueEditing}
                 </button>
               </>
             ) : (
@@ -980,17 +997,17 @@ export function MailView(): ReactNode {
                   onClick={() => void sendComposed()}
                 >
                   <Icon name="send" />
-                  发送
+                  {messages.mail.send}
                 </button>
                 <button type="button" disabled={busy || compose.body.trim().length === 0} onClick={() => void saveDraft()}>
-                  {compose.draftId.length > 0 ? "保存草稿" : "存为草稿"}
+                  {compose.draftId.length > 0 ? messages.mail.saveDraftLabel : messages.mail.saveAsDraft}
                 </button>
-                {compose.draftId.length > 0 ? <Chip tone="warn">正在编辑草稿</Chip> : null}
+                {compose.draftId.length > 0 ? <Chip tone="warn">{messages.mail.editingDraftChip}</Chip> : null}
                 <span className="spacer" />
                 <span className="hint">
                   {compose.to.length === 0
-                    ? "没有员工收件人时只投递，不会启动工作"
-                    : `${compose.to.length} 位收件人会开始处理，抄送不会`}
+                    ? messages.mail.noRecipientHint
+                    : messages.mail.recipientsWork(compose.to.length)}
                 </span>
               </>
             )}

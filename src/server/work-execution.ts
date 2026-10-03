@@ -11,6 +11,8 @@
 import type { ConversationId, Cursor, EntryRecord, JsonObject, TaskId } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
 import type { EmitRuntime } from "./runtime.ts";
+import { AppError } from "./app-text.ts";
+import { appMessages } from "./messages.ts";
 import { EmployeeDoc, WorkDoc } from "./documents.ts";
 import { findWork } from "./work.ts";
 import { findRoom } from "./rooms.ts";
@@ -25,7 +27,7 @@ const EXECUTION_PAGE = 100;
 const STEP_LIMIT_BYTES = 8_000;
 
 /** A bad cursor is the caller's mistake, and the route reports it as one. */
-export class WorkExecutionCursorError extends Error {}
+export class WorkExecutionCursorError extends AppError {}
 
 function clampBytes(value: string): { text: string; truncated?: boolean } {
   const redacted = redactApprovalText(value);
@@ -46,10 +48,10 @@ function parseCursor(raw: string | undefined): Cursor | undefined {
   try {
     parsed = JSON.parse(raw) as JsonValue;
   } catch {
-    throw new WorkExecutionCursorError("游标无法解析");
+    throw new WorkExecutionCursorError(appMessages.work.cursorUnparsable());
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new WorkExecutionCursorError("游标格式不正确");
+    throw new WorkExecutionCursorError(appMessages.api.malformedCursor);
   }
   return parsed as JsonObject;
 }

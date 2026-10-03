@@ -6,7 +6,22 @@
  * so the browser never sees storage identities, credentials, or Pi types.
  */
 
+import type { LocalizedText } from "./i18n.ts";
+
 export type ModelKind = "chat" | "classifier";
+
+/**
+ * One application message as it crosses the wire.
+ *
+ * `message` is always the original text (the Chinese string the server has
+ * always produced, or a raw native reason); `messageLocalized`, when present,
+ * is the pair the browser renders in its own language. The two are separate so
+ * persisted text and model context never depend on the browser locale.
+ */
+export type ApiErrorBody = { message: string; messageLocalized?: LocalizedText };
+
+/** The result of a real connection probe, in both languages when app-authored. */
+export type CheckResultDTO = { ok: boolean; message: string; messageLocalized?: LocalizedText };
 
 /** A stored reference to one model entry in the Pi catalog. */
 export type ModelRefDTO = {
@@ -165,6 +180,8 @@ export type MessageAuthorDTO = {
   type: "user" | "employee" | "system";
   id: string;
   name: string;
+  /** Present for application-generated display names ("你"/"系统"). */
+  nameLocalized?: LocalizedText;
   address?: string;
 };
 
@@ -205,6 +222,8 @@ export type MessageDTO = {
   roomId: string;
   author: MessageAuthorDTO;
   body: string;
+  /** Present only for application-authored system notices. */
+  bodyLocalized?: LocalizedText;
   createdAt: number;
   /** Work id when this message started or carries employee work. */
   workId?: string;
@@ -238,6 +257,8 @@ export type WorkDTO = {
   startedAt: number;
   finishedAt?: number;
   error?: string;
+  /** Present when the failure reason is application-authored. */
+  errorLocalized?: LocalizedText;
   /** Live streamed answer text for the running generation. */
   progressText?: string;
   /** Final answer, when the work produced one. */
@@ -302,6 +323,8 @@ export type ApprovalStatusDTO =
 export type ApprovalExecutionDTO = {
   state: "not-started" | "running" | "succeeded" | "failed" | "interrupted";
   detail?: string;
+  /** Present when the execution detail is application-authored. */
+  detailLocalized?: LocalizedText;
 };
 
 export type ApprovalDecisionSourceDTO = "llm" | "classifier" | "human" | "policy";
@@ -342,12 +365,16 @@ export type ApprovalEvidenceDTO =
       authorized: boolean | null;
       authorizedProbability: number | null;
     }
-  | { kind: "policy"; rationale: string };
+  | { kind: "policy"; rationale: string; rationaleLocalized?: LocalizedText };
 
 export type ApprovalTimelineEntryDTO = {
   at: number;
   actor: string;
   text: string;
+  /** Present when the actor label is application-generated. */
+  actorLocalized?: LocalizedText;
+  /** Present when the timeline sentence is application-authored. */
+  textLocalized?: LocalizedText;
 };
 
 export type ApprovalDTO = {
@@ -372,7 +399,7 @@ export type ApprovalDTO = {
   decidedBy?: string;
   comment?: string;
   /** Why the automatic evaluator did not grant this call. */
-  autoDecision?: { source: ApprovalDecisionSourceDTO; reason: string };
+  autoDecision?: { source: ApprovalDecisionSourceDTO; reason: string; reasonLocalized?: LocalizedText };
   evidence?: ApprovalEvidenceDTO;
   origin:
     | { kind: "room"; roomId: string; roomName: string; entryId: string; subject?: string }
@@ -468,13 +495,15 @@ export type AuthPromptDTO = {
   id: string;
   type: "text" | "secret" | "select" | "manual_code";
   message: string;
+  /** Present when the prompt text is application-authored. */
+  messageLocalized?: LocalizedText;
   placeholder?: string;
-  options?: { id: string; label: string; description?: string }[];
+  options?: { id: string; label: string; description?: string; labelLocalized?: LocalizedText; descriptionLocalized?: LocalizedText }[];
 };
 
 /** A native login event, safe to send to the browser. */
 export type AuthEventDTO =
-  | { type: "info"; message: string; links?: { url: string; label?: string }[] }
+  | { type: "info"; message: string; messageLocalized?: LocalizedText; links?: { url: string; label?: string }[] }
   | { type: "auth_url"; url: string; instructions?: string }
   | {
       type: "device_code";
@@ -483,7 +512,7 @@ export type AuthEventDTO =
       intervalSeconds?: number;
       expiresInSeconds?: number;
     }
-  | { type: "progress"; message: string };
+  | { type: "progress"; message: string; messageLocalized?: LocalizedText };
 
 export type AuthSessionStatusDTO = "running" | "waiting" | "succeeded" | "failed" | "cancelled";
 
@@ -499,6 +528,8 @@ export type AuthSessionDTO = {
   events: AuthEventDTO[];
   /** Terminal detail, or a refresh note after a successful login. */
   message: string | null;
+  /** Present when the terminal detail is application-authored. */
+  messageLocalized?: LocalizedText;
 };
 
 export type BootstrapDTO = {
@@ -528,4 +559,4 @@ export type ServerEvent =
   | { type: "skills" }
   | { type: "mcp" }
   | { type: "app"; app: AppConfigDTO }
-  | { type: "notice"; text: string };
+  | { type: "notice"; text: string; textLocalized: LocalizedText };

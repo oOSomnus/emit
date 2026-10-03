@@ -81,6 +81,9 @@ import {
   toolTextResources,
 } from "./prompts/index.ts";
 import type { MessageDTO } from "../shared/contracts.ts";
+import { AppError, rawText, type AppText } from "./app-text.ts";
+import { appMessages } from "./messages.ts";
+import { noticeOf } from "./messages/work.ts";
 
 export type WorkKind = "message" | "mail" | "delegation";
 
@@ -156,8 +159,8 @@ export async function installAllExtensions(resume0: Resume): Promise<number> {
 export async function createQueuedWork(resume0: Resume, input: StartWorkInput): Promise<WorkRecord> {
   const { runtime } = resume0;
   const employee = await runtime.readFamily(EmployeeDoc, input.employeeId, { id: input.employeeId });
-  if (employee === undefined) throw new Error(`找不到员工 ${input.employeeId}`);
-  if (!employee.enabled) throw new Error(`员工 ${employee.name} 已停用`);
+  if (employee === undefined) throw new AppError(appMessages.work.employeeNotFound(input.employeeId));
+  if (!employee.enabled) throw new AppError(appMessages.work.employeeDisabled(employee.name));
   // A model that no longer resolves stops the work here, with the employee and
   // model named, instead of failing deep inside the first request.
   const modelProblem = runtime.catalog.chatSelectionProblem({
@@ -165,12 +168,12 @@ export async function createQueuedWork(resume0: Resume, input: StartWorkInput): 
     modelId: employee.executionModel.modelId,
     effort: employee.executionModel.effort,
   });
-  if (modelProblem !== undefined) throw new Error(`员工 ${employee.name} 的模型不可用：${modelProblem}`);
+  if (modelProblem !== undefined) throw new AppError(appMessages.work.modelUnavailable(employee.name, modelProblem));
   const app = await runtime.readSession(AppDoc);
 
   const depth = input.depth ?? 0;
   if (depth > app.collaboration.maxDepth) {
-    throw new Error(`交办层数超过上限（${app.collaboration.maxDepth} 层）`);
+    throw new AppError(appMessages.work.depthOverLimit(app.collaboration.maxDepth));
   }
   const workId = `wk_${randomUUID().replace(/-/g, "").slice(0, 20)}`;
   const directoryScope = await directoriesForWork(runtime, input);
@@ -186,7 +189,7 @@ export async function createQueuedWork(resume0: Resume, input: StartWorkInput): 
     runtime.ctx,
   );
   const record = await runtime.readFamily(WorkDoc, workId, { id: workId });
-  if (record === undefined) throw new Error(`工作记录写入失败 ${workId}`);
+  if (record === undefined) throw new AppError(appMessages.work.workWriteFailed(workId));
   runtime.emit({ type: "work", work: toWorkDTO(record, employee.name, await roomName(runtime, input.roomId)) });
   return record;
 }
@@ -220,9 +223,9 @@ export async function createQueuedWorkIn(
  * Thrown when a work item finished while its start was pending: the task that
  * carries the start must settle quietly instead of marking anything.
  */
-export class WorkFinishedError extends Error {
+export class WorkFinishedError extends AppError {
   constructor(readonly status: WorkRecord["status"]) {
-    super(`工作已结束（${status}），不再启动执行`);
+    super(appMessages.work.finished(status));
   }
 }
 
@@ -273,26 +276,26 @@ export async function ensureWorkConversationIn(
 export async function ensureWorkConversation(resume0: Resume, workId: string): Promise<Conversation> {
   const { runtime } = resume0;
   const work = await findWork(runtime, workId);
-  if (work === undefined) throw new Error(`找不到工作 ${workId}`);
+  if (work === undefined) throw new AppError(appMessages.work.workNotFound(workId));
   if (work.conversationId !== 0) {
     const existing = await runtime.harness.conversation(work.conversationId as ConversationId, runtime.ctx);
     if (existing !== undefined) return existing;
   }
   const employee = await runtime.readFamily(EmployeeDoc, work.employeeId, { id: work.employeeId });
-  if (employee === undefined) throw new Error(`找不到员工 ${work.employeeId}`);
-  if (!employee.enabled) throw new Error(`员工 ${employee.name} 已停用`);
+  if (employee === undefined) throw new AppError(appMessages.work.employeeNotFound(work.employeeId));
+  if (!employee.enabled) throw new AppError(appMessages.work.employeeDisabled(employee.name));
   const modelProblem = runtime.catalog.chatSelectionProblem({
     providerId: employee.executionModel.providerId,
     modelId: employee.executionModel.modelId,
     effort: employee.executionModel.effort,
   });
-  if (modelProblem !== undefined) throw new Error(`员工 ${employee.name} 的模型不可用：${modelProblem}`);
+  if (modelProblem !== undefined) throw new AppError(appMessages.work.modelUnavailable(employee.name, modelProblem));
   // The directories authorized when the mail was received are what this run
   // may use; a version that no longer matches the room must fail loudly here.
   if (work.directoryScope.roomId.length > 0) {
     const room = await findRoom(runtime, work.directoryScope.roomId);
     if (room === undefined || room.directories === undefined || room.directories.version !== work.directoryScope.version) {
-      throw new Error("会话工作目录已变更，请停止并重新发送任务");
+      throw new AppError(appMessages.work.directoryChanged());
     }
   }
   const extension = await installEmployeeExtension(resume0, employee);
@@ -307,7 +310,7 @@ export async function ensureWorkConversation(resume0: Resume, workId: string): P
     runtime.ctx,
   );
   const conversation = await runtime.harness.conversation(conversationId as ConversationId, runtime.ctx);
-  if (conversation === undefined) throw new Error(`执行会话不存在 ${conversationId}`);
+  if (conversation === undefined) throw new AppError(appMessages.work.conversationMissing(conversationId));
   const running = await findWork(runtime, workId);
   if (running !== undefined) {
     runtime.emit({ type: "work", work: toWorkDTO(running, employee.name, await roomName(runtime, running.roomId)) });
@@ -320,12 +323,12 @@ export async function startQueuedWork(resume0: Resume, workId: string): Promise<
   const { runtime } = resume0;
   const conversation = await ensureWorkConversation(resume0, workId);
   const work = await findWork(runtime, workId);
-  if (work === undefined) throw new Error(`找不到工作 ${workId}`);
+  if (work === undefined) throw new AppError(appMessages.work.workNotFound(workId));
   let mailSource: { entryId: string; message: RoomMessageData } | undefined;
   if (work.kind === "mail") {
     const room = await findRoom(runtime, work.roomId);
     const source = room === undefined ? undefined : await sourceMessage(runtime, room, work.sourceEntryId);
-    if (source?.mail === undefined || source.mail === null) throw new Error("找不到本次邮件原文，无法生成回复任务");
+    if (source?.mail === undefined || source.mail === null) throw new AppError(appMessages.work.mailSourceMissing());
     mailSource = { entryId: work.sourceEntryId, message: source };
   }
 
@@ -346,7 +349,7 @@ export async function startQueuedWork(resume0: Resume, workId: string): Promise<
       if (settled.status === "done") return;
       const current = await findWork(runtime, workId);
       if (current === undefined || isTerminal(current.status)) return;
-      await markFailed(resume0, current, "本次运行没有产生回答（模型或工具出错，详情见该次运行记录）");
+      await markFailed(resume0, current, appMessages.work.runNoAnswer());
     })
     .catch(() => undefined);
 
@@ -430,10 +433,7 @@ export function buildDeliveryHook(resume0: Resume): HookRegistration {
       if (turns <= app.collaboration.maxModelTurns) return;
       const conversation = await runtime.harness.conversation(api.conversationId, context);
       await conversation?.abort(context).catch(() => undefined);
-      runtime.emit({
-        type: "notice",
-        text: `协作已达到模型轮次上限（${app.collaboration.maxModelTurns} 轮），本次工作已停止。`,
-      });
+      runtime.emit(noticeOf(appMessages.work.turnLimit(app.collaboration.maxModelTurns)));
     },
   });
 }
@@ -701,18 +701,20 @@ export async function stopWork(resume0: Resume, workId: string): Promise<WorkRec
 
   // Record the decision before unwinding the run. Aborting ends the run in
   // failure, and that failure must not overwrite what the user asked for.
+  const stoppedByUser = appMessages.work.stoppedByUser();
   await runtime.harness.commit(async (tx) => {
     const doc = await tx.doc(WorkDoc, workId, { id: workId });
     if (isTerminal(doc.status)) return;
     doc.status = "stopped";
     doc.finishedAt = Date.now();
-    doc.error = "已被用户停止";
+    doc.error = stoppedByUser.text;
+    doc.errorLocalized = stoppedByUser.localized;
     // The replies it was waiting for belong to a task that is over; keeping
     // the link would leave a stopped work advertising a wait it will never
     // resume from.
     doc.awaitedMailWorkIds = [];
     // Stopping a child is also an outcome for the parent that asked for it.
-    await handOffToAwaitingParent(tx, resume0, doc, "stopped", "已被用户停止");
+    await handOffToAwaitingParent(tx, resume0, doc, "stopped", stoppedByUser);
   }, runtime.ctx);
   const updated = await runtime.readFamily(WorkDoc, workId, { id: workId });
   if (updated === undefined) return undefined;
@@ -742,12 +744,14 @@ export async function stopWork(resume0: Resume, workId: string): Promise<WorkRec
   if (updated.roomId.length > 0) {
     const room = await runtime.readFamily(RoomDoc, updated.roomId, { id: updated.roomId });
     if (room !== undefined) {
+      const stopBody = appMessages.work.stopNotice(employee?.name ?? "");
       await appendRoomMessage(
         runtime,
         room,
         messageData({
           author: { type: "system", id: "system", name: "系统" },
-          body: `已停止 ${employee?.name ?? "员工"} 的工作。`,
+          body: stopBody.text,
+          bodyLocalized: stopBody.localized,
           workId,
           notice: true,
         }),
@@ -790,12 +794,12 @@ export async function reconcileWorks(resume0: Resume): Promise<number> {
       const record = await runtime.harness.getTask(Number(work.mailDispatchTaskId) as TaskId, runtime.ctx);
       const outcome = record !== undefined && record.state.status === "terminal" ? record.state.outcome : undefined;
       if (outcome?.status === "failed") {
-        await markFailed(resume0, work, outcome.error.message);
+        await markFailed(resume0, work, rawText(outcome.error.message));
         failed += 1;
         continue;
       }
       if (dispatch === undefined || dispatch.state.kind === "blocked") {
-        await markFailed(resume0, work, "邮件投递任务丢失，该收件人的工作未能开始");
+        await markFailed(resume0, work, appMessages.work.mailDispatchLost());
         failed += 1;
         continue;
       }
@@ -807,21 +811,21 @@ export async function reconcileWorks(resume0: Resume): Promise<number> {
       const liveTaskIds = new Set(inspection.tasks.map((task) => String(task.record.id)));
       const broken = await brokenAwait(runtime, work, liveTaskIds);
       if (broken !== undefined) {
-        await markFailed(resume0, work, `等待的回信无法续接原任务：${broken}`);
+        await markFailed(resume0, work, appMessages.work.awaitUnreachable(broken));
         failed += 1;
       }
       continue;
     }
     if (work.conversationId === 0) {
       if (work.status === "queued") {
-        await markFailed(resume0, work, "启动过程中断，未能创建执行会话");
+        await markFailed(resume0, work, appMessages.work.startInterrupted());
         failed += 1;
       }
       continue;
     }
     if (liveConversations.has(String(work.conversationId))) continue;
     await cancelApprovalsForWork(runtime, work.id);
-    await markFailed(resume0, work, "进程中断，该次运行未能恢复");
+    await markFailed(resume0, work, appMessages.work.processInterrupted());
     failed += 1;
   }
   return failed;
@@ -839,26 +843,26 @@ async function brokenAwait(
   runtime: EmitRuntime,
   work: WorkRecord,
   liveTaskIds: ReadonlySet<string>,
-): Promise<string | undefined> {
+): Promise<AppText | undefined> {
   const awaited = await Promise.all(work.awaitedMailWorkIds.map((id) => findWork(runtime, id)));
   for (const child of awaited) {
-    if (child === undefined) return "等待的回信工作记录丢失";
+    if (child === undefined) return appMessages.work.awaitChildMissing();
     if (!isTerminal(child.status)) return undefined;
   }
   for (const child of awaited) {
     if (child === undefined) continue;
-    if (child.mailResumeTaskId.length === 0) return `回信任务缺失（${child.id}）`;
+    if (child.mailResumeTaskId.length === 0) return appMessages.work.awaitResumeTaskMissing(child.id);
     if (liveTaskIds.has(child.mailResumeTaskId)) continue;
     const record = await runtime.harness.getTask(Number(child.mailResumeTaskId) as TaskId, runtime.ctx);
-    if (record === undefined) return `回信任务记录丢失（${child.id}）`;
+    if (record === undefined) return appMessages.work.awaitResumeTaskRecordMissing(child.id);
     if (record.state.status !== "terminal") continue;
-    if (record.state.outcome?.status === "failed") return record.state.outcome.error.message;
+    if (record.state.outcome?.status === "failed") return rawText(record.state.outcome.error.message);
     const submission = await runtime.storage.submissionByRequest(
       work.conversationId as ConversationId,
       `mail-reply:${child.id}`,
       runtime.ctx,
     );
-    if (submission === undefined) return `回信没有进入原任务（${child.id}）`;
+    if (submission === undefined) return appMessages.work.awaitReplyNotSubmitted(child.id);
   }
   return undefined;
 }
@@ -875,7 +879,7 @@ async function handOffToAwaitingParent(
   resume0: Resume,
   child: Draft<WorkRecord>,
   outcome: "failed" | "stopped",
-  error: string,
+  error: AppText,
 ): Promise<void> {
   if (child.parentWorkId.length === 0 || child.mailResumeTaskId.length > 0) return;
   const parent = await tx.doc(WorkDoc, child.parentWorkId, { id: child.parentWorkId });
@@ -890,7 +894,8 @@ async function handOffToAwaitingParent(
       roomId: child.roomId,
       entryId: "",
       outcome,
-      error,
+      error: error.text,
+      ...(error.localized ? { errorLocalized: error.localized } : {}),
     },
     {
       ownership: { kind: "conversation" },
@@ -901,14 +906,15 @@ async function handOffToAwaitingParent(
   child.mailResumeTaskId = String(taskId);
 }
 
-export async function markFailed(resume0: Resume, work: WorkRecord, reason: string): Promise<void> {
+export async function markFailed(resume0: Resume, work: WorkRecord, reason: AppText): Promise<void> {
   const runtime = resume0.runtime;
   await runtime.harness.commit(async (tx) => {
     const doc = await tx.doc(WorkDoc, work.id, { id: work.id });
     if (isTerminal(doc.status)) return;
     doc.status = "failed";
     doc.finishedAt = Date.now();
-    doc.error = reason;
+    doc.error = reason.text;
+    doc.errorLocalized = reason.localized;
     // A failure is an outcome too: the parent waiting for this child must hear
     // that it failed instead of waiting forever.
     await handOffToAwaitingParent(tx, resume0, doc, "failed", reason);
@@ -920,12 +926,14 @@ export async function markFailed(resume0: Resume, work: WorkRecord, reason: stri
   if (updated.roomId.length === 0) return;
   const room = await runtime.readFamily(RoomDoc, updated.roomId, { id: updated.roomId });
   if (room === undefined) return;
+  const failBody = appMessages.work.failNotice(employee?.name ?? "", reason);
   await appendRoomMessage(
     runtime,
     room,
     messageData({
       author: { type: "system", id: "system", name: "系统" },
-      body: `${employee?.name ?? "员工"} 的这次工作未能完成：${reason}。请重新发送。`,
+      body: failBody.text,
+      bodyLocalized: failBody.localized,
       workId: work.id,
       notice: true,
     }),
@@ -1201,18 +1209,18 @@ async function ensureEmployeeDm(resume0: Resume, from: EmployeeRecord, target: E
 async function directoriesForWork(runtime: EmitRuntime, input: StartWorkInput): Promise<WorkDirectoryScopeRecord> {
   const parent = input.parentWorkId ? await findWork(runtime, input.parentWorkId) : undefined;
   if (!input.roomId) {
-    if (!parent?.directoryScope?.roomId) throw new Error("交办任务没有有效来源会话");
+    if (!parent?.directoryScope?.roomId) throw new AppError(appMessages.work.delegationSourceMissing());
     const room = await findRoom(runtime, parent.directoryScope.roomId);
     if (!room?.directories || room.directories.version !== parent.directoryScope.version) {
-      throw new Error("会话工作目录已变更，请停止并重新发送任务");
+      throw new AppError(appMessages.work.directoryChanged());
     }
     return { ...parent.directoryScope, paths: [...parent.directoryScope.paths] };
   }
   const room = await findRoom(runtime, input.roomId);
-  if (!room) throw new Error("来源会话不存在");
-  if (!room.directories) throw new Error("该会话缺少目录配置，请重新创建会话");
+  if (!room) throw new AppError(appMessages.work.sourceRoomMissing());
+  if (!room.directories) throw new AppError(appMessages.rooms.directoriesMissingRecreate);
   if (parent?.directoryScope?.roomId === room.id && parent.directoryScope.version !== room.directories.version) {
-    throw new Error("会话工作目录已变更，请停止并重新发送任务");
+    throw new AppError(appMessages.work.directoryChanged());
   }
   return { roomId: room.id, ...room.directories, paths: [...room.directories.paths] };
 }

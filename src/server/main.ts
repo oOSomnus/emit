@@ -90,7 +90,11 @@ async function main(): Promise<void> {
   process.stdout.write(`已加载 ${installed} 位数字员工。\n`);
   runtime.registry.install(buildMailExtension(resume.mail));
 
-  runtime.emit({ type: "notice", text: "正在恢复上次未完成的工作…" });
+  runtime.emit({
+    type: "notice",
+    text: "正在恢复上次未完成的工作…",
+    textLocalized: { en: "Resuming unfinished work…", "zh-CN": "正在恢复上次未完成的工作…" },
+  });
   runtime.resume();
   const interrupted = await reconcileWorks(resume);
   if (interrupted > 0) {

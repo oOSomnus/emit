@@ -1,6 +1,9 @@
 import { useId, useState, type ReactNode } from "react";
-import { api } from "../api.ts";
+import { errorDisplay, type DisplayText } from "../../shared/i18n.ts";
+import { ApiError, api } from "../api.ts";
 import { useApp } from "../state.tsx";
+import { useI18n } from "../i18n.tsx";
+import { uiText } from "../messages.ts";
 import { IconButton } from "./ui.tsx";
 import type { RoomDirectoryDraftDTO, RoomDTO } from "../../shared/contracts.ts";
 
@@ -13,6 +16,7 @@ export function DirectoryFields({
   onChange: (value: RoomDirectoryDraftDTO) => void;
   disabled?: boolean;
 }): ReactNode {
+  const { messages } = useI18n();
   const defaultGroup = useId();
   const changePath = (index: number, path: string): void => {
     const paths = [...value.paths];
@@ -43,27 +47,29 @@ export function DirectoryFields({
             <label className="directory-path-input">
               <input
                 type="text"
-                aria-label={`工作目录路径 ${index + 1}`}
+                aria-label={messages.directories.pathInput(index + 1)}
                 value={path}
                 disabled={disabled}
-                placeholder="服务器本地绝对路径"
+                placeholder={messages.directories.pathPlaceholder}
                 onChange={(event) => changePath(index, event.target.value)}
               />
             </label>
-            <label className="directory-default" title="默认执行目录">
+            <label className="directory-default" title={messages.directories.defaultDirectoryTitle}>
               <input
                 type="radio"
                 name={`default-work-directory-${defaultGroup}`}
-                aria-label={`将 ${path || `工作目录 ${index + 1}`} 设为默认执行目录`}
+                aria-label={messages.directories.setDefault(
+                  path.length > 0 ? path : messages.directories.defaultDirectory(index + 1),
+                )}
                 checked={path.length > 0 && value.defaultPath === path}
                 disabled={disabled || path.length === 0}
                 onChange={() => onChange({ ...value, defaultPath: path })}
               />
-              <span>默认</span>
+              <span>{messages.directories.defaultMark}</span>
             </label>
             <IconButton
               icon="close"
-              label={`移除工作目录 ${index + 1}`}
+              label={messages.directories.removeDirectory(index + 1)}
               disabled={disabled}
               onClick={() => removePath(index)}
             />
@@ -71,15 +77,16 @@ export function DirectoryFields({
         ))}
       </div>
       <button type="button" disabled={disabled} onClick={() => onChange({ ...value, paths: [...value.paths, ""] })}>
-        添加目录
+        {messages.directories.addDirectory}
       </button>
-      <p className="hint">路径必须是服务器上已存在、可访问的目录。默认目录用于未指定工作路径的执行。</p>
+      <p className="hint">{messages.directories.pathsHint}</p>
     </div>
   );
 }
 
 export function RoomDirectoryEditor({ room, onClose }: { room: RoomDTO; onClose: () => void }): ReactNode {
   const { dispatch } = useApp();
+  const { messages, text } = useI18n();
   const [draft, setDraft] = useState<RoomDirectoryDraftDTO>(() => ({
     paths: [...room.directories.paths],
     defaultPath: room.directories.defaultPath,
@@ -90,19 +97,19 @@ export function RoomDirectoryEditor({ room, onClose }: { room: RoomDTO; onClose:
   }));
   const [expectedVersion, setExpectedVersion] = useState(room.directories.version);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<DisplayText>("");
   const [conflict, setConflict] = useState(false);
   const [askClose, setAskClose] = useState(false);
   const dirty =
     draft.defaultPath !== initialDirectories.defaultPath ||
     draft.paths.length !== initialDirectories.paths.length ||
     draft.paths.some((path, index) => path !== initialDirectories.paths[index]);
-  const description =
+  const scope =
     room.kind === "channel"
-      ? "本频道员工共享。"
+      ? messages.directories.scopeChannel
       : room.kind === "dm"
-        ? "仅当前私信对话。"
-        : "同一邮件会话内共享，回复链与分支共用。";
+        ? messages.directories.scopeDm
+        : messages.directories.scopeMail;
 
   const close = (): void => {
     if (busy) return;
@@ -126,9 +133,8 @@ export function RoomDirectoryEditor({ room, onClose }: { room: RoomDTO; onClose:
       dispatch({ type: "room", room: updated });
       onClose();
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      setError(message);
-      if (typeof cause === "object" && cause !== null && "status" in cause && cause.status === 409) {
+      setError(errorDisplay(cause));
+      if (cause instanceof ApiError && cause.status === 409) {
         setConflict(true);
       }
     } finally {
@@ -142,7 +148,10 @@ export function RoomDirectoryEditor({ room, onClose }: { room: RoomDTO; onClose:
     setError("");
     try {
       const latest = (await api.rooms()).find((entry) => entry.id === room.id);
-      if (latest === undefined) throw new Error("会话不存在，无法重新载入目录配置");
+      if (latest === undefined) {
+        setError(uiText((m) => m.directories.roomGone));
+        return;
+      }
       dispatch({ type: "room", room: latest });
       const latestDirectories = {
         paths: [...latest.directories.paths],
@@ -154,7 +163,7 @@ export function RoomDirectoryEditor({ room, onClose }: { room: RoomDTO; onClose:
       setConflict(false);
       setAskClose(false);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorDisplay(cause));
     } finally {
       setBusy(false);
     }
@@ -165,33 +174,47 @@ export function RoomDirectoryEditor({ room, onClose }: { room: RoomDTO; onClose:
       <section className="directory-editor" role="dialog" aria-modal="true" aria-labelledby="directory-editor-title">
         <header className="directory-editor-head">
           <div>
-            <h2 id="directory-editor-title">本会话授权的工作目录</h2>
-            <p className="hint">{description} 这不是操作系统沙箱。</p>
+            <h2 id="directory-editor-title">{messages.directories.title}</h2>
+            <p className="hint">
+              {scope} {messages.directories.notSandbox}
+            </p>
           </div>
-          <IconButton icon="close" label="关闭目录设置" disabled={busy} onClick={close} />
+          <IconButton icon="close" label={messages.directories.closeEditor} disabled={busy} onClick={close} />
         </header>
         <div className="directory-editor-body">
           <DirectoryFields value={draft} onChange={setDraft} disabled={busy} />
-          {error.length > 0 ? <p className="directory-error" role="alert">{error}</p> : null}
+          {error ? (
+            <p className="directory-error" role="alert">
+              {text(error)}
+            </p>
+          ) : null}
           {conflict ? (
             <div className="directory-conflict">
-              <p>目录配置已被其他操作更新。你的草稿仍保留；重新载入后会以服务器当前配置替换它。</p>
-              <button type="button" disabled={busy} onClick={() => void reload()}>重新载入</button>
+              <p>{messages.directories.conflictText}</p>
+              <button type="button" disabled={busy} onClick={() => void reload()}>
+                {messages.directories.reload}
+              </button>
             </div>
           ) : null}
           {askClose ? (
-            <div className="directory-close-confirm" role="group" aria-label="未保存的目录修改">
-              <span className="hint">有未保存的修改</span>
-              <button type="button" className="danger" disabled={busy} onClick={onClose}>丢弃修改</button>
-              <button type="button" disabled={busy} onClick={() => setAskClose(false)}>继续编辑</button>
+            <div className="directory-close-confirm" role="group" aria-label={messages.directories.unsavedGroup}>
+              <span className="hint">{messages.directories.unsavedHint}</span>
+              <button type="button" className="danger" disabled={busy} onClick={onClose}>
+                {messages.directories.discard}
+              </button>
+              <button type="button" disabled={busy} onClick={() => setAskClose(false)}>
+                {messages.directories.keepEditing}
+              </button>
             </div>
           ) : null}
         </div>
         {!askClose ? (
           <footer className="directory-editor-foot">
-            <button type="button" disabled={busy} onClick={close}>取消</button>
+            <button type="button" disabled={busy} onClick={close}>
+              {messages.common.cancel}
+            </button>
             <button type="button" className="primary" disabled={busy || !dirty} onClick={() => void save()}>
-              {busy ? "正在保存…" : "保存目录"}
+              {busy ? messages.directories.savingDirectories : messages.directories.saveDirectories}
             </button>
           </footer>
         ) : null}

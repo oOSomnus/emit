@@ -13,6 +13,9 @@ import {
   renderApprovalSystem,
   renderApprovalUser,
 } from "../prompts/index.ts";
+import { isLocalizedText, type LocalizedText } from "../../shared/i18n.ts";
+import { rawText, type AppText } from "../app-text.ts";
+import { appMessages } from "../messages.ts";
 import type {
   ApprovalCase,
   ApprovalContextEntry,
@@ -56,6 +59,32 @@ function isProbabilityMap(value: unknown): value is Record<string, number> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const entries = Object.entries(value);
   return entries.length > 0 && entries.every(([, probability]) => probabilityOrNull(probability) !== null);
+}
+
+/** An unavailable evaluation from a catalog message; `verbatim` marks self-contained sentences. */
+function unavailable(
+  reason: "configuration" | "provider" | "invalid-output",
+  message: AppText,
+  verbatim?: true,
+): EvaluationOutcome {
+  return {
+    status: "unavailable",
+    reason,
+    message: message.text,
+    ...(message.localized !== undefined ? { messageLocalized: message.localized } : {}),
+    ...(verbatim === true ? { verbatim: true } : {}),
+  };
+}
+
+/** A failed fit from a catalog message. */
+function fitFailure(reason: "configuration" | "budget", message: AppText, verbatim?: true): FitResult {
+  return {
+    ok: false,
+    reason,
+    message: message.text,
+    ...(message.localized !== undefined ? { messageLocalized: message.localized } : {}),
+    ...(verbatim === true ? { verbatim: true } : {}),
+  };
 }
 
 /** Remove obvious inline credentials before request text or arguments reach a reviewer or the page. */
@@ -163,7 +192,17 @@ function groupExecutionContext(entries: readonly ApprovalContextEntry[]): Histor
   return groups;
 }
 
-type FitResult = { ok: true; input: ApprovalCase } | { ok: false; reason: "configuration" | "budget"; message: string };
+type FitResult =
+  | { ok: true; input: ApprovalCase }
+  | {
+      ok: false;
+      reason: "configuration" | "budget";
+      message: string;
+      /** Present when the message is application-authored. */
+      messageLocalized?: LocalizedText;
+      /** Budget messages are complete sentences stored verbatim. */
+      verbatim?: true;
+    };
 
 /**
  * Reserve the required context first, then allocate remaining bytes to the
@@ -176,11 +215,11 @@ function fitApprovalCase(
   serializedInput: (candidate: ApprovalCase) => string,
 ): FitResult {
   if (!Number.isFinite(contextWindow) || contextWindow <= RESERVED_CONTEXT_TOKENS) {
-    return { ok: false, reason: "configuration", message: "审批模型上下文窗口不足以执行自动审查" };
+    return fitFailure("configuration", appMessages.approval.fitConfiguration);
   }
   const byteLimit = Math.min(MAX_REVIEW_BYTES, Math.floor(contextWindow - RESERVED_CONTEXT_TOKENS));
   if (byteLimit <= 0) {
-    return { ok: false, reason: "configuration", message: "审批模型上下文窗口不足以执行自动审查" };
+    return fitFailure("configuration", appMessages.approval.fitConfiguration);
   }
 
   const execution = input.executionContext.map(boundHistoryEntry);
@@ -218,14 +257,9 @@ function fitApprovalCase(
   const empty = serialize();
   if (empty.byteLength > byteLimit) {
     const noArguments = Buffer.byteLength(serializedInput({ ...empty.candidate, arguments: "" }), "utf8");
-    return {
-      ok: false,
-      reason: "budget",
-      message:
-        noArguments <= byteLimit
-          ? "工具参数超出自动审查输入预算，请拆分调用"
-          : "审批上下文超出自动审查输入预算，已阻止执行",
-    };
+    return noArguments <= byteLimit
+      ? fitFailure("budget", appMessages.approval.fitBudgetArguments, true)
+      : fitFailure("budget", appMessages.approval.fitBudgetContext, true);
   }
 
   for (let index = executionGroups.length - 1; index >= 0; index -= 1) {
@@ -245,7 +279,7 @@ function fitApprovalCase(
 
   const fitted = serialize();
   if (fitted.byteLength > byteLimit) {
-    return { ok: false, reason: "budget", message: "审批上下文超出自动审查输入预算，已阻止执行" };
+    return fitFailure("budget", appMessages.approval.fitBudgetContext, true);
   }
   return { ok: true, input: fitted.candidate };
 }
@@ -344,7 +378,7 @@ export function createLlmEvaluator(catalog: ModelCatalog): ApprovalEvaluator {
       context: EvaluationContext,
     ): Promise<EvaluationOutcome> {
       if (config.kind !== "llm") {
-        return { status: "unavailable", reason: "configuration", message: "评估器配置不是 LLM" };
+        return unavailable("configuration", appMessages.approval.evaluatorNotLlm);
       }
       const fitted = fitApprovalCase(input, context.contextWindow, (candidate) =>
         `${renderApprovalSystem()}\n${renderApprovalUser(approvalCaseJson(candidate))}`,
@@ -354,6 +388,8 @@ export function createLlmEvaluator(catalog: ModelCatalog): ApprovalEvaluator {
           status: "unavailable",
           reason: fitted.reason === "configuration" ? "configuration" : "invalid-output",
           message: fitted.message,
+          ...(fitted.messageLocalized !== undefined ? { messageLocalized: fitted.messageLocalized } : {}),
+          ...(fitted.verbatim === true ? { verbatim: true } : {}),
         };
       }
       const outcome = await completeText(
@@ -367,10 +403,15 @@ export function createLlmEvaluator(catalog: ModelCatalog): ApprovalEvaluator {
           ...(context.signal !== undefined ? { signal: context.signal } : {}),
         },
       );
-      if (!outcome.ok) return { status: "unavailable", reason: "provider", message: outcome.message };
+      if (!outcome.ok) {
+        // The provider's own failure text is never translated; an app-authored
+        // wrapper from llm.ts may still carry a display pair, forwarded as-is.
+        const localized = isLocalizedText(outcome.messageLocalized) ? outcome.messageLocalized : undefined;
+        return unavailable("provider", { text: outcome.message, localized });
+      }
       const parsed = parseJsonObject(outcome.text);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        return { status: "unavailable", reason: "invalid-output", message: `无法解析模型输出: ${outcome.text.slice(0, 200)}` };
+        return unavailable("invalid-output", appMessages.approval.llmUnparseable(outcome.text.slice(0, 200)));
       }
       const parsedRecord = parsed as Record<string, unknown>;
       const expectedKeys = ["outcome", "risk", "rationale", "readOnly", "userAuthorization"];
@@ -386,11 +427,7 @@ export function createLlmEvaluator(catalog: ModelCatalog): ApprovalEvaluator {
         typeof parsedRecord.readOnly !== "boolean" ||
         !isUserAuthorization(parsedRecord.userAuthorization)
       ) {
-        return {
-          status: "unavailable",
-          reason: "invalid-output",
-          message: `模型输出不符合 outcome/risk/rationale/readOnly/userAuthorization 协议: ${outcome.text.slice(0, 200)}`,
-        };
+        return unavailable("invalid-output", appMessages.approval.llmBadProtocol(outcome.text.slice(0, 200)));
       }
       return {
         status: "evaluated",
@@ -420,15 +457,14 @@ export function createClassifierEvaluator(catalog: ModelCatalog): ApprovalEvalua
       context: EvaluationContext,
     ): Promise<EvaluationOutcome> {
       if (config.kind !== "classifier") {
-        return { status: "unavailable", reason: "configuration", message: "评估器配置不是 classifier" };
+        return unavailable("configuration", appMessages.approval.evaluatorNotClassifier);
       }
       const model = catalog.classifierModel(config.model);
       if (model === undefined) {
-        return {
-          status: "unavailable",
-          reason: "configuration",
-          message: `未找到分类模型 ${config.model.providerId}/${config.model.modelId}`,
-        };
+        return unavailable(
+          "configuration",
+          appMessages.approval.classifierModelMissing(config.model.providerId, config.model.modelId),
+        );
       }
       const questions = classifierQuestions();
       const fitted = fitApprovalCase(input, context.contextWindow, (candidate) =>
@@ -439,6 +475,8 @@ export function createClassifierEvaluator(catalog: ModelCatalog): ApprovalEvalua
           status: "unavailable",
           reason: fitted.reason === "configuration" ? "configuration" : "invalid-output",
           message: fitted.message,
+          ...(fitted.messageLocalized !== undefined ? { messageLocalized: fitted.messageLocalized } : {}),
+          ...(fitted.verbatim === true ? { verbatim: true } : {}),
         };
       }
       const result = await catalog.models.classify(
@@ -447,29 +485,19 @@ export function createClassifierEvaluator(catalog: ModelCatalog): ApprovalEvalua
         context.signal !== undefined ? { signal: context.signal } : {},
       );
       if (result.stopReason !== "stop") {
-        return {
-          status: "unavailable",
-          reason: "provider",
-          message: result.errorMessage ?? `分类请求结束于 ${result.stopReason}`,
-        };
+        return result.errorMessage === undefined
+          ? unavailable("provider", appMessages.approval.classifierStopReason(result.stopReason))
+          : unavailable("provider", rawText(result.errorMessage));
       }
       const answers: unknown = result.answers;
       if (typeof answers !== "object" || answers === null || Array.isArray(answers)) {
-        return {
-          status: "unavailable",
-          reason: "invalid-output",
-          message: "分类器没有返回 outcome/risk answers",
-        };
+        return unavailable("invalid-output", appMessages.approval.classifierNoAnswers);
       }
       const answerMap = answers as Record<string, unknown>;
       const outcomeAnswer = validatedChoiceAnswer(answerMap.outcome, OUTCOMES);
       const riskAnswer = validatedChoiceAnswer(answerMap.risk, RISK_LEVELS);
       if (outcomeAnswer === undefined || riskAnswer === undefined) {
-        return {
-          status: "unavailable",
-          reason: "invalid-output",
-          message: "分类器缺少合法的 outcome/risk choice 或概率分布",
-        };
+        return unavailable("invalid-output", appMessages.approval.classifierBadChoice);
       }
       const outcomeProbabilities = { ...outcomeAnswer.answer.probabilities };
       const riskProbabilities = { ...riskAnswer.answer.probabilities };
@@ -478,11 +506,7 @@ export function createClassifierEvaluator(catalog: ModelCatalog): ApprovalEvalua
       const readOnly = boolEvidence(answerMap.read_only);
       const authorized = boolEvidence(answerMap.authorized);
       if (!readOnly.valid || !authorized.valid) {
-        return {
-          status: "unavailable",
-          reason: "invalid-output",
-          message: "分类器返回的只读或授权证据格式无效",
-        };
+        return unavailable("invalid-output", appMessages.approval.classifierBadEvidence);
       }
       return {
         status: "evaluated",
@@ -525,10 +549,13 @@ export function describeClassifierEvidence(evidence: {
   riskProbability: number;
   readOnlyProbability: number | null;
   authorizedProbability: number | null;
-}): string {
-  const readOnlyProbability =
-    evidence.readOnlyProbability === null ? "未记录" : evidence.readOnlyProbability.toFixed(4);
-  const authorizedProbability =
-    evidence.authorizedProbability === null ? "未记录" : evidence.authorizedProbability.toFixed(4);
-  return `分类器判定 ${evidence.outcome}（风险 ${evidence.risk}，风险概率 ${evidence.riskProbability.toFixed(4)}；通过概率 ${evidence.outcomeProbability.toFixed(4)}；只读概率 ${readOnlyProbability}；授权概率 ${authorizedProbability}）`;
+}): AppText {
+  return appMessages.approval.classifierSummary(
+    evidence.outcome,
+    evidence.risk,
+    evidence.riskProbability,
+    evidence.outcomeProbability,
+    evidence.readOnlyProbability,
+    evidence.authorizedProbability,
+  );
 }

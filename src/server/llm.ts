@@ -7,6 +7,9 @@
 
 import { randomUUID } from "node:crypto";
 import type { Message, Model } from "@earendil-works/pi-ai";
+import type { LocalizedText } from "../shared/i18n.ts";
+import { fromError } from "./messages.ts";
+import { modelMessages } from "./messages/models.ts";
 import type { ModelCatalog } from "./models.ts";
 import type { ModelSelectionRecord } from "./documents.ts";
 
@@ -18,7 +21,7 @@ export type LlmSuccess = {
   reasoning: string;
 };
 
-export type LlmFailure = { ok: false; message: string };
+export type LlmFailure = { ok: false; message: string; messageLocalized?: LocalizedText };
 
 export type LlmOutcome = LlmSuccess | LlmFailure;
 
@@ -43,7 +46,8 @@ export async function completeText(
 ): Promise<LlmOutcome> {
   const model = catalog.chatModel({ providerId: selection.providerId, modelId: selection.modelId });
   if (model === undefined) {
-    return { ok: false, message: `未配置对话模型 ${selection.providerId}/${selection.modelId}` };
+    const missing = modelMessages.chatModelNotConfigured(selection.providerId, selection.modelId);
+    return { ok: false, message: missing.text, messageLocalized: missing.localized };
   }
   const effort = catalog.resolveEffort({ providerId: selection.providerId, modelId: selection.modelId }, selection.effort);
   const messages: Message[] = [{ role: "user", content: request.prompt, timestamp: Date.now() }];
@@ -64,7 +68,9 @@ export async function completeText(
       options,
     );
     if (message.stopReason === "error" || message.stopReason === "aborted") {
-      return { ok: false, message: message.errorMessage ?? `请求结束于 ${message.stopReason}` };
+      if (message.errorMessage !== undefined) return { ok: false, message: message.errorMessage };
+      const ended = modelMessages.requestEnded(message.stopReason);
+      return { ok: false, message: ended.text, messageLocalized: ended.localized };
     }
     const text = message.content
       .flatMap((block) => (block.type === "text" ? [block.text] : []))
@@ -81,6 +87,7 @@ export async function completeText(
       reasoning: effort,
     };
   } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    const wrapped = fromError(error);
+    return { ok: false, message: wrapped.text, messageLocalized: wrapped.localized };
   }
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp } from "./state.tsx";
+import { useI18n } from "./i18n.tsx";
 import { Sidebar } from "./views/Sidebar.tsx";
 import { ChatView } from "./views/ChatView.tsx";
 import { MailView } from "./views/MailView.tsx";
@@ -9,27 +10,21 @@ import { WorkView } from "./views/WorkView.tsx";
 import { SettingsView } from "./views/SettingsView.tsx";
 import { Onboarding } from "./views/Onboarding.tsx";
 import { Icon, IconButton } from "./views/ui.tsx";
-import type { View } from "./state.tsx";
-
-const VIEW_TITLES: Record<View, string> = {
-  chat: "会话",
-  mail: "邮件",
-  approvals: "审批",
-  work: "工作",
-  employees: "员工",
-  settings: "设置",
-};
 
 export function App(): ReactNode {
   const { state, dispatch } = useApp();
+  const { messages, text } = useI18n();
   const [navOpen, setNavOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement | null>(null);
 
+  // The notice expires on its own id: switching languages redraws the text but
+  // never restarts the countdown.
+  const noticeId = state.notice?.id;
   useEffect(() => {
-    if (state.notice === undefined) return;
+    if (noticeId === undefined) return;
     const timer = setTimeout(() => dispatch({ type: "notice", text: "" }), 6_000);
     return () => clearTimeout(timer);
-  }, [state.notice, dispatch]);
+  }, [noticeId, dispatch]);
 
   const closeNav = useCallback((restoreFocus: boolean) => {
     setNavOpen(false);
@@ -47,11 +42,28 @@ export function App(): ReactNode {
     return () => window.removeEventListener("keydown", onKey);
   }, [navOpen, closeNav]);
 
+  // Validation errors on the first-run form are app-level errors too: render
+  // the same banner above the setup page, not only inside the workspace shell.
+  const errorBanner =
+    state.error !== undefined ? (
+      <div className="banner error">
+        <span>{text(state.error)}</span>
+        <button type="button" onClick={() => dispatch({ type: "error", message: undefined })}>
+          {messages.app.dismiss}
+        </button>
+      </div>
+    ) : null;
+
   if (!state.ready) {
-    return <div className="boot">正在读取本地数据…</div>;
+    return <div className="boot">{messages.app.boot}</div>;
   }
   if (state.app === undefined || !state.app.onboarded) {
-    return <Onboarding />;
+    return (
+      <>
+        {errorBanner}
+        <Onboarding />
+      </>
+    );
   }
 
   return (
@@ -60,7 +72,7 @@ export function App(): ReactNode {
       <button
         type="button"
         className="sidebar-scrim"
-        aria-label="关闭导航"
+        aria-label={messages.app.navClose}
         tabIndex={navOpen ? 0 : -1}
         onClick={() => closeNav(true)}
       />
@@ -69,21 +81,14 @@ export function App(): ReactNode {
           <IconButton
             ref={menuButton}
             icon={navOpen ? "close" : "menu"}
-            label={navOpen ? "关闭导航" : "打开导航"}
+            label={navOpen ? messages.app.navClose : messages.app.navOpen}
             onClick={() => (navOpen ? closeNav(true) : setNavOpen(true))}
           />
-          <span className="title">{VIEW_TITLES[state.view]}</span>
+          <span className="title">{messages.app.view[state.view]}</span>
           {state.connected ? null : <Icon name="alert" />}
         </div>
-        {state.error !== undefined ? (
-          <div className="banner error">
-            <span>{state.error}</span>
-            <button type="button" onClick={() => dispatch({ type: "error", message: undefined })}>
-              关闭
-            </button>
-          </div>
-        ) : null}
-        {state.connected ? null : <div className="banner warn">与本地服务的连接已断开，正在重连…</div>}
+        {errorBanner}
+        {state.connected ? null : <div className="banner warn">{messages.app.reconnect}</div>}
         {state.view === "chat" ? <ChatView /> : null}
         {state.view === "mail" ? <MailView /> : null}
         {state.view === "approvals" ? <ApprovalsView /> : null}
@@ -91,9 +96,9 @@ export function App(): ReactNode {
         {state.view === "work" ? <WorkView /> : null}
         {state.view === "settings" ? <SettingsView /> : null}
       </section>
-      {state.notice !== undefined && state.notice.text.length > 0 ? (
+      {state.notice !== undefined && text(state.notice.text).length > 0 ? (
         <div className="toast" key={state.notice.id}>
-          {state.notice.text}
+          {text(state.notice.text)}
         </div>
       ) : null}
     </div>

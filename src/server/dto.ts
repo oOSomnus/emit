@@ -26,7 +26,10 @@ export function toWorkDTO(record: WorkRecord, employeeName: string, roomName: st
   if (record.sourceEntryId.length > 0) dto.sourceEntryId = record.sourceEntryId;
   if (record.parentWorkId.length > 0) dto.parentWorkId = record.parentWorkId;
   if (record.finishedAt > 0) dto.finishedAt = record.finishedAt;
-  if (record.error.length > 0) dto.error = record.error;
+  if (record.error.length > 0) {
+    dto.error = record.error;
+    if (record.errorLocalized !== undefined) dto.errorLocalized = record.errorLocalized;
+  }
   if (record.answer.length > 0) dto.answer = record.answer;
   dto.usage = { input: record.inputTokens, output: record.outputTokens, cost: record.cost };
   if (record.mailDispatchTaskId.length > 0) dto.mailDispatchTaskId = record.mailDispatchTaskId;
