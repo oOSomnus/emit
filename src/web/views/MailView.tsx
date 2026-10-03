@@ -659,24 +659,28 @@ export function MailView(): ReactNode {
                   <p>{term.length > 0 ? messages.mail.noMatchHint : messages.mail.emptyHint}</p>
                 </div>
               ) : null}
-              {rows.map((row) => (
-                <div
-                  key={row.key}
-                  className={`mail-row${row.unread ? " unread" : ""}`}
-                  onClick={() => {
-                    if (!row.draft) openThread(row.roomId);
-                  }}
-                >
-                  <span className="who">
-                    <span className="dot" />
-                    {row.draft ? <Chip tone="warn">{messages.mail.draftChip}</Chip> : null}
-                    {row.who}
-                    {row.count > 1 ? <span className="hint">{row.count}</span> : null}
-                  </span>
-                  <span className="summary">
-                    <span className="subject">{row.subject}</span>
-                    <span className="snippet">{row.snippet.replace(/\s+/g, " ").slice(0, 200)}</span>
-                  </span>
+              {rows.map((row) => {
+                const selected = reading && state.activeRoomId === row.roomId && !row.draft;
+                const RowContent = row.draft ? "div" : "button";
+                return (
+                <div key={row.key} className={`mail-row${row.unread ? " unread" : ""}${selected ? " selected" : ""}`}>
+                  <RowContent
+                    className="mail-row-open"
+                    type={row.draft ? undefined : "button"}
+                    aria-current={selected ? "true" : undefined}
+                    onClick={row.draft ? undefined : () => openThread(row.roomId)}
+                  >
+                    <span className="who">
+                      <span className="dot" />
+                      {row.draft ? <Chip tone="warn">{messages.mail.draftChip}</Chip> : null}
+                      {row.who}
+                      {row.count > 1 ? <span className="hint">{row.count}</span> : null}
+                    </span>
+                    <span className="summary">
+                      <span className="subject">{row.subject}</span>
+                      <span className="snippet">{row.snippet.replace(/\s+/g, " ").slice(0, 200)}</span>
+                    </span>
+                  </RowContent>
                   <span className="right">
                     <span className="time">{timeAgo(row.at, locale)}</span>
                     <span className="actions">
@@ -723,7 +727,8 @@ export function MailView(): ReactNode {
                     </span>
                   </span>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </section>
 
@@ -732,6 +737,20 @@ export function MailView(): ReactNode {
               <div className="mail-reader-head">
                 <IconButton icon="back" label={messages.mail.backToList} className="mail-back" onClick={() => setReading(false)} />
                 <h2>{threadSubject.length > 0 ? threadSubject : messages.mail.noSubject}</h2>
+                <select
+                  className="mail-folder-select mail-reader-folder-select"
+                  value={folder}
+                  aria-label={messages.mail.folderSelectLabel}
+                  onChange={(event) => {
+                    setFolder(event.target.value as Folder);
+                    setReading(false);
+                  }}
+                >
+                  {FOLDERS.map((entry) => (
+                    <option key={entry.id} value={entry.id}>{messages.mail.folders[entry.id]}</option>
+                  ))}
+                </select>
+                <div className="mail-reader-actions">
                 <button type="button" onClick={() => setEditingRoomDirectories(true)}>
                   {messages.mail.sessionDirectoriesCount(room.directories.paths.length)}
                 </button>
@@ -742,15 +761,19 @@ export function MailView(): ReactNode {
                     if (newest?.mail !== undefined) flag(room.id, newest.id, { archived: !newest.mail.archived });
                   }}
                 />
+                </div>
               </div>
 
               <div className="mail-thread">
-                {thread.map((message) => (
-                  <article key={message.id} className={`mail-message author-${message.author.type}`}>
+                {thread.map((message) => {
+                  const employee = message.author.type === "employee" ? state.employees.find((entry) => entry.id === message.author.id) : undefined;
+                  return (
+                  <article key={message.id} className={`mail-message identity author-${message.author.type}`}>
                     <span className="avatar">{[...message.author.name.trim()][0] ?? "?"}</span>
                     <div className="envelope">
-                      <div className="line">
+                      <div className="line identity-meta">
                         <strong>{message.author.name}</strong>
+                        {employee !== undefined ? <span>{employee.role}</span> : null}
                         {message.author.address !== undefined && message.author.address.length > 0 ? (
                           <span>{message.author.address}</span>
                         ) : null}
@@ -809,10 +832,12 @@ export function MailView(): ReactNode {
                             </button>
                           ) : (
                             <>
-                              <button type="button" className="link" onClick={() => startReply(message, false)}>
+                              <button type="button" onClick={() => startReply(message, false)}>
+                                <Icon name="reply" />
                                 {messages.mail.reply}
                               </button>
-                              <button type="button" className="link" onClick={() => startReply(message, true)}>
+                              <button type="button" onClick={() => startReply(message, true)}>
+                                <Icon name="reply-all" />
                                 {messages.mail.replyAll}
                               </button>
                             </>
@@ -836,7 +861,8 @@ export function MailView(): ReactNode {
                       ) : null}
                     </div>
                   </article>
-                ))}
+                  );
+                })}
               </div>
             </section>
           ) : null}

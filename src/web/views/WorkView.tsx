@@ -81,12 +81,14 @@ export function WorkView(): ReactNode {
                       {work.error !== undefined ? text(work.errorLocalized ?? work.error) : work.progressText !== undefined ? work.progressText.slice(0, 120) : ""}
                     </td>
                     <td>
-                      <button type="button" className="link" onClick={() => setExecutionWorkId(work.id)}>
-                        {messages.work.viewExecution}
-                      </button>
-                      {ACTIVE_WORK_STATUSES.includes(work.status) ? (
-                        <IconButton icon="close" label={messages.work.stop} onClick={() => stop(work.id)} />
-                      ) : null}
+                      <div className="row-actions">
+                        <button type="button" className="link" onClick={() => setExecutionWorkId(work.id)}>
+                          {messages.work.viewExecution}
+                        </button>
+                        {ACTIVE_WORK_STATUSES.includes(work.status) ? (
+                          <IconButton icon="close" label={messages.work.stop} onClick={() => stop(work.id)} />
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 ))}

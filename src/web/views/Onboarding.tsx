@@ -113,29 +113,30 @@ export function Onboarding(): ReactNode {
         <p className="hint">{messages.onboarding.appearanceHint}</p>
       </fieldset>
 
-      <label>
-        {messages.onboarding.workspaceNameLabel}
-        <input
-          value={workspaceNameEdited ? workspaceName : messages.onboarding.defaultWorkspace}
-          onChange={(event) => {
-            setWorkspaceName(event.target.value);
-            setWorkspaceNameEdited(true);
-          }}
-        />
-      </label>
+      <div className="field-grid">
+        <label>
+          {messages.onboarding.workspaceNameLabel}
+          <input
+            value={workspaceNameEdited ? workspaceName : messages.onboarding.defaultWorkspace}
+            onChange={(event) => {
+              setWorkspaceName(event.target.value);
+              setWorkspaceNameEdited(true);
+            }}
+          />
+        </label>
 
-      <label>
-        {messages.onboarding.userNameLabel}
-        <input
-          value={userName}
-          onChange={(event) => setUserName(event.target.value)}
-          placeholder={messages.onboarding.userNamePlaceholder}
-        />
-      </label>
-
+        <label>
+          {messages.onboarding.userNameLabel}
+          <input
+            value={userName}
+            onChange={(event) => setUserName(event.target.value)}
+            placeholder={messages.onboarding.userNamePlaceholder}
+          />
+        </label>
+      </div>
       <ProviderManager />
 
-      <div className="row">
+      <div className="field-grid field-grid-three">
         <label>
           {messages.onboarding.defaultModelLabel}
           <ModelPicker models={chatModels} value={chatModel} onChange={selectChat} label={messages.onboarding.defaultModelLabel} />

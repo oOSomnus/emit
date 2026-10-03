@@ -74,8 +74,10 @@ export function SettingsView(): ReactNode {
 
       <div className="scroll settings">
         <section>
-          <h3>{messages.settings.workspace}</h3>
-          <div className="row">
+          <div className="section-head">
+            <h3>{messages.settings.workspace}</h3>
+          </div>
+          <div className="field-grid">
             <label>
               {messages.settings.workspaceName}
               <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} />
@@ -110,7 +112,9 @@ export function SettingsView(): ReactNode {
         </section>
 
         <section>
-          <h3>{messages.settings.defaultModel}</h3>
+          <div className="section-head">
+            <h3>{messages.settings.defaultModel}</h3>
+          </div>
           <div className="row">
             <ModelPicker
               models={chatModels}
@@ -156,7 +160,9 @@ export function SettingsView(): ReactNode {
         </section>
 
         <section>
-          <h3>{messages.settings.approvalJudge}</h3>
+          <div className="section-head">
+            <h3>{messages.settings.approvalJudge}</h3>
+          </div>
           <p className="hint">{messages.settings.policyVersionHint(app.policyVersion)}</p>
           <p className="hint">{messages.settings.riskPolicyHint}</p>
           <p className="hint">{messages.settings.separateJudgeHint}</p>
@@ -241,8 +247,10 @@ export function SettingsView(): ReactNode {
         </section>
 
         <section>
-          <h3>{messages.settings.collaboration}</h3>
-          <div className="row">
+          <div className="section-head">
+            <h3>{messages.settings.collaboration}</h3>
+          </div>
+          <div className="field-grid field-grid-three">
             <label>
               {messages.settings.delegationDepth}
               <input
@@ -290,7 +298,9 @@ export function SettingsView(): ReactNode {
         <ProviderManager />
 
         <section>
-          <h3>{messages.settings.skills}</h3>
+          <div className="section-head">
+            <h3>{messages.settings.skills}</h3>
+          </div>
           <ul className="plain">
             {state.skills.map((skill) => (
               <li key={skill.id}>
@@ -339,7 +349,9 @@ export function SettingsView(): ReactNode {
         </section>
 
         <section>
-          <h3>{messages.settings.mcp}</h3>
+          <div className="section-head">
+            <h3>{messages.settings.mcp}</h3>
+          </div>
           <ul className="plain">
             {state.mcpServers.map((server) => (
               <li key={server.id}>

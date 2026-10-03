@@ -16,6 +16,14 @@ node tmp/smoke.mjs   # 端到端冒烟测试
 
 `node tmp/smoke.mjs` 用假 provider 驱动真实 harness，覆盖审批、人工裁决、拒绝、停止、邮件与 SIGKILL 恢复。它会清空并重建 `tmp/smoke-data`、`tmp/smoke-work`、`tmp/smoke-outside`，并占用 8898（服务端）与 8899（假 provider）两个端口。它不是普通的快速开始命令：仅在这些目录与端口空闲时运行。`tmp/fake-provider.mjs` 是它使用的 OpenAI-compatible 假模型。
 
+## Web 界面
+
+[`DESIGN.md`](../DESIGN.md) 记录已落地的双语议程式团队工作台；`.impeccable/design.json` 提供设计面板预览。`src/web/styles.css` 是语义颜色、字体、间距和响应式规则的唯一来源。浅深主题与中英语言继续使用现有偏好 provider，不增加第二套主题机制或远程字体。
+
+消息与邮件共享员工身份元信息和阅读排版，但保留各自的同步与异步工作流。邮件线程打开按钮与同级的已读、归档、草稿操作是独立的键盘和触控目标，操作按钮不得同时打开线程。文件夹与线程布局根据邮件面板可用宽度变化；粗指针控件的目标不小于 44px，窄屏保留现有导航抽屉。
+
+界面冒烟检查使用独立临时数据目录和空闲端口运行应用与假 provider，不将真实工作区或破坏性 smoke 脚本的目录用于截图。检查两种沟通表面、辅助页面、主题、语言及触控和键盘操作；验证执行记录分页时使用真实 harness 记录。
+
 ## 依赖补丁
 
 `npm install` 会运行 `postinstall`，用 [`patch-package`](https://github.com/ds300/patch-package) 把 `patches/@earendil-works+pi-durable+1.0.0.patch` 应用到 `node_modules`。补丁只给 pi-durable 的生成与压缩请求补上 OpenCode Go 必需的每会话标识；补丁应用失败时安装会以非零状态退出，不会带着未打补丁的依赖继续。

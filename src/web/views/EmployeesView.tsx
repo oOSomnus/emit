@@ -146,9 +146,14 @@ export function EmployeesView(): ReactNode {
               className={editing === employee.id ? "employee-card active" : "employee-card"}
               onClick={() => openEdit(employee)}
             >
-              <strong>{employee.name}</strong>
-              <span className="address">{employee.address}</span>
-              <span className="role">{employee.role}</span>
+              <span className="identity">
+                <span className="avatar">{[...employee.name.trim()][0] ?? "?"}</span>
+                <span className="identity-meta">
+                  <strong>{employee.name}</strong>
+                  <span className="role">{employee.role}</span>
+                  <span className="address">{employee.address}</span>
+                </span>
+              </span>
               <span className="tags">
                 {employee.enabled ? <Chip tone="ok">{messages.employees.enabled}</Chip> : <Chip tone="muted">{messages.employees.disabled}</Chip>}
                 {employee.skillIds.length > 0 ? <Chip tone="info">{messages.employees.skillCount(employee.skillIds.length)}</Chip> : null}
@@ -162,18 +167,20 @@ export function EmployeesView(): ReactNode {
         {editing !== undefined ? (
           <section className="editor">
             <h3>{editing === "new" ? messages.employees.newTitle : messages.employees.editTitle}</h3>
-            <label>
-              {messages.employees.nameLabel}
-              <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
-            </label>
-            <label>
-              {messages.employees.roleLabel}
-              <input
-                value={draft.role}
-                placeholder={messages.employees.rolePlaceholder}
-                onChange={(event) => setDraft({ ...draft, role: event.target.value })}
-              />
-            </label>
+            <div className="field-grid">
+              <label>
+                {messages.employees.nameLabel}
+                <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+              </label>
+              <label>
+                {messages.employees.roleLabel}
+                <input
+                  value={draft.role}
+                  placeholder={messages.employees.rolePlaceholder}
+                  onChange={(event) => setDraft({ ...draft, role: event.target.value })}
+                />
+              </label>
+            </div>
             <label>
               {messages.employees.instructionsLabel}
               <textarea
@@ -301,7 +308,7 @@ export function EmployeesView(): ReactNode {
                 )}
             </fieldset>
 
-            <div className="row">
+            <div className="row editor-actions">
               <button type="button" className="primary" disabled={busy} onClick={() => void save()}>
                 {busy ? messages.employees.saving : messages.employees.save}
               </button>

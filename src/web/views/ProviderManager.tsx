@@ -345,7 +345,7 @@ export function ProviderManager(): ReactNode {
       <legend>{messages.providers.legend}</legend>
       <p className="hint">{messages.providers.intro(state.providers.length)}</p>
 
-      <div className="row">
+      <div className="row provider-toolbar">
         <input
           type="search"
           value={search}
@@ -387,10 +387,11 @@ export function ProviderManager(): ReactNode {
                   setProviderMessage(undefined);
                 }}
               >
-                <span>
-                  {provider.name} <code>{provider.providerId}</code>
+                <span className="provider-item-copy">
+                  <strong>{provider.name}</strong>
+                  <code>{provider.providerId}</code>
                 </span>
-                <span className="tags">
+                <span className="provider-item-meta tags">
                   {provider.custom ? <Chip tone="info">{messages.providers.chipCustom}</Chip> : null}
                   {provider.configured ? (
                     <Chip tone="ok">{provider.authSource ?? messages.providers.authSourceConfigured}</Chip>

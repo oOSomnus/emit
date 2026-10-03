@@ -15,6 +15,9 @@ tmp/smoke-work/
 tmp/smoke-outside/
 tmp/ui-*/
 
+# Local UI inspection captures; keep durable design context and configuration.
+.impeccable/review/
+
 # Emit runtime state when the data directory points inside the repository:
 # the SQLite store, its WAL sidecars, the single-instance lock, and the
 # 0600 credential file. The default data directory is ~/.emit, outside the repo.

@@ -7,8 +7,9 @@
  * refresh of the newest page, coalesced so a busy run cannot flood the modal.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api.ts";
+import { mergeExecutionSteps } from "../execution-steps.ts";
 import { errorDisplay, type DisplayText } from "../../shared/i18n.ts";
 import { useI18n } from "../i18n.tsx";
 import { useApp } from "../state.tsx";
@@ -38,7 +39,7 @@ function StepBody({ step }: { step: WorkExecutionStepDTO }): ReactNode {
       {step.kind === "tool-result" && step.toolName !== undefined ? (
         <div className="line">
           <code>{step.toolName}</code>
-          {step.isError === true ? <Chip tone="danger">{messages.execution.stepFailed}</Chip> : null}
+          {step.isError === true ? <Chip tone="error">{messages.execution.stepFailed}</Chip> : null}
         </div>
       ) : null}
       {step.text !== undefined && step.text.length > 0 ? <pre className="step-payload">{step.text}</pre> : null}
@@ -49,7 +50,7 @@ function StepBody({ step }: { step: WorkExecutionStepDTO }): ReactNode {
 function approvalTone(approval: ApprovalDTO): string {
   if (approval.status === "approved") return "ok";
   if (approval.status === "pending-human" || approval.status === "evaluating") return "warn";
-  if (approval.status === "rejected" || approval.status === "blocked") return "danger";
+  if (approval.status === "rejected" || approval.status === "blocked") return "error";
   return "muted";
 }
 
@@ -57,12 +58,13 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
   const { state, dispatch, setError } = useApp();
   const { messages, text, locale } = useI18n();
   const [execution, setExecution] = useState<WorkExecutionDTO | undefined>(undefined);
-  const [olderSteps, setOlderSteps] = useState<WorkExecutionStepDTO[]>([]);
+  const [steps, setSteps] = useState<WorkExecutionStepDTO[]>([]);
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [error, setLocalError] = useState<DisplayText>("");
   const requestSeq = useRef(0);
   const refreshTimer = useRef<number | undefined>(undefined);
+  const historyRequested = useRef(false);
   const work = state.work.find((item) => item.id === workId);
 
   const load = useCallback(
@@ -72,6 +74,12 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
         const payload = await api.workExecution(workId, nextCursor);
         if (seq !== requestSeq.current) return;
         setExecution(payload);
+        if (historyRequested.current) {
+          setSteps((current) => mergeExecutionSteps(current, payload.steps, "newer"));
+        } else {
+          setSteps(payload.steps);
+          setCursor(payload.nextCursor);
+        }
         setLocalError("");
       } catch (cause) {
         if (seq !== requestSeq.current) return;
@@ -83,8 +91,9 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
 
   useEffect(() => {
     setExecution(undefined);
-    setOlderSteps([]);
+    setSteps([]);
     setCursor(undefined);
+    historyRequested.current = false;
     void load();
   }, [load]);
 
@@ -101,13 +110,11 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
 
   const loadOlder = async (): Promise<void> => {
     if (cursor === undefined || loadingOlder) return;
+    historyRequested.current = true;
     setLoadingOlder(true);
     try {
       const payload = await api.workExecution(workId, cursor);
-      setOlderSteps((current) => {
-        const seen = new Set(current.map((step) => step.id));
-        return [...payload.steps.filter((step) => !seen.has(step.id)), ...current];
-      });
+      setSteps((current) => mergeExecutionSteps(current, payload.steps, "older"));
       setCursor(payload.nextCursor);
     } catch (cause) {
       setLocalError(errorDisplay(cause));
@@ -115,12 +122,6 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
       setLoadingOlder(false);
     }
   };
-
-  const steps = useMemo(() => {
-    const newest = execution?.steps ?? [];
-    const seen = new Set(olderSteps.map((step) => step.id));
-    return [...olderSteps, ...newest.filter((step) => !seen.has(step.id))];
-  }, [execution, olderSteps]);
 
   const stop = async (): Promise<void> => {
     try {
@@ -163,14 +164,14 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
           </div>
         ) : null}
         {shown?.error !== undefined && shown.error.length > 0 ? (
-          <p className="error">
-            <Chip tone="danger">{messages.execution.workError}</Chip> {text(shown.errorLocalized ?? shown.error)}
+          <p className="error-text">
+            <Chip tone="error">{messages.execution.workError}</Chip> {text(shown.errorLocalized ?? shown.error)}
           </p>
         ) : null}
 
         {error !== "" ? (
-          <p className="error">
-            <Chip tone="danger">{messages.execution.loadFailed}</Chip> {text(error)}
+          <p className="error-text">
+            <Chip tone="error">{messages.execution.loadFailed}</Chip> {text(error)}
             <button type="button" className="link" onClick={() => void load()}>
               {messages.execution.reload}
             </button>
@@ -194,7 +195,7 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
             {steps.map((step) => (
               <li key={step.id} className={`work-step kind-${step.kind}`}>
                 <div className="line">
-                  <Chip tone={step.kind === "tool-result" && step.isError === true ? "danger" : "muted"}>
+                  <Chip tone={step.kind === "tool-result" && step.isError === true ? "error" : "muted"}>
                     {messages.execution.step[step.kind]}
                   </Chip>
                   {step.taskStatus !== undefined ? <span className="hint">{messages.execution.task(step.taskStatus)}</span> : null}
@@ -202,8 +203,8 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
                 </div>
                 <StepBody step={step} />
                 {step.taskError !== undefined ? (
-                  <p className="error">
-                    <Chip tone="danger">{messages.execution.taskError}</Chip> {step.taskError}
+                  <p className="error-text">
+                    <Chip tone="error">{messages.execution.taskError}</Chip> {step.taskError}
                   </p>
                 ) : null}
               </li>

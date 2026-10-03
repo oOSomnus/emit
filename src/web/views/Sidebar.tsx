@@ -71,7 +71,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
       <button
         key={room.id}
         type="button"
-        className={active ? "room active" : "room"}
+        className={`room room-${kind}${active ? " active" : ""}`}
         aria-current={active ? "page" : undefined}
         onClick={() => {
           void openRoom(room.id);
@@ -79,8 +79,12 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
           onNavigate?.();
         }}
       >
-        <span className="room-name">{label}</span>
-        {room.kind === "channel" ? <span className="room-topic">{room.topic.slice(0, 18)}</span> : null}
+        {kind === "channel" ? <Icon name="chat" /> : <span className="avatar">{label.trim().slice(0, 1).toUpperCase()}</span>}
+        <span className="room-label">
+          <span className="room-name">{label}</span>
+          {kind === "dm" && employee !== undefined ? <span className="room-role">{employee.role}</span> : null}
+        </span>
+        {kind === "channel" ? <span className="room-topic">{room.topic.slice(0, 18)}</span> : null}
       </button>
     );
   };
@@ -98,7 +102,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
             {messages.sidebar.channels}
             <IconButton icon="plus" label={messages.sidebar.newChannel} onClick={() => startCreating("channel")} />
           </h3>
-          {channels.map((room) => renderRoom(room.id, "channel"))}
+          <div className="room-list">{channels.map((room) => renderRoom(room.id, "channel"))}</div>
         </section>
 
         <section>
@@ -106,11 +110,12 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
             {messages.sidebar.directs}
             <IconButton icon="plus" label={messages.sidebar.newDirect} onClick={() => startCreating("dm")} />
           </h3>
-          {directs.map((room) => renderRoom(room.id, "dm"))}
+          <div className="room-list">{directs.map((room) => renderRoom(room.id, "dm"))}</div>
         </section>
+      </nav>
 
+      <nav className="sidebar-mail">
         <section>
-          <h3>{messages.sidebar.mailbox}</h3>
           <button
             type="button"
             className={state.view === "mail" ? "room active" : "room"}

@@ -95,12 +95,16 @@ export function ChatView(): ReactNode {
       </header>
 
       <div className="messages">
-        {state.messages.map((message) => (
-          <article key={message.id} className={`message ${message.author.type} ${message.notice === true ? "notice" : ""}`}>
+        <div className="conversation-content">
+        {state.messages.map((message) => {
+          const employee = message.author.type === "employee" ? state.employees.find((entry) => entry.id === message.author.id) : undefined;
+          return (
+          <article key={message.id} className={`message identity ${message.author.type} ${message.notice === true ? "notice" : ""}`}>
             {message.notice === true ? null : <span className="avatar">{initial(message.author.name)}</span>}
             <div className="message-content">
-              <div className="meta">
+              <div className={message.notice === true ? "meta" : "meta identity-meta"}>
                 <strong>{text(message.author.nameLocalized ?? message.author.name)}</strong>
+                {employee !== undefined ? <span className="role">{employee.role}</span> : null}
                 {message.author.address !== undefined && message.author.address.length > 0 ? (
                   <span className="address">{message.author.address}</span>
                 ) : null}
@@ -109,7 +113,8 @@ export function ChatView(): ReactNode {
               <div className="body">{text(message.bodyLocalized ?? message.body)}</div>
             </div>
           </article>
-        ))}
+          );
+        })}
         {roomWork.map((work) => (
           <article key={work.id} className="work-live">
             <div className="meta">
@@ -137,35 +142,40 @@ export function ChatView(): ReactNode {
           </article>
         ))}
         <div ref={endRef} />
+        </div>
       </div>
 
       <footer className="composer">
-        {room.kind === "channel" ? (
-          <select value={target} onChange={(event) => setTarget(event.target.value)} aria-label={messages.chat.assignEmployee}>
-            <option value="">{messages.chat.recordOnly}</option>
-            {state.employees.map((employee) => (
-              <option key={employee.id} value={employee.id}>
-                @{employee.name} · {employee.role}
-              </option>
-            ))}
-          </select>
-        ) : null}
-        <textarea
-          value={draft}
-          placeholder={room.kind === "channel" ? messages.chat.channelPlaceholder : messages.chat.directPlaceholder}
-          aria-label={messages.chat.messageLabel}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-        />
-        <button type="button" className="primary" disabled={sending || draft.trim().length === 0} onClick={() => void send()}>
-          <Icon name="send" />
-          {messages.chat.send}
-        </button>
+        <div className="composer-box">
+          <textarea
+            value={draft}
+            placeholder={room.kind === "channel" ? messages.chat.channelPlaceholder : messages.chat.directPlaceholder}
+            aria-label={messages.chat.messageLabel}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+          />
+          <div className="composer-toolbar">
+            {room.kind === "channel" ? (
+              <select value={target} onChange={(event) => setTarget(event.target.value)} aria-label={messages.chat.assignEmployee}>
+                <option value="">{messages.chat.recordOnly}</option>
+                {state.employees.map((employee) => (
+                  <option key={employee.id} value={employee.id}>
+                    @{employee.name} · {employee.role}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+            <button type="button" className="primary" disabled={sending || draft.trim().length === 0} onClick={() => void send()}>
+              <Icon name="send" />
+              {messages.chat.send}
+            </button>
+          </div>
+        </div>
       </footer>
       {editingDirectories ? (
         <RoomDirectoryEditor key={room.id} room={room} onClose={() => setEditingDirectories(false)} />

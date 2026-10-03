@@ -1,0 +1,165 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-03T16:47:10Z",
+  "title": "Design System: Emit",
+  "extensions": {
+    "colorMeta": {
+      "workspace-light": { "role": "neutral", "displayName": "Workspace Canvas · Light", "canonical": "#f5f3f8", "tonalRamp": ["oklch(15% 0.012 287)", "oklch(25% 0.012 287)", "oklch(35% 0.012 287)", "oklch(45% 0.012 287)", "oklch(55% 0.012 287)", "oklch(65% 0.012 287)", "oklch(80% 0.012 287)", "oklch(95% 0.012 287)"] },
+      "workspace-dark": { "role": "neutral", "displayName": "Workspace Canvas · Dark", "canonical": "#17131d", "tonalRamp": ["oklch(15% 0.018 287)", "oklch(25% 0.018 287)", "oklch(35% 0.018 287)", "oklch(45% 0.018 287)", "oklch(55% 0.018 287)", "oklch(65% 0.018 287)", "oklch(80% 0.018 287)", "oklch(95% 0.018 287)"] },
+      "reading-surface-light": { "role": "neutral", "displayName": "Reading Surface · Light", "canonical": "#ffffff", "tonalRamp": ["oklch(15% 0 0)", "oklch(25% 0 0)", "oklch(35% 0 0)", "oklch(45% 0 0)", "oklch(55% 0 0)", "oklch(65% 0 0)", "oklch(80% 0 0)", "oklch(95% 0 0)"] },
+      "reading-surface-dark": { "role": "neutral", "displayName": "Reading Surface · Dark", "canonical": "#1f1b25", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(25% 0.014 285)", "oklch(35% 0.014 285)", "oklch(45% 0.014 285)", "oklch(55% 0.014 285)", "oklch(65% 0.014 285)", "oklch(80% 0.014 285)", "oklch(95% 0.014 285)"] },
+      "raised-surface-light": { "role": "neutral", "displayName": "Raised Surface · Light", "canonical": "#f0ecf4", "tonalRamp": ["oklch(15% 0.020 285)", "oklch(25% 0.020 285)", "oklch(35% 0.020 285)", "oklch(45% 0.020 285)", "oklch(55% 0.020 285)", "oklch(65% 0.020 285)", "oklch(80% 0.020 285)", "oklch(95% 0.020 285)"] },
+      "raised-surface-dark": { "role": "neutral", "displayName": "Raised Surface · Dark", "canonical": "#2a2432", "tonalRamp": ["oklch(15% 0.025 285)", "oklch(25% 0.025 285)", "oklch(35% 0.025 285)", "oklch(45% 0.025 285)", "oklch(55% 0.025 285)", "oklch(65% 0.025 285)", "oklch(80% 0.025 285)", "oklch(95% 0.025 285)"] },
+      "divider-light": { "role": "neutral", "displayName": "Divider · Light", "canonical": "#e7e1eb", "tonalRamp": ["oklch(15% 0.020 285)", "oklch(25% 0.020 285)", "oklch(35% 0.020 285)", "oklch(45% 0.020 285)", "oklch(55% 0.020 285)", "oklch(65% 0.020 285)", "oklch(80% 0.020 285)", "oklch(95% 0.020 285)"] },
+      "divider-dark": { "role": "neutral", "displayName": "Divider · Dark", "canonical": "#3a3043", "tonalRamp": ["oklch(15% 0.030 285)", "oklch(25% 0.030 285)", "oklch(35% 0.030 285)", "oklch(45% 0.030 285)", "oklch(55% 0.030 285)", "oklch(65% 0.030 285)", "oklch(80% 0.030 285)", "oklch(95% 0.030 285)"] },
+      "strong-divider-light": { "role": "neutral", "displayName": "Strong Divider · Light", "canonical": "#c9bdcf", "tonalRamp": ["oklch(15% 0.035 285)", "oklch(25% 0.035 285)", "oklch(35% 0.035 285)", "oklch(45% 0.035 285)", "oklch(55% 0.035 285)", "oklch(65% 0.035 285)", "oklch(80% 0.035 285)", "oklch(95% 0.035 285)"] },
+      "strong-divider-dark": { "role": "neutral", "displayName": "Strong Divider · Dark", "canonical": "#675574", "tonalRamp": ["oklch(15% 0.060 285)", "oklch(25% 0.060 285)", "oklch(35% 0.060 285)", "oklch(45% 0.060 285)", "oklch(55% 0.060 285)", "oklch(65% 0.060 285)", "oklch(80% 0.060 285)", "oklch(95% 0.060 285)"] },
+      "ink-light": { "role": "neutral", "displayName": "Primary Ink · Light", "canonical": "#28212f", "tonalRamp": ["oklch(15% 0.030 285)", "oklch(25% 0.030 285)", "oklch(35% 0.030 285)", "oklch(45% 0.030 285)", "oklch(55% 0.030 285)", "oklch(65% 0.030 285)", "oklch(80% 0.030 285)", "oklch(95% 0.030 285)"] },
+      "ink-dark": { "role": "neutral", "displayName": "Primary Ink · Dark", "canonical": "#eee8f4", "tonalRamp": ["oklch(15% 0.025 285)", "oklch(25% 0.025 285)", "oklch(35% 0.025 285)", "oklch(45% 0.025 285)", "oklch(55% 0.025 285)", "oklch(65% 0.025 285)", "oklch(80% 0.025 285)", "oklch(95% 0.025 285)"] },
+      "secondary-ink-light": { "role": "neutral", "displayName": "Secondary Ink · Light", "canonical": "#6d6475", "tonalRamp": ["oklch(15% 0.030 285)", "oklch(25% 0.030 285)", "oklch(35% 0.030 285)", "oklch(45% 0.030 285)", "oklch(55% 0.030 285)", "oklch(65% 0.030 285)", "oklch(80% 0.030 285)", "oklch(95% 0.030 285)"] },
+      "secondary-ink-dark": { "role": "neutral", "displayName": "Secondary Ink · Dark", "canonical": "#b5aabb", "tonalRamp": ["oklch(15% 0.025 285)", "oklch(25% 0.025 285)", "oklch(35% 0.025 285)", "oklch(45% 0.025 285)", "oklch(55% 0.025 285)", "oklch(65% 0.025 285)", "oklch(80% 0.025 285)", "oklch(95% 0.025 285)"] },
+      "accent-light": { "role": "primary", "displayName": "Aubergine Accent · Light", "canonical": "#6f4596", "tonalRamp": ["oklch(15% 0.110 295)", "oklch(25% 0.110 295)", "oklch(35% 0.110 295)", "oklch(45% 0.110 295)", "oklch(55% 0.110 295)", "oklch(65% 0.110 295)", "oklch(80% 0.110 295)", "oklch(95% 0.110 295)"] },
+      "accent-dark": { "role": "primary", "displayName": "Aubergine Accent · Dark", "canonical": "#c5a0e8", "tonalRamp": ["oklch(15% 0.110 295)", "oklch(25% 0.110 295)", "oklch(35% 0.110 295)", "oklch(45% 0.110 295)", "oklch(55% 0.110 295)", "oklch(65% 0.110 295)", "oklch(80% 0.110 295)", "oklch(95% 0.110 295)"] },
+      "on-accent-light": { "role": "primary", "displayName": "On Accent · Light", "canonical": "#ffffff", "tonalRamp": ["oklch(15% 0 0)", "oklch(25% 0 0)", "oklch(35% 0 0)", "oklch(45% 0 0)", "oklch(55% 0 0)", "oklch(65% 0 0)", "oklch(80% 0 0)", "oklch(95% 0 0)"] },
+      "on-accent-dark": { "role": "primary", "displayName": "On Accent · Dark", "canonical": "#281535", "tonalRamp": ["oklch(15% 0.050 295)", "oklch(25% 0.050 295)", "oklch(35% 0.050 295)", "oklch(45% 0.050 295)", "oklch(55% 0.050 295)", "oklch(65% 0.050 295)", "oklch(80% 0.050 295)", "oklch(95% 0.050 295)"] },
+      "accent-wash-light": { "role": "primary", "displayName": "Accent Wash · Light", "canonical": "#f0e7f8", "tonalRamp": ["oklch(15% 0.025 295)", "oklch(25% 0.025 295)", "oklch(35% 0.025 295)", "oklch(45% 0.025 295)", "oklch(55% 0.025 295)", "oklch(65% 0.025 295)", "oklch(80% 0.025 295)", "oklch(95% 0.025 295)"] },
+      "accent-wash-dark": { "role": "primary", "displayName": "Accent Wash · Dark", "canonical": "#35283f", "tonalRamp": ["oklch(15% 0.045 295)", "oklch(25% 0.045 295)", "oklch(35% 0.045 295)", "oklch(45% 0.045 295)", "oklch(55% 0.045 295)", "oklch(65% 0.045 295)", "oklch(80% 0.045 295)", "oklch(95% 0.045 295)"] },
+      "selected-surface-light": { "role": "neutral", "displayName": "Selected Surface · Light", "canonical": "#ede3f7", "tonalRamp": ["oklch(15% 0.025 295)", "oklch(25% 0.025 295)", "oklch(35% 0.025 295)", "oklch(45% 0.025 295)", "oklch(55% 0.025 295)", "oklch(65% 0.025 295)", "oklch(80% 0.025 295)", "oklch(95% 0.025 295)"] },
+      "selected-surface-dark": { "role": "neutral", "displayName": "Selected Surface · Dark", "canonical": "#463354", "tonalRamp": ["oklch(15% 0.060 295)", "oklch(25% 0.060 295)", "oklch(35% 0.060 295)", "oklch(45% 0.060 295)", "oklch(55% 0.060 295)", "oklch(65% 0.060 295)", "oklch(80% 0.060 295)", "oklch(95% 0.060 295)"] },
+      "selected-ink-light": { "role": "neutral", "displayName": "Selected Ink · Light", "canonical": "#542c78", "tonalRamp": ["oklch(15% 0.110 295)", "oklch(25% 0.110 295)", "oklch(35% 0.110 295)", "oklch(45% 0.110 295)", "oklch(55% 0.110 295)", "oklch(65% 0.110 295)", "oklch(80% 0.110 295)", "oklch(95% 0.110 295)"] },
+      "selected-ink-dark": { "role": "neutral", "displayName": "Selected Ink · Dark", "canonical": "#f2e7fc", "tonalRamp": ["oklch(15% 0.025 295)", "oklch(25% 0.025 295)", "oklch(35% 0.025 295)", "oklch(45% 0.025 295)", "oklch(55% 0.025 295)", "oklch(65% 0.025 295)", "oklch(80% 0.025 295)", "oklch(95% 0.025 295)"] },
+      "rail-light": { "role": "neutral", "displayName": "Aubergine Rail · Light Theme", "canonical": "#33253e", "tonalRamp": ["oklch(15% 0.045 290)", "oklch(25% 0.045 290)", "oklch(35% 0.045 290)", "oklch(45% 0.045 290)", "oklch(55% 0.045 290)", "oklch(65% 0.045 290)", "oklch(80% 0.045 290)", "oklch(95% 0.045 290)"] },
+      "rail-dark": { "role": "neutral", "displayName": "Aubergine Rail · Dark Theme", "canonical": "#21182b", "tonalRamp": ["oklch(15% 0.045 290)", "oklch(25% 0.045 290)", "oklch(35% 0.045 290)", "oklch(45% 0.045 290)", "oklch(55% 0.045 290)", "oklch(65% 0.045 290)", "oklch(80% 0.045 290)", "oklch(95% 0.045 290)"] },
+      "rail-ink": { "role": "neutral", "displayName": "Rail Text", "canonical": "#f6f0fb", "tonalRamp": ["oklch(15% 0.015 290)", "oklch(25% 0.015 290)", "oklch(35% 0.015 290)", "oklch(45% 0.015 290)", "oklch(55% 0.015 290)", "oklch(65% 0.015 290)", "oklch(80% 0.015 290)", "oklch(95% 0.015 290)"] },
+      "rail-muted": { "role": "neutral", "displayName": "Rail Secondary Text", "canonical": "#c5b8d0", "tonalRamp": ["oklch(15% 0.030 290)", "oklch(25% 0.030 290)", "oklch(35% 0.030 290)", "oklch(45% 0.030 290)", "oklch(55% 0.030 290)", "oklch(65% 0.030 290)", "oklch(80% 0.030 290)", "oklch(95% 0.030 290)"] }
+    },
+    "typographyMeta": {
+      "ui": { "displayName": "Interface", "purpose": "Shared system sans voice for controls, navigation, and ordinary interface copy in English and Simplified Chinese." },
+      "metadata": { "displayName": "Metadata", "purpose": "Author roles, addresses, timestamps, hints, and secondary details." },
+      "prose": { "displayName": "Prose", "purpose": "Message and mail body copy." },
+      "page-title": { "displayName": "Page Title", "purpose": "Pane headings." },
+      "mail-title": { "displayName": "Mail Subject", "purpose": "Thread subject, with room for two lines." },
+      "onboarding-title": { "displayName": "Onboarding Title", "purpose": "First-run heading." }
+    },
+    "shadows": [
+      { "name": "overlay-light", "value": "0 16px 48px rgba(28, 17, 38, .16)", "purpose": "Light-theme overlay separation for the drawer, toast, and mail composer." },
+      { "name": "overlay-dark", "value": "0 16px 48px rgba(0, 0, 0, .38)", "purpose": "Dark-theme overlay separation for the drawer, toast, and mail composer." },
+      { "name": "composer-focus", "value": "0 1px 2px rgba(28, 17, 38, .06)", "purpose": "Soft focus depth on the chat composer only." }
+    ],
+    "motion": [
+      { "name": "control-state", "value": "120ms ease", "purpose": "Background and border-color transitions on controls." },
+      { "name": "navigation-drawer", "value": "160ms ease", "purpose": "Mobile sidebar and scrim transitions." },
+      { "name": "reduced-motion", "value": "prefers-reduced-motion: reduce; transition: none; scroll-behavior: auto", "purpose": "Removes transitions and smooth scrolling when reduced motion is requested." }
+    ],
+    "breakpoints": [
+      { "name": "workspace-narrow", "value": "760px", "purpose": "Viewport threshold for the navigation drawer, compact pane header, and full-screen mail compose." },
+      { "name": "employee-stack", "value": "900px", "purpose": "Employee list and editor stack below this viewport width." },
+      { "name": "mail-reader-split", "value": "1040px", "purpose": "Mail container threshold for a 320px list beside the reader." },
+      { "name": "mail-folder-select", "value": "680px", "purpose": "Mail container threshold to hide the folder rail and show native folder selects." },
+      { "name": "mail-reader-split-fallback", "value": "1288px", "purpose": "Viewport min-width fallback for the split reader when container queries are unsupported." },
+      { "name": "mail-folder-select-fallback", "value": "928px", "purpose": "Viewport max-width fallback for compact mail when container queries are unsupported." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Accent-filled action for send and compose, with a subdued disabled state.",
+      "html": "<button type=\"button\" class=\"ds-btn-primary\">Send</button><button type=\"button\" class=\"ds-btn-primary\" disabled>Unavailable</button>",
+      "css": ".ds-btn-primary { font: inherit; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 40px; padding: 0 14px; color: var(--accent-text); background: var(--accent); border: 1px solid transparent; border-radius: var(--radius); font-weight: 600; cursor: pointer; white-space: nowrap; transition: background-color 120ms ease, border-color 120ms ease; } .ds-btn-primary:hover:not(:disabled) { filter: brightness(1.06); } .ds-btn-primary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; } .ds-btn-primary:disabled { opacity: .5; cursor: not-allowed; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Raised neutral action for supporting tasks.",
+      "html": "<button type=\"button\" class=\"ds-btn-secondary\">Open directories</button><button type=\"button\" class=\"ds-btn-secondary\" disabled>Unavailable</button>",
+      "css": ".ds-btn-secondary { font: inherit; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 40px; padding: 0 14px; color: var(--text); background: var(--bg-raise); border: 1px solid transparent; border-radius: var(--radius); cursor: pointer; white-space: nowrap; transition: background-color 120ms ease, border-color 120ms ease; } .ds-btn-secondary:hover:not(:disabled) { background: var(--raise-hover); } .ds-btn-secondary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; } .ds-btn-secondary:disabled { opacity: .5; cursor: not-allowed; }"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Error-colored action that remains visually distinct from the primary action.",
+      "html": "<button type=\"button\" class=\"ds-btn-danger\">Reject</button><button type=\"button\" class=\"ds-btn-danger\" disabled>Unavailable</button>",
+      "css": ".ds-btn-danger { font: inherit; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 40px; padding: 0 14px; color: var(--error); background: var(--error-bg); border: 1px solid transparent; border-radius: var(--radius); font-weight: 600; cursor: pointer; white-space: nowrap; transition: background-color 120ms ease, border-color 120ms ease; } .ds-btn-danger:hover:not(:disabled) { filter: brightness(.97); } .ds-btn-danger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; } .ds-btn-danger:disabled { opacity: .5; cursor: not-allowed; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "Native search field with a theme-aware, fully opaque secondary placeholder.",
+      "html": "<input class=\"ds-input\" type=\"search\" aria-label=\"Search mail\" placeholder=\"Search mail\">",
+      "css": ".ds-input { font: inherit; width: 100%; height: 40px; padding: 0 10px; color: var(--text); background: var(--bg-soft); border: 1px solid var(--line); border-radius: var(--radius); caret-color: var(--accent); transition: border-color 120ms ease, box-shadow 120ms ease; } .ds-input::placeholder { color: var(--text-dim); opacity: 1; } .ds-input:focus { outline: 2px solid var(--accent); outline-offset: 3px; border-color: var(--accent); box-shadow: none; }"
+    },
+    {
+      "name": "Rail Navigation",
+      "kind": "nav",
+      "refersTo": "nav-item-active",
+      "description": "Aubergine workspace navigation with a full-row selected state and a copied chat icon path.",
+      "html": "<nav class=\"ds-rail-nav\" aria-label=\"Workspace\"><button type=\"button\" class=\"ds-nav-item ds-active\" aria-current=\"page\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M4.5 4.5h15a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1H9.5l-5 4V5.5a1 1 0 0 1 1-1Z\"></path></svg><span class=\"ds-nav-label\">Messages</span></button><button type=\"button\" class=\"ds-nav-item\"><span class=\"ds-nav-label\">Mail</span></button></nav>",
+      "css": ".ds-rail-nav { display: grid; gap: var(--space-1); width: 248px; padding: var(--space-2); background: var(--rail-bg); color: var(--rail-text); } .ds-nav-item { font: inherit; display: flex; align-items: center; justify-content: flex-start; gap: 10px; width: 100%; min-width: 0; height: var(--row-h); padding: 0 var(--space-2); border: none; border-radius: var(--radius); background: transparent; color: var(--rail-text); text-align: left; cursor: pointer; } .ds-nav-item:hover:not(:disabled) { background: var(--rail-hover); } .ds-nav-item.ds-active { background: var(--rail-selected); color: var(--rail-text); box-shadow: inset 2px 0 var(--rail-muted); font-weight: 600; } .ds-nav-item:focus-visible { outline: 2px solid var(--rail-text); outline-offset: 3px; border-radius: 4px; } .ds-nav-item:disabled { opacity: .5; cursor: not-allowed; } .ds-nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-icon { display: block; flex: none; }"
+    },
+    {
+      "name": "Status Chip",
+      "kind": "chip",
+      "refersTo": "chip-info",
+      "description": "Compact informational and success labels use their existing semantic color pair.",
+      "html": "<span class=\"ds-chip ds-chip-info\">Running</span><span class=\"ds-chip ds-chip-ok\">Enabled</span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border: 1px solid transparent; border-radius: var(--radius); font-size: var(--text-meta); font-weight: 600; line-height: 22px; white-space: nowrap; } .ds-chip-info { background: var(--accent-soft); color: var(--accent); } .ds-chip-ok { background: var(--ok-bg); color: var(--ok); }"
+    },
+    {
+      "name": "Employee Card",
+      "kind": "card",
+      "refersTo": "employee-card",
+      "description": "Interactive employee summary combining the shared identity byline with real state chips.",
+      "html": "<button type=\"button\" class=\"ds-employee-card ds-active\"><span class=\"ds-identity\"><span class=\"ds-avatar\">N</span><span class=\"ds-identity-meta\"><strong>Name</strong><span>Role</span><span>name@workspace.local</span></span></span><span class=\"ds-tags\"><span class=\"ds-chip ds-chip-ok\">Enabled</span><span class=\"ds-chip ds-chip-muted\">2 skills</span></span></button>",
+      "css": ".ds-employee-card { font: inherit; display: grid; gap: var(--space-3); width: 100%; height: auto; padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius); background: transparent; color: var(--text); text-align: left; justify-items: stretch; white-space: normal; overflow-wrap: anywhere; cursor: pointer; } .ds-employee-card:hover:not(:disabled) { background: var(--hover); } .ds-employee-card.ds-active { background: var(--selected); color: var(--selected-text); border-color: var(--line-strong); } .ds-employee-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; } .ds-employee-card:disabled { opacity: .5; cursor: not-allowed; } .ds-identity { display: flex; align-items: flex-start; gap: var(--space-3); min-width: 0; } .ds-avatar { display: grid; place-items: center; width: 32px; height: 32px; flex: none; border-radius: var(--radius); color: var(--selected-text); background: var(--accent-soft); font-size: var(--text-ui); font-weight: 600; } .ds-identity-meta { display: flex; flex-direction: column; align-items: baseline; gap: var(--space-1); min-width: 0; border-left: 1px solid var(--accent); padding-left: var(--space-2); color: var(--text-dim); font-size: var(--text-meta); overflow-wrap: anywhere; } .ds-identity-meta strong { color: var(--text); font-size: var(--text-ui); font-weight: 600; } .ds-employee-card.ds-active .ds-identity-meta, .ds-employee-card.ds-active .ds-identity-meta strong { color: var(--selected-text); } .ds-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; } .ds-chip { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border: 1px solid transparent; border-radius: var(--radius); font-size: var(--text-meta); font-weight: 600; line-height: 22px; white-space: nowrap; } .ds-chip-ok { background: var(--ok-bg); color: var(--ok); } .ds-chip-muted { background: var(--bg-raise); color: var(--text-dim); }"
+    },
+    {
+      "name": "Identity Marginalia",
+      "kind": "custom",
+      "refersTo": "identity-avatar",
+      "description": "Shared author, role, address, and time signature used beside chat and mail copy.",
+      "html": "<div class=\"ds-identity\"><span class=\"ds-avatar\">N</span><div class=\"ds-identity-meta\"><strong>Name</strong><span>Role</span><span>name@workspace.local</span><time>Today</time></div></div>",
+      "css": ".ds-identity { display: flex; align-items: flex-start; gap: var(--space-3); min-width: 0; } .ds-avatar { display: grid; place-items: center; width: 32px; height: 32px; flex: none; border-radius: var(--radius); color: var(--selected-text); background: var(--accent-soft); font-size: var(--text-ui); font-weight: 600; } .ds-identity-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-2); min-width: 0; border-left: 1px solid var(--accent); padding-left: var(--space-2); color: var(--text-dim); font-size: var(--text-meta); overflow-wrap: anywhere; } .ds-identity-meta strong { color: var(--text); font-size: var(--text-ui); font-weight: 600; }"
+    },
+    {
+      "name": "Chat Composer",
+      "kind": "custom",
+      "refersTo": "chat-composer",
+      "description": "One prose field with an employee target select and a primary send action.",
+      "html": "<div class=\"ds-composer\"><div class=\"ds-composer-box\"><textarea class=\"ds-composer-text\" aria-label=\"Message\" placeholder=\"Write a message\"></textarea><div class=\"ds-composer-toolbar\"><select class=\"ds-composer-select\" aria-label=\"Assign employee\"><option>Record only</option><option>Choose employee</option></select><button type=\"button\" class=\"ds-composer-send\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M20 4 4.5 11.4l6.4 2.1 2.1 6.5L20 4Z\"></path><path d=\"m10.9 13.5 4-4\"></path></svg>Send</button></div></div></div>",
+      "css": ".ds-composer { padding: var(--space-3) var(--space-6) var(--space-6); background: var(--bg-soft); } .ds-composer-box { width: 100%; max-width: 840px; margin-inline: auto; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--radius-lg); } .ds-composer-box:focus-within { border-color: var(--accent); box-shadow: var(--shadow-soft); outline: 2px solid var(--accent); outline-offset: 3px; } .ds-composer-text { display: block; width: 100%; min-height: 80px; max-height: 240px; padding: var(--space-3) var(--space-4); border: none; border-radius: 0; color: var(--text); background: var(--bg-soft); font: inherit; font-size: var(--text-body); line-height: var(--leading-body); resize: vertical; } .ds-composer-text::placeholder { color: var(--text-dim); opacity: 1; } .ds-composer-text:focus { outline: none; box-shadow: none; } .ds-composer-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-3); padding: var(--space-2) var(--space-3); } .ds-composer-select { flex: 1; min-width: 0; max-width: 260px; margin-right: auto; height: 40px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius); color: var(--text); background: var(--bg-soft); font: inherit; } .ds-composer-select:focus { outline: 2px solid var(--accent); outline-offset: 3px; border-color: var(--accent); } .ds-composer-send { font: inherit; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 40px; padding: 0 14px; color: var(--accent-text); background: var(--accent); border: 1px solid transparent; border-radius: var(--radius); font-weight: 600; cursor: pointer; white-space: nowrap; transition: background-color 120ms ease, border-color 120ms ease; } .ds-composer-send:hover:not(:disabled) { filter: brightness(1.06); } .ds-composer-send:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; } .ds-composer-send:disabled { opacity: .5; cursor: not-allowed; } .ds-icon { display: block; flex: none; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "双语议程式团队工作台",
+    "overview": "Emit's workspace borrows the clear hierarchy and compact metadata of a bilingual conference agenda, while remaining a conventional web work surface. A deep aubergine rail frames clean, theme-aware reading surfaces. Chat and mail carry equal visual weight: one supports synchronous conversation, the other asynchronous delivery, and both keep authorship, role, address, and time close to the content.\n\nThe interface favors native controls, quiet borders, concise navigation, and a measured reading column over decorative panels. The signature identity marginalia joins initials and a fine accent rule to the author line; it is an attribution device, not a generic card ornament. Light and dark themes use the same semantic roles, and the system font stack serves both English and Simplified Chinese without a remote font dependency.",
+    "keyCharacteristics": [
+      "Aubergine navigation against low-noise reading surfaces.",
+      "Chat and mail share the same identity and content hierarchy.",
+      "Compact controls and metadata support long, sustained reading.",
+      "Keyboard focus and narrow-screen workflows remain visible and reachable."
+    ],
+    "rules": [
+      { "name": "The Paired Theme Rule", "body": "Use the existing semantic light/dark token pairs so every component follows the active theme; do not pin a new surface to one palette.", "section": "colors" },
+      { "name": "The Status-Has-Meaning Rule", "body": "Keep success, warning, and error hues attached to real state. The status roles and surfaces already present in the stylesheet are semantic palette tokens; sidecar tonal ramps are synthesized swatch metadata, not shipped application tokens.", "section": "colors" }
+    ],
+    "dos": [
+      "Do use the paired theme tokens for surfaces, ink, selection, accent, and navigation.",
+      "Do keep chat and mail at equal visual priority, with bounded reading measures and shared author metadata.",
+      "Do preserve the author's name and nearby secondary details as a single identity line.",
+      "Do use native buttons, selects, inputs, and textareas with visible keyboard focus.",
+      "Do keep status color tied to the existing success, warning, and error meanings."
+    ],
+    "donts": [
+      "Don't add remote fonts, UI libraries, or a second theme-token mechanism.",
+      "Don't turn monospace into the voice for ordinary prose or use text glyphs as substitute icons.",
+      "Don't lower placeholder opacity or rely on color alone for focus, selection, or status.",
+      "Don't move the identity marginalia rule onto generic cards, list rows, or alerts.",
+      "Don't imply employee availability through decoration; display only real status information already present in the interface."
+    ]
+  }
+}

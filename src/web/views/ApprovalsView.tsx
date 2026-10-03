@@ -242,19 +242,20 @@ export function ApprovalsView(): ReactNode {
         ) : null}
 
         {approval.status === "pending-human" ? (
-          <div className="approval-actions row">
+          <footer className="approval-actions row">
             <input
+              aria-label={messages.approvals.commentPlaceholder}
               placeholder={messages.approvals.commentPlaceholder}
               value={comments[approval.id] ?? ""}
               onChange={(event) => setComments((current) => ({ ...current, [approval.id]: event.target.value }))}
             />
-            <button type="button" onClick={() => void decide(approval, "approved")}>
+            <button type="button" className="primary" onClick={() => void decide(approval, "approved")}>
               {messages.approvals.approve}
             </button>
-            <button type="button" onClick={() => void decide(approval, "rejected")}>
+            <button type="button" className="danger" onClick={() => void decide(approval, "rejected")}>
               {messages.approvals.reject}
             </button>
-          </div>
+          </footer>
         ) : null}
       </div>
     </article>

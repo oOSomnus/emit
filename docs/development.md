@@ -16,6 +16,14 @@ node tmp/smoke.mjs   # end-to-end smoke test
 
 `node tmp/smoke.mjs` drives a fake provider through the real harness and covers approvals, manual decisions, denials, stopping, mail, and SIGKILL recovery. It clears and rebuilds `tmp/smoke-data`, `tmp/smoke-work`, and `tmp/smoke-outside`, and it uses ports 8898 (server) and 8899 (fake provider). It is not a normal quick-start command: run it only when those directories and ports are free. `tmp/fake-provider.mjs` is the OpenAI-compatible fake model it uses.
 
+## Web interface
+
+[`DESIGN.md`](../DESIGN.md) records the implemented bilingual agenda-style workspace; `.impeccable/design.json` contains its design-panel previews. `src/web/styles.css` is the single source of semantic colors, typography, spacing, and responsive rules. Keep light/dark themes and English/Simplified Chinese on the existing preference providers; do not introduce another theme system or remote fonts.
+
+Chat and mail share employee identity metadata and reading typography, but retain their synchronous and asynchronous workflows. Mail thread-open buttons and their sibling read/archive/draft actions are separate keyboard and touch targets; an action must not also open a thread. Folder and thread layouts respond to the mail pane's available width. Coarse-pointer controls have a 44px minimum target; narrow screens retain the existing navigation drawer.
+
+For interface smoke checks, run the application and fake provider with an isolated temporary data directory and unused ports. Never reuse a real workspace or the destructive smoke script's directories for screenshots. Check both communication surfaces, supporting views, themes, languages, and touch/keyboard interaction; use real harness records when checking execution pagination.
+
 ## Dependency patch
 
 `npm install` runs `postinstall`, which applies the [`patch-package`](https://github.com/ds300/patch-package) patch `patches/@earendil-works+pi-durable+1.0.0.patch` to `node_modules`. The patch adds the per-session identifiers OpenCode Go requires to pi-durable's generate and compact requests. If the patch cannot be applied, install exits nonzero and does not continue with an unpatched dependency.
