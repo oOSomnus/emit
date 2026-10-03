@@ -29,7 +29,7 @@ type Options = {
 function parseOptions(argv: readonly string[]): Options {
   let dataDir = process.env.EMIT_DATA_DIR ?? join(homedir(), ".emit");
   let host = process.env.EMIT_HOST ?? "127.0.0.1";
-  let port = Number(process.env.EMIT_PORT ?? 8787);
+  let port = Number(process.env.EMIT_PORT ?? 0);
   let webRoot = resolve(import.meta.dirname, "../../dist/web");
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -54,7 +54,7 @@ function parseOptions(argv: readonly string[]): Options {
           "用法: emit [选项]",
           "  --data-dir <目录>   数据目录（默认 ~/.emit）",
           "  --host <地址>       监听地址（默认 127.0.0.1）",
-          "  --port <端口>       监听端口（默认 8787）",
+          "  --port <端口>       监听端口（默认自动分配，0 表示自动）",
           "  --web-root <目录>   前端构建产物目录（默认 dist/web）",
           "",
         ].join("\n"),
@@ -62,7 +62,7 @@ function parseOptions(argv: readonly string[]): Options {
       process.exit(0);
     }
   }
-  if (!Number.isFinite(port) || port <= 0) port = 8787;
+  if (!Number.isFinite(port) || port < 0) port = 0;
   return { dataDir, host, port, webRoot };
 }
 
@@ -70,8 +70,6 @@ async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
   const runtime = await EmitRuntime.open({
     dataDir: options.dataDir,
-    host: options.host,
-    port: options.port,
   });
 
   const app = await readApp(runtime);
@@ -104,8 +102,7 @@ async function main(): Promise<void> {
   const detachProgress = attachProgress(runtime);
 
   const server = await buildServer({ resume, webRoot: options.webRoot });
-  await server.listen({ host: options.host, port: options.port });
-  const address = `http://${options.host}:${options.port}`;
+  const address = await server.listen({ host: options.host, port: options.port });
   process.stdout.write(`Emit 已启动：${address}\n数据目录：${runtime.dataDir}\n`);
 
   let closing = false;

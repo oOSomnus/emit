@@ -163,7 +163,7 @@ const providerConfig = (baseUrl: string) => ({
 
 /** Open one runtime over `dir`, install the mail extension, and return its resume. */
 async function openRuntime(dir: string, baseUrl: string): Promise<{ runtime: EmitRuntime; resume: Resume }> {
-  const runtime = await EmitRuntime.open({ dataDir: dir, host: "127.0.0.1", port: 0 });
+  const runtime = await EmitRuntime.open({ dataDir: dir });
   const resume: Resume = { runtime, mcp: new McpManager(runtime), mail: undefined as unknown as MailTasks };
   resume.mail = buildMailTasks(() => resume);
   runtime.registry.install(buildMailExtension(resume.mail));

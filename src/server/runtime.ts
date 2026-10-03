@@ -37,14 +37,10 @@ import { applyCredentialsToEnv, EmitCredentialStore, type CredentialsFile } from
 
 export type EmitRuntimeOptions = {
   dataDir: string;
-  host: string;
-  port: number;
 };
 
 export class EmitRuntime {
   readonly dataDir: string;
-  readonly host: string;
-  readonly port: number;
   readonly ctx: Context = BACKGROUND_CONTEXT;
   readonly catalog: ModelCatalog;
   readonly credentialStore: EmitCredentialStore;
@@ -60,8 +56,6 @@ export class EmitRuntime {
 
   private constructor(init: {
     dataDir: string;
-    host: string;
-    port: number;
     catalog: ModelCatalog;
     credentialStore: EmitCredentialStore;
     providerAuth: ProviderAuthSessions;
@@ -72,8 +66,6 @@ export class EmitRuntime {
     releaseLock: () => Promise<void>;
   }) {
     this.dataDir = init.dataDir;
-    this.host = init.host;
-    this.port = init.port;
     this.catalog = init.catalog;
     this.credentialStore = init.credentialStore;
     this.providerAuth = init.providerAuth;
@@ -90,7 +82,7 @@ export class EmitRuntime {
   }
 
   static async open(options: EmitRuntimeOptions): Promise<EmitRuntime> {
-    const { dataDir, host, port } = options;
+    const { dataDir } = options;
     mkdirSync(dataDir, { recursive: true });
 
     // The lock file must exist before proper-lockfile can lock it.
@@ -148,8 +140,6 @@ export class EmitRuntime {
     );
     return new EmitRuntime({
       dataDir,
-      host,
-      port,
       catalog,
       credentialStore,
       providerAuth,
