@@ -8,9 +8,13 @@
  * silent empty prompt at request time.
  */
 import { readFileSync } from "node:fs";
+import { getAsset, isSea } from "node:sea";
 
 /** Read one bundled text resource relative to this module. */
 export function readResource(file: string): string {
+  // The binary embeds this directory; a source run reads it from disk. Both
+  // paths produce the same text, so renderers cannot tell them apart.
+  if (isSea()) return getAsset(`prompts/${file}`, "utf8");
   return readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
 }
 
