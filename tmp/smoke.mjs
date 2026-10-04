@@ -128,6 +128,13 @@ async function startWorkMessage(roomId, body, employeeId) {
   }
   return response.workIds[0];
 }
+async function approvalForWork(workId, status, description) {
+  return waitFor(description, async () =>
+    (await call("/api/approvals")).approvals.find(
+      (approval) => approval.workId === workId && approval.status === status,
+    ),
+  );
+}
 function assertDirectoryScope(approval, room, paths, cwd, targetPaths = []) {
   const workContext = workContextForRoom(room);
   if (approval.directoryWorkContextId !== workContext.id) {
@@ -146,6 +153,22 @@ function assertDirectoryScope(approval, room, paths, cwd, targetPaths = []) {
   if (JSON.stringify(approval.targetPaths) !== JSON.stringify(targetPaths)) {
     throw new Error(`审批 targetPaths 错误：${JSON.stringify(approval.targetPaths)}，预期 ${JSON.stringify(targetPaths)}`);
   }
+}
+
+function toolOutput(events, workId) {
+  return events
+    .filter((event) => event.type === "work-progress" && event.workId === workId)
+    .flatMap((event) => event.tools)
+    .map((tool) => tool.output ?? "")
+    .join("\n");
+}
+async function startMailWorkMessage(roomId, body, employeeId) {
+  const response = await call(`/api/rooms/${roomId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ body, subject: "工作目录 cwd-proof", to: [employeeId] }),
+  });
+  if (response.workIds?.length !== 1) throw new Error(`邮件 session ${roomId} 没有启动唯一工作：${JSON.stringify(response)}`);
+  return response.workIds[0];
 }
 
 async function assertShellCwdProof({ room, expectedCwd, startWork, description, explicitB = false }) {
@@ -903,7 +926,7 @@ async function main() {
     await assertShellCwdProof({
       room,
       expectedCwd: DIR_C,
-      startWork: async (body) => startWorkMessage(room.id, body, employee.id),
+      startWork: async (body) => startWorkMessage(room.id, body),
       description: "私信 C 默认 cwd",
     });
     const dmReadStart = await startWorkMessage(room.id, "请用 read_file 读取已读目录标记");
@@ -950,6 +973,7 @@ async function main() {
 
     rmSync(join(DIR_A, "critical-settings.json"), { force: true });
     rmSync(join(DIR_E, "critical-settings.json"), { force: true });
+    const unrelatedRoom = await createRoom({ kind: "channel", name: "独立目录审批", memberIds: [employee.id] }, [DIR_E]);
     const invalidatedStart = await startWorkMessage(channelRoom.id, "请写一个 critical-settings.json", employee.id);
     const invalidatedPending = await approvalForWork(invalidatedStart, "pending-human", "等待修改目录版本");
     const unaffectedStart = await startWorkMessage(unrelatedRoom.id, "请写一个 critical-settings.json", employee.id);
@@ -1818,8 +1842,14 @@ async function main() {
       method: "POST",
       body: JSON.stringify({ body: "模型还在吗" }),
     });
-    if ((refusedWork.error ?? "").length === 0) throw new Error("模型不可用时仍然启动了工作");
-    if (!refusedWork.error.includes("模型不可用")) throw new Error(`失败原因不清楚: ${refusedWork.error}`);
+    if (!Array.isArray(refusedWork.workIds) || refusedWork.workIds.length !== 1) {
+      throw new Error(`模型不可用时没有排队唯一工作：${JSON.stringify(refusedWork)}`);
+    }
+    const vanishedWork = await finishWork(refusedWork.workIds[0], `模型不可用的工作结束`);
+    if (vanishedWork.status !== "failed") throw new Error(`模型不可用的工作状态是 ${vanishedWork.status}`);
+    if (!(vanishedWork.error ?? "").includes("模型不可用")) {
+      throw new Error(`失败原因不清楚: ${vanishedWork.error}`);
+    }
     const vanishedMessages = (await call(`/api/rooms/${vanishedRoom.id}/messages`)).messages;
     const answersAfter = vanishedMessages.filter((message) => message.author.type === "employee").length;
     if (answersAfter !== answersBefore) throw new Error("模型不可用却出现了员工回答");
