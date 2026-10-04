@@ -12,6 +12,10 @@ export const englishWork = {
   topic(count: number, active: number): string {
     return `${count} records · ${active} running`;
   },
+  filterLabel: "Filter runs by work",
+  allWorkContexts: "All work",
+  emptyFilteredTitle: "No runs in this work",
+  emptyFilteredBody: "Choose another work or show all runs.",
   columns: {
     status: "Status",
     employee: "Employee",
@@ -54,6 +58,10 @@ export const chineseWork: WorkMessages = {
   topic(count, active) {
     return `${count} 条记录 · 进行中 ${active}`;
   },
+  filterLabel: "按工作筛选执行记录",
+  allWorkContexts: "全部工作",
+  emptyFilteredTitle: "该工作还没有执行记录",
+  emptyFilteredBody: "选择其他工作，或显示全部执行记录。",
   columns: {
     status: "状态",
     employee: "员工",

@@ -127,7 +127,7 @@ function approvalCase(id: string): ApprovalCase {
     argumentsPreview: '{"command":"ls"}',
     arguments: '{"command":"ls -la"}',
     cwd: "/tmp/session",
-    directories: { roomId: "room-1", version: 1, paths: ["/tmp/session"], defaultPath: "/tmp/session" },
+    directories: { roomId: "room-1", workContextId: "ctx-1", version: 1, paths: ["/tmp/session"], defaultPath: "/tmp/session" },
     targetPaths: [],
     allowedTools: ["run_shell"],
     userIntent: {

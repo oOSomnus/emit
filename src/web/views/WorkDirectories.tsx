@@ -3,17 +3,16 @@ import { errorDisplay, type DisplayText } from "../../shared/i18n.ts";
 import { ApiError, api } from "../api.ts";
 import { useApp } from "../state.tsx";
 import { useI18n } from "../i18n.tsx";
-import { uiText } from "../messages.ts";
 import { IconButton } from "./ui.tsx";
-import type { RoomDirectoryDraftDTO, RoomDTO } from "../../shared/contracts.ts";
+import type { DirectoryDraftDTO, WorkContextDTO } from "../../shared/contracts.ts";
 
 export function DirectoryFields({
   value,
   onChange,
   disabled = false,
 }: {
-  value: RoomDirectoryDraftDTO;
-  onChange: (value: RoomDirectoryDraftDTO) => void;
+  value: DirectoryDraftDTO;
+  onChange: (value: DirectoryDraftDTO) => void;
   disabled?: boolean;
 }): ReactNode {
   const { messages } = useI18n();
@@ -84,18 +83,26 @@ export function DirectoryFields({
   );
 }
 
-export function RoomDirectoryEditor({ room, onClose }: { room: RoomDTO; onClose: () => void }): ReactNode {
+export function WorkDirectoryEditor({
+  workContext,
+  onClose,
+  onSaved,
+}: {
+  workContext: WorkContextDTO;
+  onClose: () => void;
+  onSaved?: (workContext: WorkContextDTO) => void;
+}): ReactNode {
   const { dispatch } = useApp();
   const { messages, text } = useI18n();
-  const [draft, setDraft] = useState<RoomDirectoryDraftDTO>(() => ({
-    paths: [...room.directories.paths],
-    defaultPath: room.directories.defaultPath,
+  const [draft, setDraft] = useState<DirectoryDraftDTO>(() => ({
+    paths: [...workContext.directories.paths],
+    defaultPath: workContext.directories.defaultPath,
   }));
-  const [initialDirectories, setInitialDirectories] = useState<RoomDirectoryDraftDTO>(() => ({
-    paths: [...room.directories.paths],
-    defaultPath: room.directories.defaultPath,
+  const [initialDirectories, setInitialDirectories] = useState<DirectoryDraftDTO>(() => ({
+    paths: [...workContext.directories.paths],
+    defaultPath: workContext.directories.defaultPath,
   }));
-  const [expectedVersion, setExpectedVersion] = useState(room.directories.version);
+  const [expectedVersion, setExpectedVersion] = useState(workContext.version);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<DisplayText>("");
   const [conflict, setConflict] = useState(false);
@@ -104,12 +111,6 @@ export function RoomDirectoryEditor({ room, onClose }: { room: RoomDTO; onClose:
     draft.defaultPath !== initialDirectories.defaultPath ||
     draft.paths.length !== initialDirectories.paths.length ||
     draft.paths.some((path, index) => path !== initialDirectories.paths[index]);
-  const scope =
-    room.kind === "channel"
-      ? messages.directories.scopeChannel
-      : room.kind === "dm"
-        ? messages.directories.scopeDm
-        : messages.directories.scopeMail;
 
   const close = (): void => {
     if (busy) return;
@@ -126,11 +127,12 @@ export function RoomDirectoryEditor({ room, onClose }: { room: RoomDTO; onClose:
     setError("");
     setConflict(false);
     try {
-      const updated = await api.updateRoomDirectories(room.id, {
-        ...draft,
+      const updated = await api.patchWorkContext(workContext.id, {
+        directories: draft,
         expectedVersion,
       });
-      dispatch({ type: "room", room: updated });
+      dispatch({ type: "workContext", workContext: updated });
+      onSaved?.(updated);
       onClose();
     } catch (cause) {
       setError(errorDisplay(cause));
@@ -147,19 +149,16 @@ export function RoomDirectoryEditor({ room, onClose }: { room: RoomDTO; onClose:
     setBusy(true);
     setError("");
     try {
-      const latest = (await api.rooms()).find((entry) => entry.id === room.id);
-      if (latest === undefined) {
-        setError(uiText((m) => m.directories.roomGone));
-        return;
-      }
-      dispatch({ type: "room", room: latest });
+      const latest = await api.getWorkContext(workContext.id);
+      dispatch({ type: "workContext", workContext: latest });
+      onSaved?.(latest);
       const latestDirectories = {
         paths: [...latest.directories.paths],
         defaultPath: latest.directories.defaultPath,
       };
       setDraft(latestDirectories);
       setInitialDirectories(latestDirectories);
-      setExpectedVersion(latest.directories.version);
+      setExpectedVersion(latest.version);
       setConflict(false);
       setAskClose(false);
     } catch (cause) {
@@ -174,10 +173,8 @@ export function RoomDirectoryEditor({ room, onClose }: { room: RoomDTO; onClose:
       <section className="directory-editor" role="dialog" aria-modal="true" aria-labelledby="directory-editor-title">
         <header className="directory-editor-head">
           <div>
-            <h2 id="directory-editor-title">{messages.directories.title}</h2>
-            <p className="hint">
-              {scope} {messages.directories.notSandbox}
-            </p>
+            <h2 id="directory-editor-title">{messages.workContexts.directoriesTitle}</h2>
+            <p className="hint">{messages.workContexts.directoriesHint}</p>
           </div>
           <IconButton icon="close" label={messages.directories.closeEditor} disabled={busy} onClick={close} />
         </header>
@@ -190,9 +187,9 @@ export function RoomDirectoryEditor({ room, onClose }: { room: RoomDTO; onClose:
           ) : null}
           {conflict ? (
             <div className="directory-conflict">
-              <p>{messages.directories.conflictText}</p>
+              <p>{messages.workContexts.conflict}</p>
               <button type="button" disabled={busy} onClick={() => void reload()}>
-                {messages.directories.reload}
+                {messages.workContexts.reload}
               </button>
             </div>
           ) : null}

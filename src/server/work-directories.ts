@@ -6,6 +6,7 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import {
   ConversationContextDoc,
   RoomDoc,
+  WorkContextDoc,
   WorkDoc,
   type WorkDirectoryScopeRecord,
 } from "./documents.ts";
@@ -37,7 +38,15 @@ function validDirectories(value: unknown): value is { paths: string[]; defaultPa
 }
 
 
-/** Resolve and verify the immutable room-directory snapshot bound to one work conversation. */
+/**
+ * Resolve and verify the immutable work-directory snapshot bound to one work
+ * conversation.
+ *
+ * The snapshot was taken from the conversation's work context when the run
+ * started; both the context binding and the live directory version must still
+ * match, and every root must still resolve to the same real directory. When
+ * the snapshot has a source room, that room must still belong to the context.
+ */
 export async function readWorkDirectoryScope(
   runtime: EmitRuntime,
   conversationId: number,
@@ -50,48 +59,62 @@ export async function readWorkDirectoryScope(
   if (work === undefined || work.conversationId !== conversationId || work.roomId !== binding.roomId) {
     return { ok: false, message: "该会话没有有效工作记录，已阻止本地目录工具" };
   }
+  const missing = "该工作缺少目录配置，请重新创建工作";
   const candidate: unknown = work.directoryScope;
   if (!validDirectories(candidate) || typeof (candidate as WorkDirectoryScopeRecord).roomId !== "string") {
-    return { ok: false, message: "该会话缺少目录配置，请重新创建会话" };
+    return { ok: false, message: missing };
   }
   const scope = candidate as WorkDirectoryScopeRecord;
   if (
-    scope.roomId.length === 0 ||
-    (work.roomId.length > 0 && scope.roomId !== work.roomId) ||
+    typeof scope.workContextId !== "string" ||
+    scope.workContextId.length === 0 ||
+    scope.workContextId !== work.workContextId ||
     scope.version < 1 ||
     (scope.paths.length === 0 ? scope.defaultPath !== "" : !scope.paths.includes(scope.defaultPath))
   ) {
-    return { ok: false, message: "该会话缺少目录配置，请重新创建会话" };
+    return { ok: false, message: missing };
   }
-  const room = await runtime.readFamily(RoomDoc, scope.roomId, { id: scope.roomId });
-  if (room === undefined || !validDirectories(room.directories)) {
-    return { ok: false, message: "该会话缺少目录配置，请重新创建会话" };
+  const workContext = await runtime.readFamily(WorkContextDoc, scope.workContextId, { id: scope.workContextId });
+  if (
+    workContext === undefined ||
+    workContext.createdAt === 0 ||
+    workContext.id !== scope.workContextId ||
+    !validDirectories(workContext.directories)
+  ) {
+    return { ok: false, message: missing };
   }
   if (
-    room.directories.version !== scope.version ||
-    room.directories.defaultPath !== scope.defaultPath ||
+    workContext.directories.version !== scope.version ||
+    workContext.directories.defaultPath !== scope.defaultPath ||
     !(
-      room.directories.paths.length === scope.paths.length &&
-      room.directories.paths.every((path, index) => path === scope.paths[index])
+      workContext.directories.paths.length === scope.paths.length &&
+      workContext.directories.paths.every((path, index) => path === scope.paths[index])
     )
   ) {
-    return { ok: false, message: "会话工作目录已变更，请停止并重新发送任务" };
+    return { ok: false, message: "工作目录已变更，请停止并重新发送任务" };
+  }
+  if (scope.roomId.length > 0) {
+    const room = await runtime.readFamily(RoomDoc, scope.roomId, { id: scope.roomId });
+    if (room === undefined || room.workContextId !== workContext.id) {
+      return { ok: false, message: "该工作缺少目录配置，请重新创建工作" };
+    }
   }
   for (const path of scope.paths) {
     try {
       const canonical = await realpath(path);
       const info = await stat(canonical);
       if (canonical !== path || !info.isDirectory()) {
-        return { ok: false, message: "会话工作目录已变更，请停止并重新发送任务" };
+        return { ok: false, message: "工作目录已变更，请停止并重新发送任务" };
       }
     } catch {
-      return { ok: false, message: "会话工作目录已变更，请停止并重新发送任务" };
+      return { ok: false, message: "工作目录已变更，请停止并重新发送任务" };
     }
   }
   return {
     ok: true,
     scope: {
       roomId: scope.roomId,
+      workContextId: scope.workContextId,
       version: scope.version,
       paths: [...scope.paths],
       defaultPath: scope.defaultPath,

@@ -37,14 +37,10 @@ import { applyCredentialsToEnv, EmitCredentialStore, type CredentialsFile } from
 
 export type EmitRuntimeOptions = {
   dataDir: string;
-  host: string;
-  port: number;
 };
 
 export class EmitRuntime {
   readonly dataDir: string;
-  readonly host: string;
-  readonly port: number;
   readonly ctx: Context = BACKGROUND_CONTEXT;
   readonly catalog: ModelCatalog;
   readonly credentialStore: EmitCredentialStore;
@@ -60,8 +56,6 @@ export class EmitRuntime {
 
   private constructor(init: {
     dataDir: string;
-    host: string;
-    port: number;
     catalog: ModelCatalog;
     credentialStore: EmitCredentialStore;
     providerAuth: ProviderAuthSessions;
@@ -72,8 +66,6 @@ export class EmitRuntime {
     releaseLock: () => Promise<void>;
   }) {
     this.dataDir = init.dataDir;
-    this.host = init.host;
-    this.port = init.port;
     this.catalog = init.catalog;
     this.credentialStore = init.credentialStore;
     this.providerAuth = init.providerAuth;
@@ -90,7 +82,7 @@ export class EmitRuntime {
   }
 
   static async open(options: EmitRuntimeOptions): Promise<EmitRuntime> {
-    const { dataDir, host, port } = options;
+    const { dataDir } = options;
     mkdirSync(dataDir, { recursive: true });
 
     // The lock file must exist before proper-lockfile can lock it.
@@ -148,8 +140,6 @@ export class EmitRuntime {
     );
     return new EmitRuntime({
       dataDir,
-      host,
-      port,
       catalog,
       credentialStore,
       providerAuth,
@@ -273,7 +263,8 @@ export class EmitRuntime {
    *
    * Pi Durable exposes document scanning on the storage, not on the session, so
    * Emit keeps the storage handle it opened. Values are materialized at the
-   * current point, which is exactly what an index would have provided.
+   * current point, which is exactly what an index would have provided: a
+   * record missing a required field of its definition is skipped.
    */
   async listFamily<T extends JsonObject, I extends JsonValue>(
     token: SessionDocFamilyToken<T, I>,
@@ -292,36 +283,13 @@ export class EmitRuntime {
         if (record.key === undefined) continue;
         const stored = await this.storage.document(record.id, "current", this.ctx);
         if (stored === undefined) continue;
-        const value = materialize<T>(this.migratedValue(token, stored), seed(record.key));
+        const value = materialize<T>(stored.value, seed(record.key));
         if (value !== undefined) records.push({ key: record.key, value });
       }
       if (page.next === undefined) break;
       cursor = page.next;
     }
     return records;
-  }
-
-  /**
-   * Apply the definition's migration to a raw scanned value.
-   *
-   * Typed snapshot access migrates internally; the raw storage scan bypasses
-   * that, so a stale stored version must be brought forward here or a schema
-   * change would drop live family members from every listing.
-   */
-  private migratedValue<T extends JsonObject, I extends JsonValue>(
-    token: SessionDocFamilyToken<T, I>,
-    stored: { version: number; value: JsonObject },
-  ): JsonObject {
-    if (stored.version === token.definition.version) return stored.value;
-    const { migrate } = token.definition;
-    if (migrate === undefined) {
-      throw new Error(`文档 ${token.definition.kind} 存储版本 ${stored.version} 缺少到版本 ${token.definition.version} 的迁移`);
-    }
-    let value = stored.value;
-    for (let version = stored.version; version < token.definition.version; version += 1) {
-      value = migrate(value, version);
-    }
-    return value;
   }
 
   async close(): Promise<void> {

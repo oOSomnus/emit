@@ -29,6 +29,7 @@ import { englishSettings, chineseSettings } from "./messages/settings.ts";
 import { englishSidebar, chineseSidebar } from "./messages/sidebar.ts";
 import { englishTheme, chineseTheme } from "./messages/theme.ts";
 import { englishWork, chineseWork } from "./messages/work.ts";
+import { englishWorkContexts, chineseWorkContexts } from "./messages/work-contexts.ts";
 
 export const englishMessages = {
   common: englishCommon,
@@ -40,6 +41,7 @@ export const englishMessages = {
   chat: englishChat,
   mail: englishMail,
   work: englishWork,
+  workContexts: englishWorkContexts,
   execution: englishExecution,
   approvals: englishApprovals,
   employees: englishEmployees,
@@ -61,6 +63,7 @@ export const chineseMessages: UiMessages = {
   chat: chineseChat,
   mail: chineseMail,
   work: chineseWork,
+  workContexts: chineseWorkContexts,
   execution: chineseExecution,
   approvals: chineseApprovals,
   employees: chineseEmployees,

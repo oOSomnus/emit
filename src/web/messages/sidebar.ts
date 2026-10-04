@@ -14,6 +14,9 @@ export const englishSidebar = {
   creatorChannel: "New channel",
   creatorDirect: "Start a direct message",
   channelPlaceholder: "Channel name",
+  initialMembers: "Initial members (optional)",
+  initialMembersHint: "Everyone can read channel messages; only explicitly addressed members reply. Members can be invited later.",
+  noWorkSelected: "Create or select a work before opening a conversation.",
   noEmployees: "(No employees yet)",
 };
 
@@ -28,5 +31,8 @@ export const chineseSidebar: SidebarMessages = {
   creatorChannel: "新频道",
   creatorDirect: "开始私信",
   channelPlaceholder: "频道名称",
+  initialMembers: "初始成员（可选）",
+  initialMembersHint: "全员可见，只有被点名的员工会回复。成员之后也可以邀请加入。",
+  noWorkSelected: "请先创建或选择一个工作，再新建会话。",
   noEmployees: "（还没有员工）",
 };

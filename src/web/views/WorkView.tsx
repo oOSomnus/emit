@@ -23,6 +23,11 @@ export function WorkView(): ReactNode {
   const { state, setError } = useApp();
   const { messages, text, locale } = useI18n();
   const [executionWorkId, setExecutionWorkId] = useState<string | undefined>(undefined);
+  const [workContextFilter, setWorkContextFilter] = useState("");
+  const visibleWork =
+    workContextFilter.length === 0
+      ? state.work
+      : state.work.filter((work) => work.workContextId === workContextFilter);
 
   const stop = (workId: string) => {
     void api
@@ -37,10 +42,22 @@ export function WorkView(): ReactNode {
           <h2>{messages.app.view.work}</h2>
           <p className="topic">
             {messages.work.topic(
-              state.work.length,
-              state.work.filter((work) => ACTIVE_WORK_STATUSES.includes(work.status)).length,
+              visibleWork.length,
+              visibleWork.filter((work) => ACTIVE_WORK_STATUSES.includes(work.status)).length,
             )}
           </p>
+        </div>
+        <div className="pane-header-actions">
+          <select
+            value={workContextFilter}
+            aria-label={messages.work.filterLabel}
+            onChange={(event) => setWorkContextFilter(event.target.value)}
+          >
+            <option value="">{messages.work.allWorkContexts}</option>
+            {state.workContexts.map((workContext) => (
+              <option key={workContext.id} value={workContext.id}>{workContext.name}</option>
+            ))}
+          </select>
         </div>
       </header>
       <div className="scroll">
@@ -49,6 +66,11 @@ export function WorkView(): ReactNode {
             <h2>{messages.work.emptyTitle}</h2>
             <p>{messages.work.emptyBody}</p>
           </div>
+        ) : visibleWork.length === 0 ? (
+          <div className="empty">
+            <h2>{messages.work.emptyFilteredTitle}</h2>
+            <p>{messages.work.emptyFilteredBody}</p>
+</div>
         ) : (
           <div className="work-table-wrap">
             <table className="work-table">
@@ -66,7 +88,7 @@ export function WorkView(): ReactNode {
                 </tr>
               </thead>
               <tbody>
-                {state.work.map((work) => (
+                {visibleWork.map((work) => (
                   <tr key={work.id}>
                     <td>
                       <WorkStatus status={work.status} />

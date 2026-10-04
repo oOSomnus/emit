@@ -13,24 +13,27 @@ import { join, resolve } from "node:path";
 import { EmitRuntime } from "./runtime.ts";
 import { McpManager } from "./mcp.ts";
 import { buildMailExtension, buildMailTasks, type MailTasks } from "./mail.ts";
+import { buildWorkDispatchExtension, buildWorkDispatchTask, type WorkDispatchTask } from "./work-dispatch.ts";
 import { installAllExtensions, reconcileWorks, type Resume } from "./work.ts";
 import { buildServer } from "./api.ts";
 import { invalidateStaleGrants } from "./approval/state.ts";
 import { attachProgress } from "./progress.ts";
 import { readApp } from "./workspace.ts";
+import { resolveWebRoot } from "./web-root.ts";
+import { registerEmbeddedPiModules } from "./pi-modules.ts";
 
 type Options = {
   dataDir: string;
   host: string;
   port: number;
-  webRoot: string;
+  webRoot: string | undefined;
 };
 
 function parseOptions(argv: readonly string[]): Options {
   let dataDir = process.env.EMIT_DATA_DIR ?? join(homedir(), ".emit");
   let host = process.env.EMIT_HOST ?? "127.0.0.1";
-  let port = Number(process.env.EMIT_PORT ?? 8787);
-  let webRoot = resolve(import.meta.dirname, "../../dist/web");
+  let port = Number(process.env.EMIT_PORT ?? 0);
+  let webRoot: string | undefined;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     const next = argv[index + 1];
@@ -54,24 +57,23 @@ function parseOptions(argv: readonly string[]): Options {
           "用法: emit [选项]",
           "  --data-dir <目录>   数据目录（默认 ~/.emit）",
           "  --host <地址>       监听地址（默认 127.0.0.1）",
-          "  --port <端口>       监听端口（默认 8787）",
-          "  --web-root <目录>   前端构建产物目录（默认 dist/web）",
+          "  --port <端口>       监听端口（默认自动分配，0 表示自动）",
+          "  --web-root <目录>   前端资源目录（默认 dist/web；二进制使用内嵌前端）",
           "",
         ].join("\n"),
       );
       process.exit(0);
     }
   }
-  if (!Number.isFinite(port) || port <= 0) port = 8787;
+  if (!Number.isFinite(port) || port < 0) port = 0;
   return { dataDir, host, port, webRoot };
 }
 
 async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
+  await registerEmbeddedPiModules();
   const runtime = await EmitRuntime.open({
     dataDir: options.dataDir,
-    host: options.host,
-    port: options.port,
   });
 
   const app = await readApp(runtime);
@@ -84,10 +86,17 @@ async function main(): Promise<void> {
   await mcp.connectEnabled().catch((error: unknown) => {
     process.stdout.write(`MCP 连接失败: ${error instanceof Error ? error.message : String(error)}\n`);
   });
-  const resume: Resume = { runtime, mcp, mail: undefined as unknown as MailTasks };
+  const resume: Resume = {
+    runtime,
+    mcp,
+    dispatch: undefined as unknown as WorkDispatchTask,
+    mail: undefined as unknown as MailTasks,
+  };
+  resume.dispatch = buildWorkDispatchTask(() => resume);
   resume.mail = buildMailTasks(() => resume);
   const installed = await installAllExtensions(resume);
   process.stdout.write(`已加载 ${installed} 位数字员工。\n`);
+  runtime.registry.install(buildWorkDispatchExtension(resume.dispatch));
   runtime.registry.install(buildMailExtension(resume.mail));
 
   runtime.emit({
@@ -103,9 +112,9 @@ async function main(): Promise<void> {
 
   const detachProgress = attachProgress(runtime);
 
-  const server = await buildServer({ resume, webRoot: options.webRoot });
-  await server.listen({ host: options.host, port: options.port });
-  const address = `http://${options.host}:${options.port}`;
+  const webRoot = resolveWebRoot(runtime.dataDir, options.webRoot);
+  const server = await buildServer({ resume, webRoot });
+  const address = await server.listen({ host: options.host, port: options.port });
   process.stdout.write(`Emit 已启动：${address}\n数据目录：${runtime.dataDir}\n`);
 
   let closing = false;
@@ -126,7 +135,7 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
-await main().catch((error: unknown) => {
+void main().catch((error: unknown) => {
   process.stderr.write(`启动失败: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
   process.exit(1);
 });

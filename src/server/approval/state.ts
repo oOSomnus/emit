@@ -28,9 +28,8 @@ import {
   ApprovalDoc,
   ConversationContextDoc,
   EmployeeDoc,
-  MailFlagDoc,
   RoomDoc,
-  RoomMessageEntry,
+  WorkContextDoc,
   WorkDoc,
 } from "../documents.ts";
 import type {
@@ -41,10 +40,11 @@ import type {
   ConversationContextRecord,
   EmployeeRecord,
   RoomRecord,
+  WorkContextRecord,
   WorkDirectoryScopeRecord,
   WorkRecord,
 } from "../documents.ts";
-import { toMessageDTO } from "../rooms.ts";
+import { readRoomMessageWindow } from "../rooms.ts";
 import type { MessageDTO } from "../../shared/contracts.ts";
 import type { EmitRuntime } from "../runtime.ts";
 import type {
@@ -82,6 +82,7 @@ export type ApprovalRequest = {
   /** Raw validated arguments are hashed; only their redacted JSON reaches review. */
   arguments: unknown;
   cwd: string;
+  directoryWorkContextId: string;
   directoryRoomId: string;
   directoryVersion: number;
   directoryPaths: string[];
@@ -114,6 +115,7 @@ export function approvalId(request: ApprovalRequest, configVersion: number, poli
     request.toolName,
     hashArguments(request.arguments),
     request.cwd,
+    request.directoryWorkContextId,
     request.directoryRoomId,
     String(request.directoryVersion),
     canonicalJson(request.directoryPaths),
@@ -151,6 +153,7 @@ export function toApprovalDTO(record: ApprovalRecord): ApprovalDTO {
     toolName: record.toolName,
     argumentsPreview: record.argumentsPreview,
     cwd: record.cwd,
+    directoryWorkContextId: record.directoryWorkContextId,
     directoryRoomId: record.directoryRoomId,
     directoryVersion: record.directoryVersion,
     directoryPaths: [...record.directoryPaths],
@@ -334,6 +337,7 @@ export async function gateToolCall(input: GateInput): Promise<GateDecision> {
     toolKind: input.toolKind,
     arguments: input.arguments,
     cwd: scopeResult.cwd,
+    directoryWorkContextId: scope.workContextId,
     directoryRoomId: scope.roomId,
     directoryVersion: scope.version,
     directoryPaths: [...scope.paths],
@@ -354,6 +358,7 @@ export async function gateToolCall(input: GateInput): Promise<GateDecision> {
     doc.argsHash = hashArguments(request.arguments);
     doc.argumentsPreview = argumentsPreview(request.arguments);
     doc.cwd = request.cwd;
+    doc.directoryWorkContextId = request.directoryWorkContextId;
     doc.directoryRoomId = request.directoryRoomId;
     doc.directoryVersion = request.directoryVersion;
     doc.directoryPaths = [...request.directoryPaths];
@@ -533,55 +538,6 @@ function textFromParts(parts: readonly { type: string; text?: string }[], omitte
     else if (part.type === "image" || part.type === "thinking") omitted.count += 1;
   }
   return text.join("\n");
-}
-
-type RoomMessageWindow = {
-  messages: MessageDTO[];
-  trigger?: MessageDTO;
-  omittedBeforeTrigger: number;
-};
-
-async function roomMessageWindow(
-  runtime: EmitRuntime,
-  room: RoomRecord,
-  sourceEntryId: string,
-): Promise<RoomMessageWindow> {
-  const conversation = await runtime.harness.conversation(room.conversationId as ConversationId, runtime.ctx);
-  if (conversation === undefined) return { messages: [], omittedBeforeTrigger: 0 };
-  const sourceId = sourceEntryId.length > 0 ? (Number(sourceEntryId) as EntryId) : undefined;
-  const page = await conversation.entries(
-    sourceId !== undefined ? { maxEntryId: sourceId } : {},
-    sourceId !== undefined ? 42 : 40,
-    undefined,
-    runtime.ctx,
-  );
-  const messages: MessageDTO[] = [];
-  for (const entry of page.items) {
-    if (!RoomMessageEntry.is(entry) || entry.data.mail?.draft === true) continue;
-    const entryId = String(entry.id);
-    const flagKey = `${room.id}|${entryId}`;
-    const flags = await runtime.readFamily(MailFlagDoc, flagKey, { key: flagKey });
-    if (flags?.active === false) continue;
-    const message = toMessageDTO(entry, flags);
-    if (message === undefined) continue;
-    message.roomId = room.id;
-    messages.push(message);
-  }
-  messages.reverse();
-  if (sourceId === undefined) {
-    return {
-      messages: messages.slice(-40),
-      omittedBeforeTrigger: Math.max(0, messages.length - 40),
-    };
-  }
-  const triggerIndex = messages.findIndex((message) => message.id === sourceEntryId);
-  if (triggerIndex < 0) return { messages: [], omittedBeforeTrigger: 0 };
-  const previousStart = Math.max(0, triggerIndex - 40);
-  return {
-    messages: [...messages.slice(previousStart, triggerIndex), messages[triggerIndex]!],
-    trigger: messages[triggerIndex],
-    omittedBeforeTrigger: previousStart,
-  };
 }
 
 async function approvalContext(input: GateContext): Promise<ApprovalContextResult> {
@@ -776,7 +732,7 @@ async function approvalContext(input: GateContext): Promise<ApprovalContextResul
           ? input.room
           : await input.runtime.readFamily(RoomDoc, current.roomId, { id: current.roomId });
       if (room !== undefined) {
-        const window = await roomMessageWindow(input.runtime, room, current.sourceEntryId);
+        const window = await readRoomMessageWindow(input.runtime, room, current.sourceEntryId);
         if (triggerMessage === undefined && window.trigger !== undefined) {
           triggerMessage = window.trigger;
           originRoom = room;
@@ -838,7 +794,7 @@ async function approvalContext(input: GateContext): Promise<ApprovalContextResul
 
   let recentContext: ApprovalContextEntry[] = [];
   if (triggerMessage !== undefined && originRoom !== undefined) {
-    const window = await roomMessageWindow(input.runtime, originRoom, triggerMessage.id);
+    const window = await readRoomMessageWindow(input.runtime, originRoom, triggerMessage.id);
     omitted.count += window.omittedBeforeTrigger;
     recentContext = window.messages.map((message) => ({
       source: "room-message",
@@ -875,7 +831,7 @@ async function approvalContext(input: GateContext): Promise<ApprovalContextResul
   };
 }
 
-/** Run the configured reviewer and atomically persist a result only for a current room scope. */
+/** Run the configured reviewer and persist a result only for a current work-context directory scope. */
 async function evaluateAndPersist(input: GateContext, record: ApprovalRecord): Promise<ApprovalRecord> {
   const { runtime, employee, app, request, binding } = input;
   const config = toEvaluatorConfig(app);
@@ -986,20 +942,28 @@ export function approvalVerdict(outcome: EvaluationOutcome): ApprovalVerdict {
   return { action: "block", reason: appMessages.approval.unknownReason };
 }
 
-function currentDirectoryVersion(
-  room: RoomRecord | undefined,
-  directoryRoomId: string,
+function workContextDirectoryMatchesSnapshot(
+  workContext: WorkContextRecord | undefined,
+  directoryWorkContextId: string,
   directoryVersion: number,
   directoryPaths: readonly string[],
 ): boolean {
   return (
-    room !== undefined &&
-    room.id === directoryRoomId &&
-    room.directories !== undefined &&
-    room.directories.version === directoryVersion &&
-    room.directories.paths.length === directoryPaths.length &&
-    room.directories.paths.every((path, index) => path === directoryPaths[index])
+    workContext !== undefined &&
+    workContext.id === directoryWorkContextId &&
+    workContext.directories !== undefined &&
+    workContext.directories.version === directoryVersion &&
+    workContext.directories.paths.length === directoryPaths.length &&
+    workContext.directories.paths.every((path, index) => path === directoryPaths[index])
   );
+}
+
+/**
+ * A work-context draft that was never written looks identical to its `initial`
+ * shape; creation always stamps `createdAt`, so a zero there means "absent".
+ */
+function liveWorkContext(record: WorkContextRecord | undefined): WorkContextRecord | undefined {
+  return record === undefined || record.createdAt === 0 ? undefined : record;
 }
 
 function invalidateApproval(doc: ApprovalRecord, currentVersion: number): void {
@@ -1016,7 +980,7 @@ function invalidateApproval(doc: ApprovalRecord, currentVersion: number): void {
   doc.timeline.push(timelineEntry(now, appMessages.approval.actorSystem, reason));
 }
 
-/** Persist only if the room's exact directory authorization is still current. */
+/** Persist only if the work context's exact directory authorization is still current. */
 async function persistOutcome(
   input: GateContext,
   record: ApprovalRecord,
@@ -1025,14 +989,16 @@ async function persistOutcome(
   const updated = await input.runtime.harness.commit(async (tx) => {
     const doc = await tx.doc(ApprovalDoc, record.id, { id: record.id });
     if (doc.status !== "evaluating") return snapshotApproval(doc);
-    let room: RoomRecord | undefined;
-    if (doc.directoryRoomId.length > 0) {
-      room = await tx.doc(RoomDoc, doc.directoryRoomId, { id: doc.directoryRoomId });
+    let workContext: WorkContextRecord | undefined;
+    if (doc.directoryWorkContextId.length > 0) {
+      workContext = liveWorkContext(
+        await tx.doc(WorkContextDoc, doc.directoryWorkContextId, { id: doc.directoryWorkContextId }),
+      );
     }
     if (
-      !currentDirectoryVersion(room, doc.directoryRoomId, doc.directoryVersion, doc.directoryPaths)
+      !workContextDirectoryMatchesSnapshot(workContext, doc.directoryWorkContextId, doc.directoryVersion, doc.directoryPaths)
     ) {
-      invalidateApproval(doc, room?.directories?.version ?? 0);
+      invalidateApproval(doc, workContext?.directories?.version ?? 0);
       return snapshotApproval(doc);
     }
 
@@ -1162,22 +1128,27 @@ export function toEvaluatorConfig(app: AppRecord): ApprovalEvaluatorConfig {
   };
 }
 
-type ApprovalDirectoryBinding = Pick<ApprovalRequest, "directoryRoomId" | "directoryVersion" | "directoryPaths">;
+type ApprovalDirectoryBinding = Pick<
+  ApprovalRequest,
+  "directoryWorkContextId" | "directoryVersion" | "directoryPaths"
+>;
 
-async function directoryScopeMatchesCurrentRoom(
+async function directoryScopeMatchesCurrentWorkContext(
   runtime: EmitRuntime,
   request: ApprovalDirectoryBinding,
 ): Promise<{ matches: boolean; currentVersion: number }> {
-  if (request.directoryRoomId.length === 0) return { matches: false, currentVersion: 0 };
-  const room = await runtime.readFamily(RoomDoc, request.directoryRoomId, { id: request.directoryRoomId });
+  if (request.directoryWorkContextId.length === 0) return { matches: false, currentVersion: 0 };
+  const workContext = liveWorkContext(
+    await runtime.readFamily(WorkContextDoc, request.directoryWorkContextId, { id: request.directoryWorkContextId }),
+  );
   return {
-    matches: currentDirectoryVersion(
-      room,
-      request.directoryRoomId,
+    matches: workContextDirectoryMatchesSnapshot(
+      workContext,
+      request.directoryWorkContextId,
       request.directoryVersion,
       request.directoryPaths,
     ),
-    currentVersion: room?.directories?.version ?? 0,
+    currentVersion: workContext?.directories?.version ?? 0,
   };
 }
 
@@ -1193,21 +1164,23 @@ async function invalidateApprovalForDirectoryChange(
     ) {
       return snapshotApproval(approval);
     }
-    const room =
-      approval.directoryRoomId.length > 0
-        ? await tx.doc(RoomDoc, approval.directoryRoomId, { id: approval.directoryRoomId })
+    const workContext =
+      approval.directoryWorkContextId.length > 0
+        ? liveWorkContext(
+            await tx.doc(WorkContextDoc, approval.directoryWorkContextId, { id: approval.directoryWorkContextId }),
+          )
         : undefined;
     if (
-      currentDirectoryVersion(
-        room,
-        approval.directoryRoomId,
+      workContextDirectoryMatchesSnapshot(
+        workContext,
+        approval.directoryWorkContextId,
         approval.directoryVersion,
         approval.directoryPaths,
       )
     ) {
       return snapshotApproval(approval);
     }
-    invalidateApproval(approval, room?.directories?.version ?? 0);
+    invalidateApproval(approval, workContext?.directories?.version ?? 0);
     return snapshotApproval(approval);
   }, runtime.ctx);
   if (updated.status === "invalidated") runtime.emit({ type: "approval", approval: toApprovalDTO(updated) });
@@ -1240,7 +1213,7 @@ async function waitForHuman(
     const snapshot = await runtime.readFamily(ApprovalDoc, id, { id });
     const status = snapshot?.status ?? "pending-human";
     if (status !== "pending-human" && status !== "evaluating") return status;
-    const directory = await directoryScopeMatchesCurrentRoom(runtime, request);
+    const directory = await directoryScopeMatchesCurrentWorkContext(runtime, request);
     if (!directory.matches) {
       const invalidated = await invalidateApprovalForDirectoryChange(runtime, id);
       return invalidated.status;
@@ -1269,7 +1242,7 @@ export async function decideApproval(
   const existing = await findApproval(runtime, id);
   if (existing === undefined) return { ok: false, message: appMessages.approval.notFoundWithId(id) };
   if (existing.status === "pending-human") {
-    const directory = await directoryScopeMatchesCurrentRoom(runtime, existing);
+    const directory = await directoryScopeMatchesCurrentWorkContext(runtime, existing);
     if (!directory.matches) {
       const invalidated = await invalidateApprovalForDirectoryChange(runtime, id);
       return { ok: false, message: blockedMessage(invalidated) };
@@ -1321,7 +1294,7 @@ export async function recordExecution(
 
 /**
  * Atomically validate and claim one grant immediately before execution. The
- * running state is committed with the current room-directory check, so a
+ * running state is committed with the current work-context directory check, so a
  * concurrent directory change either invalidates this grant first or sees an
  * already-started tool that is allowed to finish.
  */
@@ -1335,7 +1308,10 @@ export async function verifyGrant(
   if ((await findApproval(runtime, id)) === undefined) {
     return { allow: false, message: "没有找到本次调用的批准记录，已阻止执行" };
   }
-  if ((await runtime.readFamily(RoomDoc, request.directoryRoomId, { id: request.directoryRoomId })) === undefined) {
+  const liveContext = liveWorkContext(
+    await runtime.readFamily(WorkContextDoc, request.directoryWorkContextId, { id: request.directoryWorkContextId }),
+  );
+  if (liveContext === undefined) {
     const invalidated = await invalidateApprovalForDirectoryChange(runtime, id);
     return { allow: false, message: blockedMessage(invalidated).text };
   }
@@ -1347,6 +1323,7 @@ export async function verifyGrant(
     if (
       record.argsHash !== hashArguments(request.arguments) ||
       record.cwd !== request.cwd ||
+      record.directoryWorkContextId !== request.directoryWorkContextId ||
       record.directoryRoomId !== request.directoryRoomId ||
       record.directoryVersion !== request.directoryVersion ||
       record.directoryPaths.length !== request.directoryPaths.length ||
@@ -1373,16 +1350,18 @@ export async function verifyGrant(
       };
     }
 
-    const room = await tx.doc(RoomDoc, request.directoryRoomId, { id: request.directoryRoomId });
+    const workContext = liveWorkContext(
+      await tx.doc(WorkContextDoc, request.directoryWorkContextId, { id: request.directoryWorkContextId }),
+    );
     if (
-      !currentDirectoryVersion(
-        room,
-        request.directoryRoomId,
+      !workContextDirectoryMatchesSnapshot(
+        workContext,
+        request.directoryWorkContextId,
         request.directoryVersion,
         request.directoryPaths,
       )
     ) {
-      invalidateApproval(record, room.directories.version);
+      invalidateApproval(record, workContext?.directories?.version ?? 0);
       return {
         decision: { allow: false, message: blockedMessage(record).text } as GrantDecision,
         updated: snapshotApproval(record),
@@ -1427,9 +1406,9 @@ export async function cancelApprovalsForWork(runtime: EmitRuntime, workId: strin
 }
 
 /**
- * Retire unconsumed approvals whose policy or room-directory snapshot is stale.
- * This also repairs the brief gap between a directory save and its route-level
- * grant-invalidation call after a process restart.
+ * Retire unconsumed approvals whose policy or work-directory snapshot is
+ * stale. This also repairs the brief gap between a work-context save and its
+ * route-level grant-invalidation call after a process restart.
  */
 export async function invalidateStaleGrants(runtime: EmitRuntime, policyVersion: number): Promise<number> {
   const eligible = (await listApprovals(runtime)).filter(
@@ -1439,13 +1418,17 @@ export async function invalidateStaleGrants(runtime: EmitRuntime, policyVersion:
   );
   let invalidated = 0;
   for (const record of eligible) {
-    const room =
-      record.directoryRoomId.length > 0
-        ? await runtime.readFamily(RoomDoc, record.directoryRoomId, { id: record.directoryRoomId })
+    const workContext =
+      record.directoryWorkContextId.length > 0
+        ? liveWorkContext(
+            await runtime.readFamily(WorkContextDoc, record.directoryWorkContextId, {
+              id: record.directoryWorkContextId,
+            }),
+          )
         : undefined;
-    const directoryIsCurrent = currentDirectoryVersion(
-      room,
-      record.directoryRoomId,
+    const directoryIsCurrent = workContextDirectoryMatchesSnapshot(
+      workContext,
+      record.directoryWorkContextId,
       record.directoryVersion,
       record.directoryPaths,
     );
@@ -1459,7 +1442,7 @@ export async function invalidateStaleGrants(runtime: EmitRuntime, policyVersion:
         return;
       }
       if (!directoryIsCurrent) {
-        invalidateApproval(doc, room?.directories?.version ?? 0);
+        invalidateApproval(doc, workContext?.directories?.version ?? 0);
       } else {
         const now = Date.now();
         const reason = appMessages.approval.policyUpdated(policyVersion);
@@ -1482,15 +1465,15 @@ export async function invalidateStaleGrants(runtime: EmitRuntime, policyVersion:
   return invalidated;
 }
 
-/** Invalidate every unconsumed approval tied to an older version of one room. */
-export async function invalidateRoomDirectoryGrants(
+/** Invalidate every unconsumed approval tied to an older version of one work context. */
+export async function invalidateWorkContextDirectoryGrants(
   runtime: EmitRuntime,
-  roomId: string,
+  workContextId: string,
   currentVersion: number,
 ): Promise<number> {
   const candidates = (await listApprovals(runtime)).filter(
     (record) =>
-      record.directoryRoomId === roomId &&
+      record.directoryWorkContextId === workContextId &&
       record.directoryVersion < currentVersion &&
       ["approved", "pending-human", "evaluating"].includes(record.status) &&
       record.executionState === "not-started",
@@ -1499,7 +1482,7 @@ export async function invalidateRoomDirectoryGrants(
   for (const record of candidates) {
     const updated = await runtime.updateFamily(ApprovalDoc, record.id, { id: record.id }, (doc) => {
       if (
-        doc.directoryRoomId !== roomId ||
+        doc.directoryWorkContextId !== workContextId ||
         doc.directoryVersion >= currentVersion ||
         !["approved", "pending-human", "evaluating"].includes(doc.status) ||
         doc.executionState !== "not-started"

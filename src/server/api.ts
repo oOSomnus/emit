@@ -10,7 +10,16 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
-import type { ApiErrorBody, MailboxItemDTO, ServerEvent, RoomDirectoryDraftDTO, RoomDirectoryPatchDTO } from "../shared/contracts.ts";
+import type {
+  ApiErrorBody,
+  MailboxItemDTO,
+  ServerEvent,
+  WorkContextDraftDTO,
+  WorkContextPatchDTO,
+  WorkNoteCreateDTO,
+  WorkNoteDeleteDTO,
+  WorkNotePatchDTO,
+} from "../shared/contracts.ts";
 import type { EmitRuntime } from "./runtime.ts";
 import type { McpManager } from "./mcp.ts";
 import {
@@ -28,12 +37,13 @@ import {
 import { deleteSkill, importSkillDirectory, listSkills, toSkillDTO, type SkillImportResult } from "./skills.ts";
 import { toMcpServerDTO } from "./mcp.ts";
 import { ProviderAuthError } from "./provider-auth.ts";
-import { fromError, type AppText } from "./messages.ts";
+import { appMessages, fromError, type AppText } from "./messages.ts";
 import { apiMessages } from "./messages/api.ts";
 import { approvalMessages } from "./messages/approval.ts";
 import {
-  appendRoomMessage,
+  appendRoomMessageIn,
   createRoom,
+  ensureEmployeeDm,
   findRoom,
   listRoomDTOs,
   listRoomMessages,
@@ -41,24 +51,44 @@ import {
   messageData,
   roomDTOWithUnread,
   setMailFlag,
+  toMessageDTO,
   toRoomDTO,
   type MailAddress,
-  updateRoomDirectories,
-  RoomDirectoryError,
+  RoomError,
   isSentMailEntry,
+  updateRoomMembers,
 } from "./rooms.ts";
 import {
-  findWork,
   installEmployeeExtension,
+  isTerminal,
   listWorks,
   reconcileWorks,
-  startWork,
   stopWork,
   type Resume,
 } from "./work.ts";
 import { sendQueuedMail } from "./mail.ts";
+import { sendQueuedMessage } from "./channel-messages.ts";
 import { WorkExecutionCursorError, readWorkExecution } from "./work-execution.ts";
-import { findApproval, invalidateStaleGrants, invalidateRoomDirectoryGrants, listApprovals, toApprovalDTO } from "./approval/state.ts";
+import {
+  findApproval,
+  invalidateStaleGrants,
+  invalidateWorkContextDirectoryGrants,
+  listApprovals,
+  toApprovalDTO,
+} from "./approval/state.ts";
+import {
+  createWorkContext,
+  createWorkNote,
+  deleteWorkNote,
+  findWorkContext,
+  findWorkNote,
+  listWorkContexts,
+  resolveUserNoteSource,
+  toWorkContextDTO,
+  updateWorkContext,
+  updateWorkNote,
+  WorkContextError,
+} from "./work-contexts.ts";
 import { toWorkDTO } from "./dto.ts";
 import { ApprovalDoc, EmployeeDoc, type ApprovalRecord } from "./documents.ts";
 
@@ -88,7 +118,9 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   app.setErrorHandler((error, _request, reply) => {
     const message = fromError(error);
     if (error instanceof ValidationError) return reply.code(400).send(messageBody(message));
-    if (error instanceof RoomDirectoryError) return reply.code(error.status).send(messageBody(message));
+    if (error instanceof RoomError || error instanceof WorkContextError) {
+      return reply.code(error.status).send(messageBody(message));
+    }
     if (error instanceof ProviderAuthError) return reply.code(error.status).send(messageBody(message));
     return reply.code(500).send(messageBody(message));
   });
@@ -107,6 +139,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
       app: toAppDTO(appRecord),
       employees: (await employees()).map(toEmployeeDTO),
       rooms: await listRoomDTOs(runtime, "user"),
+      workContexts: (await listWorkContexts(runtime)).map(toWorkContextDTO),
       work: await workDTOs(),
       approvals: (await listApprovals(runtime)).map(toApprovalDTO),
       skills: (await listSkills(runtime)).map(toSkillDTO),
@@ -116,6 +149,95 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
       storagePath: runtime.storagePath,
     };
   });
+  // -------------------------------------------------------- work contexts
+
+  app.get("/api/work-contexts", async () => ({
+    workContexts: (await listWorkContexts(runtime)).map(toWorkContextDTO),
+  }));
+
+  app.post("/api/work-contexts", async (request) =>
+    toWorkContextDTO(await createWorkContext(runtime, request.body as WorkContextDraftDTO)),
+  );
+
+  app.get("/api/work-contexts/:id", async (request) => {
+    const { id } = request.params as { id: string };
+    const workContext = await findWorkContext(runtime, id);
+    if (workContext === undefined) throw new WorkContextError(404, appMessages.workContexts.notFound(id));
+    return toWorkContextDTO(workContext);
+  });
+
+  app.patch("/api/work-contexts/:id", async (request) => {
+    const { id } = request.params as { id: string };
+    const patch = request.body as WorkContextPatchDTO;
+    if (!Number.isInteger(patch?.expectedVersion)) {
+      throw new WorkContextError(400, appMessages.workContexts.expectedVersionNotAnInteger);
+    }
+    const before = await findWorkContext(runtime, id);
+    if (before === undefined) throw new WorkContextError(404, appMessages.workContexts.notFound(id));
+    const updated = await updateWorkContext(runtime, id, patch);
+    if (before.directories.version !== updated.directories.version) {
+      await invalidateWorkContextDirectoryGrants(runtime, id, updated.directories.version);
+    }
+    return toWorkContextDTO(updated);
+  });
+  app.post("/api/work-contexts/:id/notes", async (request) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as WorkNoteCreateDTO;
+    if (!Number.isInteger(body?.expectedVersion)) {
+      throw new WorkContextError(400, appMessages.workContexts.expectedVersionNotAnInteger);
+    }
+    if ((await findWorkContext(runtime, id)) === undefined) {
+      throw new WorkContextError(404, appMessages.workContexts.notFound(id));
+    }
+    if (body.source !== undefined && (typeof body.source !== "object" || body.source === null)) {
+      throw new WorkContextError(400, appMessages.workContexts.noteSourceInvalid);
+    }
+    const source = await resolveUserNoteSource(runtime, id, body?.source);
+    return createWorkNote(runtime, id, {
+      title: body?.title,
+      body: body?.body,
+      expectedVersion: body.expectedVersion,
+      ...source,
+    });
+  });
+  app.patch("/api/work-contexts/:id/notes/:noteId", async (request) => {
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const body = request.body as WorkNotePatchDTO;
+    if (!Number.isInteger(body?.expectedVersion)) {
+      throw new WorkContextError(400, appMessages.workContexts.expectedVersionNotAnInteger);
+    }
+    const workContext = await findWorkContext(runtime, id);
+    if (workContext === undefined) throw new WorkContextError(404, appMessages.workContexts.notFound(id));
+    const current = findWorkNote(workContext, noteId);
+    if (current === undefined) throw new WorkContextError(404, appMessages.workContexts.noteNotFound(noteId));
+    return updateWorkNote(runtime, id, noteId, {
+      title: body?.title,
+      body: body?.body,
+      expectedVersion: body.expectedVersion,
+      authorId: "user",
+      sourceRoomId: current.sourceRoomId,
+      sourceEntryId: current.sourceEntryId,
+      sourceWorkId: current.sourceWorkId,
+    });
+  });
+  app.delete("/api/work-contexts/:id/notes/:noteId", async (request) => {
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const body = request.body as WorkNoteDeleteDTO;
+    if (!Number.isInteger(body?.expectedVersion)) {
+      throw new WorkContextError(400, appMessages.workContexts.expectedVersionNotAnInteger);
+    }
+    return toWorkContextDTO(await deleteWorkNote(runtime, id, noteId, body.expectedVersion));
+  });
+
+  app.get("/api/work-contexts/:id/notes/:noteId", async (request) => {
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const workContext = await findWorkContext(runtime, id);
+    if (workContext === undefined) throw new WorkContextError(404, appMessages.workContexts.notFound(id));
+    const note = findWorkNote(workContext, noteId);
+    if (note === undefined) throw new WorkContextError(404, appMessages.workContexts.noteNotFound(noteId));
+    return note;
+  });
+
 
   app.get("/api/events", (request, reply) => {
     reply.raw.writeHead(200, {
@@ -217,8 +339,9 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
       kind?: "channel" | "dm" | "mail";
       name?: string;
       topic?: string;
+      workContextId?: unknown;
       employeeId?: string;
-      directories?: RoomDirectoryDraftDTO;
+      memberIds?: string[];
     };
     if (body?.kind !== "channel" && body?.kind !== "dm" && body?.kind !== "mail") {
       return reply.code(400).send(messageBody(apiMessages.invalidRoomKind));
@@ -226,36 +349,71 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
     if (typeof body.name !== "string" || body.name.trim().length === 0) {
       return reply.code(400).send(messageBody(apiMessages.missingRoomName));
     }
-    if (body.employeeId !== undefined && body.employeeId.length > 0) {
+    if (body.memberIds !== undefined && !Array.isArray(body.memberIds)) {
+      return reply.code(400).send(messageBody(appMessages.rooms.membersNotAnArray));
+    }
+    if (body.memberIds?.some((memberId) => typeof memberId !== "string")) {
+      return reply.code(400).send(messageBody(appMessages.rooms.messageUnexpectedType));
+    }
+    if (typeof body.workContextId !== "string" || body.workContextId.length === 0) {
+      return reply.code(400).send(messageBody(appMessages.rooms.workContextMissing("")));
+    }
+    const workContextId = body.workContextId;
+    if (body.kind === "dm") {
+      if (typeof body.employeeId !== "string" || body.employeeId.length === 0) {
+        throw new RoomError(400, appMessages.rooms.dmParticipantsInvalid);
+      }
       const employee = await findEmployee(runtime, body.employeeId);
       if (employee === undefined) return reply.code(404).send(messageBody(apiMessages.employeeNotFound));
-      if (body.kind === "dm") {
-        const existing = (await listRoomDTOs(runtime, "user")).find(
-          (room) => room.employeeId === body.employeeId && room.kind === "dm",
-        );
-        if (existing !== undefined) return existing;
+      if (!employee.enabled) {
+        return reply.code(400).send(messageBody(appMessages.workContexts.employeeDisabled(employee.name)));
       }
-      return toRoomDTO(
-        await createRoom(runtime, {
-          kind: body.kind,
-          name: body.name,
-          topic: body.topic ?? "",
-          employeeId: body.employeeId,
-          memberIds: [body.employeeId],
-          directories: body.directories,
-        }),
-      );
+      const { room } = await ensureEmployeeDm(runtime, {
+        workContextId,
+        participantIds: ["user", body.employeeId],
+        name: body.name,
+        topic: body.topic ?? "",
+        employeeId: body.employeeId,
+      });
+      return toRoomDTO(room);
     }
-    return toRoomDTO(await createRoom(runtime, { kind: body.kind, name: body.name, topic: body.topic ?? "", directories: body.directories }));
+    return toRoomDTO(
+      await createRoom(runtime, {
+        kind: body.kind,
+        name: body.name,
+        topic: body.topic ?? "",
+        workContextId,
+        memberIds: body.kind === "channel" ? body.memberIds : [],
+      }),
+    );
   });
 
-  app.patch("/api/rooms/:id/directories", async (request) => {
+  app.patch("/api/rooms/:id/members", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const room = await updateRoomDirectories(runtime, id, request.body as RoomDirectoryPatchDTO);
-    await invalidateRoomDirectoryGrants(runtime, room.id, room.directories.version);
-    const dto = await roomDTOWithUnread(runtime, room, "user");
-    runtime.emit({ type: "room", room: dto });
-    return dto;
+    const body = request.body as { memberIds?: unknown; expectedVersion?: unknown };
+    if (!Array.isArray(body?.memberIds)) {
+      return reply.code(400).send(messageBody(appMessages.rooms.membersNotAnArray));
+    }
+    if (!body.memberIds.every((memberId) => typeof memberId === "string")) {
+      return reply.code(400).send(messageBody(appMessages.rooms.messageUnexpectedType));
+    }
+    if (!Number.isInteger(body.expectedVersion)) {
+      return reply.code(400).send(messageBody(appMessages.rooms.expectedVersionNotAnInteger));
+    }
+    const result = await updateRoomMembers(
+      runtime,
+      id,
+      body.memberIds,
+      body.expectedVersion,
+    );
+    if (result.removed.length > 0) {
+      const removed = new Set(result.removed);
+      const activeWorks = (await listWorks(runtime)).filter(
+        (work) => work.roomId === id && removed.has(work.employeeId) && !isTerminal(work.status),
+      );
+      for (const work of activeWorks) await stopWork(resume, work.id);
+    }
+    return roomDTOWithUnread(runtime, result.room, "user");
   });
 
   app.get("/api/rooms/:id/messages", async (request, reply) => {
@@ -270,23 +428,43 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
    *
    * A mail names its own recipients: every employee in To is asked to work on
    * it (asynchronously, one work each), the people in CC only receive a copy,
-   * and a draft is stored without addressing anyone at all.
+   * and a draft is stored without waking any recipients.
    */
   app.post("/api/rooms/:id/messages", async (request, reply) => {
     const { id } = request.params as { id: string };
     const room = await findRoom(runtime, id);
     if (room === undefined) return reply.code(404).send(messageBody(apiMessages.roomNotFound));
     const body = request.body as {
-      body?: string;
-      employeeId?: string;
+      body?: unknown;
+      recipientIds?: unknown;
+      mentionAll?: unknown;
       subject?: string;
       to?: string[];
       cc?: string[];
       draft?: boolean;
       inReplyTo?: string;
     };
-    const text = typeof body?.body === "string" ? body.body.trim() : "";
+    if (typeof body?.body !== "string") {
+      return reply.code(400).send(messageBody(appMessages.rooms.messageUnexpectedType));
+    }
+    const text = body.body.trim();
     if (text.length === 0) return reply.code(400).send(messageBody(apiMessages.emptyMessageBody));
+    if (
+      body.recipientIds !== undefined &&
+      (!Array.isArray(body.recipientIds) || !body.recipientIds.every((recipientId) => typeof recipientId === "string"))
+    ) {
+      return reply.code(400).send(messageBody(appMessages.rooms.messageUnexpectedType));
+    }
+    if (body.mentionAll !== undefined && typeof body.mentionAll !== "boolean") {
+      return reply.code(400).send(messageBody(appMessages.rooms.messageUnexpectedType));
+    }
+    if (
+      room.kind === "mail" &&
+      ((body.to !== undefined && (!Array.isArray(body.to) || !body.to.every((recipient) => typeof recipient === "string"))) ||
+        (body.cc !== undefined && (!Array.isArray(body.cc) || !body.cc.every((recipient) => typeof recipient === "string"))))
+    ) {
+      return reply.code(400).send(messageBody(appMessages.rooms.messageUnexpectedType));
+    }
 
     const appRecord = await readApp(runtime);
     const author = {
@@ -303,32 +481,40 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
           (body.inReplyTo.length > 0 && !(await isSentMailEntry(runtime, room, body.inReplyTo))))) {
           return reply.code(400).send(messageBody(apiMessages.inReplyToNotSentMail));
         }
-        const addressedDraft = await resolveMailAddresses(runtime, body?.to ?? [], body?.cc ?? []);
+        const addressedDraft = await resolveMailAddresses(runtime, body.to ?? [], body.cc ?? []);
         if ("text" in addressedDraft) return reply.code(400).send(messageBody(addressedDraft));
-        const message = await appendRoomMessage(
-          runtime,
-          room,
-          messageData({
-            author,
-            body: text,
-            mail: mailEnvelope({
-              subject: subject.length > 0 ? subject : room.name,
-              ...addressedDraft,
-              sent: false,
-              draft: true,
-              inReplyTo: body.inReplyTo,
-            }),
+        const data = messageData({
+          author,
+          body: text,
+          mail: mailEnvelope({
+            subject: subject.length > 0 ? subject : room.name,
+            ...addressedDraft,
+            sent: false,
+            draft: true,
+            inReplyTo: body.inReplyTo,
           }),
+        });
+        const entry = await runtime.harness.commit(
+          (tx) => appendRoomMessageIn(tx, room, data),
+          runtime.ctx,
         );
-        return { message };
+        const message = toMessageDTO(entry);
+        if (message === undefined) throw new RoomError(400, appMessages.rooms.messageUnexpectedType);
+        message.roomId = room.id;
+        runtime.emit({ type: "message", roomId: room.id, message });
+        const savedRoom = await findRoom(runtime, room.id);
+        if (savedRoom !== undefined) {
+          runtime.emit({ type: "room", room: await roomDTOWithUnread(runtime, savedRoom) });
+        }
+        return { message, workIds: [] };
       }
       if (body.inReplyTo !== undefined && (typeof body.inReplyTo !== "string" ||
         (body.inReplyTo.length > 0 && !(await isSentMailEntry(runtime, room, body.inReplyTo))))) {
         return reply.code(400).send(messageBody(apiMessages.inReplyToNotSentMail));
       }
-      const addressed = await resolveMailAddresses(runtime, body?.to ?? [], body?.cc ?? []);
+      const addressed = await resolveMailAddresses(runtime, body.to ?? [], body.cc ?? []);
       if ("text" in addressed) return reply.code(400).send(messageBody(addressed));
-      const { message, workIds } = await sendQueuedMail(resume, {
+      return sendQueuedMail(resume, {
         room: { id: room.id },
         data: messageData({
           author,
@@ -342,70 +528,165 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
           }),
         }),
       });
-      return { message, ...(workIds.length > 0 ? { workId: workIds[0] } : {}), workIds };
     }
 
-    const message = await appendRoomMessage(runtime, room, messageData({ author, body: text }));
-    const targetId = typeof body.employeeId === "string" && body.employeeId.length > 0 ? body.employeeId : room.employeeId;
-    if (targetId.length === 0) return { message };
-    try {
-      const work = await startWork(resume, {
-        roomId: room.id,
-        employeeId: targetId,
-        intent: text,
-        kind: "message",
-        sourceEntryId: message.id,
-      });
-      return { message, workId: work.id };
-    } catch (error) {
-      const reason = fromError(error);
-      return {
-        message,
-        error: reason.text,
-        ...(reason.localized === undefined ? {} : { errorLocalized: reason.localized }),
-      };
-    }
+    return sendQueuedMessage(resume, {
+      roomId: room.id,
+      author,
+      body: text,
+      recipientIds: body.recipientIds as string[] | undefined,
+      mentionAll: body.mentionAll as boolean | undefined,
+    });
   });
 
-  /** Send a stored draft: it becomes a delivered mail and its To wakes up. */
+  /** Send a stored draft or compose a new mail thread. */
   app.post("/api/rooms/:id/mail-send", async (request, reply) => {
     const { id } = request.params as { id: string };
     const room = await findRoom(runtime, id);
-    if (room === undefined) return reply.code(404).send(messageBody(apiMessages.roomNotFound));
-    const body = request.body as { entryId?: string };
-    if (typeof body?.entryId !== "string" || body.entryId.length === 0) {
+    const body = request.body as {
+      entryId?: unknown;
+      workContextId?: string;
+      subject?: string;
+      body?: unknown;
+      to?: unknown;
+      cc?: unknown;
+      draft?: boolean;
+      inReplyTo?: string;
+    };
+    if (typeof body?.entryId === "string" && body.entryId.length > 0) {
+      if (room === undefined) return reply.code(404).send(messageBody(apiMessages.roomNotFound));
+      const messages = await listRoomMessages(runtime, room);
+      const draft = messages.find((message) => message.id === body.entryId);
+      if (draft?.mail === undefined) return reply.code(404).send(messageBody(apiMessages.draftNotFound));
+      if (!draft.mail.draft) return reply.code(409).send(messageBody(apiMessages.mailAlreadySent));
+      const appRecord = await readApp(runtime);
+      return sendQueuedMail(resume, {
+        room: { id: room.id },
+        data: messageData({
+          author: {
+            type: "user",
+            id: "user",
+            name: appRecord.userName.length > 0 ? appRecord.userName : "你",
+            address: appRecord.userAddress,
+          },
+          body: draft.body,
+          mail: mailEnvelope({
+            subject: draft.mail.subject,
+            to: draft.mail.to,
+            cc: draft.mail.cc,
+            recipients: draft.mail.recipients,
+            copies: draft.mail.copies,
+            sent: true,
+            inReplyTo: draft.mail.inReplyTo,
+          }),
+        }),
+        retireDraftId: draft.id,
+      });
+    }
+    if (body?.entryId !== undefined) {
       return reply.code(400).send(messageBody(apiMessages.missingDraftId));
     }
-    const messages = await listRoomMessages(runtime, room);
-    const draft = messages.find((message) => message.id === body.entryId);
-    if (draft?.mail === undefined) return reply.code(404).send(messageBody(apiMessages.draftNotFound));
-    if (!draft.mail.draft) return reply.code(409).send(messageBody(apiMessages.mailAlreadySent));
-
+    if (body?.draft !== undefined && typeof body.draft !== "boolean") {
+      return reply.code(400).send(messageBody(appMessages.rooms.messageUnexpectedType));
+    }
+    if (body?.subject !== undefined && typeof body.subject !== "string") {
+      return reply.code(400).send(messageBody(appMessages.rooms.messageUnexpectedType));
+    }
+    if (body?.inReplyTo !== undefined && typeof body.inReplyTo !== "string") {
+      return reply.code(400).send(messageBody(apiMessages.inReplyToNotSentMail));
+    }
+    if (room === undefined && body?.workContextId !== undefined && typeof body.workContextId !== "string") {
+      return reply.code(400).send(messageBody(appMessages.rooms.messageUnexpectedType));
+    }
+    if (room === undefined && typeof body?.workContextId !== "string") {
+      return reply.code(400).send(messageBody(appMessages.rooms.workContextMissing("")));
+    }
+    if (room !== undefined && room.kind !== "mail") {
+      return reply.code(400).send(messageBody(apiMessages.invalidRoomKind));
+    }
+    if (typeof body?.body !== "string") {
+      return reply.code(400).send(messageBody(appMessages.rooms.messageUnexpectedType));
+    }
+    const text = body.body.trim();
+    if (text.length === 0) return reply.code(400).send(messageBody(apiMessages.emptyMessageBody));
+    if (
+      (body.to !== undefined && (!Array.isArray(body.to) || !body.to.every((recipient) => typeof recipient === "string"))) ||
+      (body.cc !== undefined && (!Array.isArray(body.cc) || !body.cc.every((recipient) => typeof recipient === "string")))
+    ) {
+      return reply.code(400).send(messageBody(appMessages.rooms.messageUnexpectedType));
+    }
+    const to = (body.to ?? []) as string[];
+    const cc = (body.cc ?? []) as string[];
+    const addressed = await resolveMailAddresses(runtime, to, cc);
+    if ("text" in addressed) return reply.code(400).send(messageBody(addressed));
+    if (
+      room !== undefined &&
+      body.inReplyTo !== undefined &&
+      (typeof body.inReplyTo !== "string" ||
+        (body.inReplyTo.length > 0 && !(await isSentMailEntry(runtime, room, body.inReplyTo))))
+    ) {
+      return reply.code(400).send(messageBody(apiMessages.inReplyToNotSentMail));
+    }
+    if (room === undefined && body.inReplyTo !== undefined && body.inReplyTo.length > 0) {
+      return reply.code(400).send(messageBody(apiMessages.inReplyToNotSentMail));
+    }
     const appRecord = await readApp(runtime);
-    const { message, workIds } = await sendQueuedMail(resume, {
-      room: { id: room.id },
-      data: messageData({
-        author: {
-          type: "user",
-          id: "user",
-          name: appRecord.userName.length > 0 ? appRecord.userName : "你",
-          address: appRecord.userAddress,
-        },
-        body: draft.body,
-        mail: mailEnvelope({
-          subject: draft.mail.subject,
-          to: draft.mail.to,
-          cc: draft.mail.cc,
-          recipients: draft.mail.recipients,
-          copies: draft.mail.copies,
-          sent: true,
-          inReplyTo: draft.mail.inReplyTo,
-        }),
-      }),
-      retireDraftId: draft.id,
+    const author = {
+      type: "user" as const,
+      id: "user",
+      name: appRecord.userName.length > 0 ? appRecord.userName : "你",
+      address: appRecord.userAddress,
+    };
+    const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+    const envelope = mailEnvelope({
+      subject: subject.length > 0 ? subject : room?.name ?? "",
+      ...addressed,
+      sent: body.draft !== true,
+      draft: body.draft === true,
+      inReplyTo: body.inReplyTo,
     });
-    return { message, workIds, ...(workIds.length > 0 ? { workId: workIds[0] } : {}) };
+    const data = messageData({ author, body: text, mail: envelope });
+    if (body.draft === true) {
+      const draftRoom =
+        room ??
+        (await createRoom(runtime, {
+          kind: "mail",
+          name: envelope.subject,
+          workContextId: typeof body.workContextId === "string" ? body.workContextId : "",
+          employeeId: "",
+          memberIds: [...new Set([...addressed.recipients, ...addressed.copies])],
+        }));
+      const entry = await runtime.harness.commit(
+        (tx) => appendRoomMessageIn(tx, draftRoom, data),
+        runtime.ctx,
+      );
+      const message = toMessageDTO(entry);
+      if (message === undefined) throw new RoomError(400, appMessages.rooms.messageUnexpectedType);
+      message.roomId = draftRoom.id;
+      runtime.emit({ type: "message", roomId: draftRoom.id, message });
+      const savedRoom = await findRoom(runtime, draftRoom.id);
+      if (savedRoom !== undefined) {
+        runtime.emit({ type: "room", room: await roomDTOWithUnread(runtime, savedRoom) });
+      }
+      return { message, workIds: [] };
+    }
+    return sendQueuedMail(resume, {
+      room:
+        room === undefined
+          ? {
+              create: {
+                kind: "mail",
+                name: envelope.subject,
+                memberIds: [...new Set([...addressed.recipients, ...addressed.copies])],
+                workContextId: typeof body.workContextId === "string" ? body.workContextId : "",
+                employeeId: "",
+              },
+            }
+          : { id: room.id },
+      data,
+    });
   });
+
 
   app.post("/api/rooms/:id/mail-flag", async (request, reply) => {
     const { id } = request.params as { id: string };

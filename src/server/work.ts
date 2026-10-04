@@ -34,40 +34,43 @@ import type { Draft } from "@earendil-works/chord/delta";
 import type { EmitRuntime } from "./runtime.ts";
 import {
   AppDoc,
-  RoomMessageEntry,
-  type MailEnvelope,
-  type RoomMessageData,
   CollaborationDoc,
   ConversationContextDoc,
   EmployeeDoc,
   MailSendReceiptDoc,
   RoomDoc,
+  RoomMessageEntry,
   WorkDoc,
   type EmployeeRecord,
+  type MailEnvelope,
   type MailSendReceiptRecord,
+  type RoomMessageData,
   type RoomRecord,
-  type WorkRecord,
   type WorkDirectoryScopeRecord,
+  type WorkRecord,
 } from "./documents.ts";
 import type { McpManager } from "./mcp.ts";
 import type { MailTasks } from "./mail.ts";
+import type { WorkDispatchTask } from "./work-dispatch.ts";
 import { buildEmployeeExtension, toThinkingLevel } from "./agents.ts";
 import { cancelApprovalsForWork, type ToolRisk } from "./approval/state.ts";
 import {
   ROOM_PAGE_SIZE,
+  ROOM_WINDOW_LIMIT,
   RoomDirectoryError,
   appendRoomMessageIn,
   appendRoomMessage,
-  createRoom,
-  findEmployeeDm,
+  ensureEmployeeDm,
   findRoom,
   isSentMailEntry,
   mailEnvelope,
   messageData,
-  toMessageDTO,
+  readRoomMessageWindow,
   roomDTOWithUnread,
+  toMessageDTO,
   type MailAddress,
 } from "./rooms.ts";
+import { buildMessageTools, sendQueuedMessage } from "./channel-messages.ts";
 import { toWorkDTO } from "./dto.ts";
 import { listEmployees, resolveEmployee } from "./workspace.ts";
 import { listSkills } from "./skills.ts";
@@ -84,24 +87,30 @@ import type { MessageDTO } from "../shared/contracts.ts";
 import { AppError, rawText, type AppText } from "./app-text.ts";
 import { appMessages } from "./messages.ts";
 import { noticeOf } from "./messages/work.ts";
+import { findWorkContext, workContextDirectorySnapshot } from "./work-contexts.ts";
 
 export type WorkKind = "message" | "mail" | "delegation";
 
 export type StartWorkInput = {
   roomId: string;
   employeeId: string;
+  /** The work every run of this message belongs to. */
+  workContextId: string;
   intent: string;
   kind: WorkKind;
   sourceEntryId: string;
   parentWorkId?: string;
   rootWorkId?: string;
   depth?: number;
+  /** Conversation that owns the dispatch task; the room's, or the caller's for a delegation. */
+  dispatchConversationId?: number;
 };
 
-/** One process's shared handles; the mail tasks resolve lazily to break the import cycle. */
+/** One process's shared handles; the task sets resolve lazily to break the import cycle. */
 export type Resume = {
   runtime: EmitRuntime;
   mcp: McpManager;
+  dispatch: WorkDispatchTask;
   mail: MailTasks;
 };
 
@@ -113,7 +122,8 @@ async function extensionFor(
 ): Promise<ReturnType<typeof buildEmployeeExtension>> {
   const { runtime, mcp } = resume0;
   const skills = await listSkills(runtime);
-  const collaboration = parts?.collaboration ?? buildCollaborationTools(resume0, employee);
+  const collaboration =
+    parts?.collaboration ?? [...buildMessageTools(resume0, employee), ...buildCollaborationTools(resume0, employee)];
   const mcpTools = mcp.toolsFor(employee, runtime);
   return buildEmployeeExtension({
     runtime,
@@ -152,9 +162,13 @@ export async function installAllExtensions(resume0: Resume): Promise<number> {
 }
 
 /**
- * Create the work record: the validations that decide whether the request is
- * acceptable at all, then the queued record. No conversation and no run —
- * starting is a separate, restartable step.
+ * Enqueue one work item and its durable dispatch task in a single commit.
+ *
+ * The validations decide whether the request is acceptable at all; the record
+ * is written `queued` and the `emit.work-dispatch` task that starts it is
+ * created in the same commit, so "the request was accepted" and "the employee
+ * will run" are the same fact. No conversation and no run happen here: the
+ * scheduler's two-phase task does that, restartably.
  */
 export async function createQueuedWork(resume0: Resume, input: StartWorkInput): Promise<WorkRecord> {
   const { runtime } = resume0;
@@ -177,17 +191,27 @@ export async function createQueuedWork(resume0: Resume, input: StartWorkInput): 
   }
   const workId = `wk_${randomUUID().replace(/-/g, "").slice(0, 20)}`;
   const directoryScope = await directoriesForWork(runtime, input);
-  const work = await runtime.harness.commit(
-    (tx) =>
-      createQueuedWorkIn(tx, {
-        ...input,
-        depth,
-        id: workId,
-        directoryScope,
-        now: Date.now(),
-      }),
-    runtime.ctx,
-  );
+  const dispatchConversationId = input.dispatchConversationId;
+  await runtime.harness.commit(async (tx) => {
+    await createQueuedWorkIn(tx, {
+      ...input,
+      depth,
+      id: workId,
+      directoryScope,
+      now: Date.now(),
+    });
+    const taskId = await tx.createTask(
+      resume0.dispatch,
+      { workId },
+      {
+        ownership: { kind: "conversation" },
+        ...(dispatchConversationId !== undefined ? { conversationId: dispatchConversationId as ConversationId } : {}),
+        background: true,
+      },
+    );
+    const doc = await tx.doc(WorkDoc, workId, { id: workId });
+    doc.dispatchTaskId = String(taskId);
+  }, runtime.ctx);
   const record = await runtime.readFamily(WorkDoc, workId, { id: workId });
   if (record === undefined) throw new AppError(appMessages.work.workWriteFailed(workId));
   runtime.emit({ type: "work", work: toWorkDTO(record, employee.name, await roomName(runtime, input.roomId)) });
@@ -208,6 +232,7 @@ export async function createQueuedWorkIn(
   doc.id = input.id;
   doc.employeeId = input.employeeId;
   doc.roomId = input.roomId;
+  doc.workContextId = input.workContextId;
   doc.kind = input.kind;
   doc.status = "queued";
   doc.sourceEntryId = input.sourceEntryId;
@@ -290,13 +315,14 @@ export async function ensureWorkConversation(resume0: Resume, workId: string): P
     effort: employee.executionModel.effort,
   });
   if (modelProblem !== undefined) throw new AppError(appMessages.work.modelUnavailable(employee.name, modelProblem));
-  // The directories authorized when the mail was received are what this run
-  // may use; a version that no longer matches the room must fail loudly here.
-  if (work.directoryScope.roomId.length > 0) {
-    const room = await findRoom(runtime, work.directoryScope.roomId);
-    if (room === undefined || room.directories === undefined || room.directories.version !== work.directoryScope.version) {
-      throw new AppError(appMessages.work.directoryChanged());
-    }
+  // The directories authorized when the work was queued are what this run may
+  // use; the work context must still carry exactly that version.
+  const workContext = await findWorkContext(runtime, work.workContextId);
+  if (workContext === undefined || workContext.directories.version !== work.directoryScope.version) {
+    throw new AppError(appMessages.work.directoryChanged());
+  }
+  if (!(await workStillAuthorized(runtime, work))) {
+    throw new AppError(appMessages.work.removedFromConversation(employee.name));
   }
   const extension = await installEmployeeExtension(resume0, employee);
   const conversationId = await runtime.harness.commit(
@@ -332,7 +358,8 @@ export async function startQueuedWork(resume0: Resume, workId: string): Promise<
     mailSource = { entryId: work.sourceEntryId, message: source };
   }
 
-  const history = work.roomId.length > 0 ? await roomHistory(runtime, work.roomId, work.sourceEntryId) : [];
+  const history =
+    work.roomId.length > 0 ? await roomHistory(runtime, work.roomId, work.sourceEntryId, work.employeeId) : [];
   const prompt = renderWorkInput(history, work.intent, work.kind, mailSource);
   const submission = await conversation.submit(
     { type: "input", content: prompt, requestId: `work:${workId}` },
@@ -356,45 +383,52 @@ export async function startQueuedWork(resume0: Resume, workId: string): Promise<
   return work;
 }
 
-/** Create the work item and start the run, for the paths that send and run together. */
-export async function startWork(resume0: Resume, input: StartWorkInput): Promise<WorkRecord> {
-  const work = await createQueuedWork(resume0, input);
-  return startQueuedWork(resume0, work.id);
-}
-
 async function roomName(runtime: EmitRuntime, roomId: string): Promise<string> {
   if (roomId.length === 0) return "";
   const room = await runtime.readFamily(RoomDoc, roomId, { id: roomId });
   return room?.name ?? "";
 }
 
-/** The room's messages before the one that started this work. */
-async function roomHistory(runtime: EmitRuntime, roomId: string, sourceEntryId: string): Promise<MessageDTO[]> {
+/**
+ * Whether one work's employee may still act in the room it belongs to.
+ *
+ * Membership changes take effect immediately: a channel member removed while a
+ * run is executing, or an employee disabled mid-run, must not read the room's
+ * content or publish a result. Work with no room (a delegation) is authorized
+ * by its own record.
+ */
+export async function workStillAuthorized(runtime: EmitRuntime, work: WorkRecord): Promise<boolean> {
+  const employee = await runtime.readFamily(EmployeeDoc, work.employeeId, { id: work.employeeId });
+  if (employee === undefined || !employee.enabled) return false;
+  if (work.roomId.length === 0) return true;
+  const room = await runtime.readFamily(RoomDoc, work.roomId, { id: work.roomId });
+  if (room === undefined) return false;
+  if (room.kind === "channel") return room.memberIds.includes(work.employeeId);
+  if (room.kind === "dm") return room.dmParticipantIds.includes(work.employeeId);
+  if (work.sourceEntryId.length === 0) return false;
+  const source = await sourceMessage(runtime, room, work.sourceEntryId);
+  return source?.mail !== null && source?.mail !== undefined
+    ? source.mail.recipients.includes(work.employeeId) || source.mail.copies.includes(work.employeeId)
+    : false;
+}
+
+/**
+ * The room's visible messages before the one that started this work.
+ *
+ * The window is bounded to the source entry, so a busy room after the request
+ * can never leak into a run that started earlier, and it is filtered by what
+ * this employee may see: a private message of two other people is not history.
+ */
+async function roomHistory(
+  runtime: EmitRuntime,
+  roomId: string,
+  sourceEntryId: string,
+  employeeId: string,
+): Promise<MessageDTO[]> {
   const room = await runtime.readFamily(RoomDoc, roomId, { id: roomId });
   if (room === undefined) return [];
-  const conversation = await runtime.harness.conversation(room.conversationId as ConversationId, runtime.ctx);
-  if (conversation === undefined) return [];
-  const page = await conversation.entries({}, HISTORY_MESSAGE_LIMIT, undefined, runtime.ctx);
-  const messages: MessageDTO[] = [];
-  for (const entry of page.items) {
-    const id = String(entry.id);
-    if (id === sourceEntryId) continue;
-    if (!RoomMessageEntry.is(entry)) continue;
-    const data = entry.data;
-    messages.push({
-      id,
-      roomId,
-      author: {
-        type: data.authorType,
-        id: data.authorId,
-        name: data.authorName,
-        ...(data.address.length > 0 ? { address: data.address } : {}),
-      },
-      body: data.body,
-      createdAt: data.createdAt,
-    });
-  }
-  return messages.reverse();
+  const window = await readRoomMessageWindow(runtime, room, sourceEntryId, employeeId);
+  return window.messages.filter((message) => message.id !== sourceEntryId).slice(-HISTORY_MESSAGE_LIMIT);
 }
 
 /** Text of a final assistant answer, in the order the model produced it. */
@@ -486,6 +520,13 @@ async function deliverAnswer(
   if (work === undefined || isTerminal(work.status)) return undefined;
   const employee = await runtime.readFamily(EmployeeDoc, work.employeeId, { id: work.employeeId });
   if (employee === undefined) return undefined;
+  // A membership change takes effect immediately: an employee removed from the
+  // room while running must not publish this answer there, and must not read
+  // any more of the work's content.
+  if (!(await workStillAuthorized(runtime, work))) {
+    await stopForRemoval(resume0, work, employee.name);
+    return undefined;
+  }
 
   if (work.kind === "delegation") {
     await deliverToParent(runtime, work, employee, text, context);
@@ -621,7 +662,8 @@ async function sourceMessage(
   if (conversation === undefined) return undefined;
   const page = await conversation.entries({}, ROOM_PAGE_SIZE, undefined, runtime.ctx);
   const entry = page.items.find((item) => String(item.id) === entryId);
-  return entry !== undefined && RoomMessageEntry.is(entry) ? entry.data : undefined;
+  if (entry === undefined || !RoomMessageEntry.is(entry)) return undefined;
+  return entry.data as RoomMessageData;
 }
 
 async function mailSubject(runtime: EmitRuntime, room: RoomRecord): Promise<string> {
@@ -721,11 +763,11 @@ export async function stopWork(resume0: Resume, workId: string): Promise<WorkRec
   const employee = await runtime.readFamily(EmployeeDoc, updated.employeeId, { id: updated.employeeId });
   runtime.emit({ type: "work", work: toWorkDTO(updated, employee?.name ?? "", await roomName(runtime, updated.roomId)) });
 
-  // A queued mail has a live dispatch task that must not submit a run for a
+  // A queued work has a live dispatch task that must not submit a run for a
   // stopped work: abort it and wait for its terminal receipt first, so the
   // late-submit window is closed before anything else is unwound.
-  if (updated.mailDispatchTaskId.length > 0) {
-    const dispatchTaskId = Number(updated.mailDispatchTaskId) as TaskId;
+  if (updated.dispatchTaskId.length > 0) {
+    const dispatchTaskId = Number(updated.dispatchTaskId) as TaskId;
     const dispatch = await runtime.harness.getTask(dispatchTaskId, runtime.ctx);
     if (dispatch !== undefined && dispatch.state.status !== "terminal") {
       await runtime.harness.abortTask(dispatchTaskId, runtime.ctx);
@@ -785,25 +827,31 @@ export async function reconcileWorks(resume0: Resume): Promise<number> {
 
   let failed = 0;
   for (const work of pending) {
-    // A mail recipient's start is carried by a durable dispatch task. While it
-    // is live the native scheduler owns the work; a blocked, missing, or
-    // failed task is an explicit failure instead of a silent hang.
-    if (work.kind === "mail" && work.status === "queued" && work.mailDispatchTaskId.length > 0) {
-      const dispatch = inspectionTasks.get(work.mailDispatchTaskId);
-      if (dispatch !== undefined && dispatch.state.kind !== "blocked" && dispatch.state.kind !== "completing") continue;
-      const record = await runtime.harness.getTask(Number(work.mailDispatchTaskId) as TaskId, runtime.ctx);
-      const outcome = record !== undefined && record.state.status === "terminal" ? record.state.outcome : undefined;
+    // A queued or mid-dispatch work is owned by its durable dispatch task.
+    // The two-phase task creates the conversation before it submits the
+    // prompt, so a crash in that window leaves a "running" work whose only
+    // owner is the task; the native scheduler resumes it and must not be
+    // preempted by the liveness check below.
+    if (work.dispatchTaskId.length > 0 && (work.status === "queued" || work.status === "running")) {
+      const dispatch = inspectionTasks.get(work.dispatchTaskId);
+      const record = await runtime.harness.getTask(Number(work.dispatchTaskId) as TaskId, runtime.ctx);
+      const terminal = record !== undefined && record.state.status === "terminal";
+      if (!terminal) {
+        if (dispatch !== undefined && dispatch.state.kind !== "blocked" && dispatch.state.kind !== "completing") continue;
+        if (dispatch === undefined || dispatch.state.kind === "blocked") {
+          await markFailed(resume0, work, appMessages.work.dispatchLost());
+          failed += 1;
+          continue;
+        }
+        continue;
+      }
+      const outcome = record?.state.outcome;
       if (outcome?.status === "failed") {
         await markFailed(resume0, work, rawText(outcome.error.message));
         failed += 1;
         continue;
       }
-      if (dispatch === undefined || dispatch.state.kind === "blocked") {
-        await markFailed(resume0, work, appMessages.work.mailDispatchLost());
-        failed += 1;
-        continue;
-      }
-      continue;
+      // The dispatch task completed: the work's own liveness decides below.
     }
     // Waiting for another employee's reply is a valid idle state, not an
     // interrupted run; the awaited child works decide what happens next.
@@ -865,6 +913,35 @@ async function brokenAwait(
     if (submission === undefined) return appMessages.work.awaitReplyNotSubmitted(child.id);
   }
   return undefined;
+}
+
+/**
+ * Stop a running work because its employee lost access to the room.
+ *
+ * The answer is not published: the employee is no longer a participant of this
+ * conversation, and their output must not appear in it. The work record keeps
+ * the outcome visible to the user.
+ */
+async function stopForRemoval(resume0: Resume, work: WorkRecord, employeeName: string): Promise<void> {
+  const { runtime } = resume0;
+  const reason = appMessages.work.removedFromConversation(employeeName);
+  const updated = await runtime.updateFamily(WorkDoc, work.id, { id: work.id }, (doc) => {
+    if (isTerminal(doc.status)) return;
+    doc.status = "stopped";
+    doc.finishedAt = Date.now();
+    doc.error = reason.text;
+    doc.errorLocalized = reason.localized;
+    doc.awaitedMailWorkIds = [];
+  });
+  runtime.emit({
+    type: "work",
+    work: toWorkDTO(updated, employeeName, await roomName(runtime, updated.roomId)),
+  });
+  await cancelApprovalsForWork(runtime, work.id);
+  if (work.conversationId !== 0) {
+    const conversation = await runtime.harness.conversation(work.conversationId as ConversationId, runtime.ctx);
+    if (conversation !== undefined) await conversation.abort(runtime.ctx).catch(() => undefined);
+  }
 }
 
 /**
@@ -940,41 +1017,14 @@ export async function markFailed(resume0: Resume, work: WorkRecord, reason: AppT
   );
 }
 
-/** The collaboration tools every employee has, bound to that employee. */
+/**
+ * The collaboration tools the message layer does not own: mail and delegation.
+ *
+ * `send_message`, `invite_to_channel`, and the shared-note tools live in
+ * `channel-messages.ts` beside the send path they use.
+ */
 export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecord): ToolRegistration[] {
   const { runtime } = resume0;
-
-  const sendMessage = defineTool({
-    name: "send_message",
-    description: toolTextResources.send_message.description,
-    parameters: Type.Object({
-      to: Type.String({ description: toolTextResources.send_message.parameters.to }),
-      body: Type.String({ description: toolTextResources.send_message.parameters.body }),
-    }),
-    execute: async (args, api, context) => {
-      const target = await resolveTarget(runtime, args.to);
-      if (target === undefined) return toolError(`找不到员工 ${args.to}`);
-      const room = await ensureEmployeeDm(resume0, employee, target);
-      const message = await appendRoomMessage(
-        runtime,
-        room,
-        messageData({
-          author: { type: "employee", id: employee.id, name: employee.name, address: employee.address },
-          body: args.body,
-        }),
-      );
-      const work = await startWork(resume0, {
-        roomId: room.id,
-        employeeId: target.id,
-        intent: args.body,
-        kind: "message",
-        sourceEntryId: message.id,
-        rootWorkId: await rootOf(runtime, api, context),
-        depth: await depthOf(runtime, api, context),
-      });
-      return toolText(renderToolResult("send-message-ok", { name: target.name, workId: work.id }));
-    },
-  });
 
   const sendMail = defineTool({
     name: "send_mail",
@@ -1020,8 +1070,10 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
         }
       }
       const sourceRoom = await findRoom(runtime, caller.directoryScope.roomId);
-      if (sourceRoom === undefined || sourceRoom.directories?.version !== caller.directoryScope.version) {
-        return toolError("会话工作目录已变更，请停止并重新发送任务");
+      if (sourceRoom === undefined) return toolError(appMessages.work.sourceRoomMissing().text);
+      const sourceContext = await findWorkContext(runtime, caller.workContextId);
+      if (sourceContext === undefined || sourceContext.directories.version !== caller.directoryScope.version) {
+        return toolError(appMessages.work.directoryChanged().text);
       }
       const continuation = sourceRoom.kind === "mail" && args.newSession !== true;
       if (!continuation && args.inReplyTo) return toolError("新邮件会话不能引用旧会话的 inReplyTo");
@@ -1053,9 +1105,9 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
                   create: {
                     kind: "mail",
                     name: args.subject,
+                    workContextId: caller.workContextId,
                     employeeId: target.id,
                     memberIds: [employee.id, target.id],
-                    directories: { paths: [], defaultPath: "", version: 1 },
                   },
                 },
           data: messageData({
@@ -1113,17 +1165,21 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
         return toolError(`不能把任务交办给本任务的上级 ${target.name}，这会形成循环`);
       }
       if (!(await reserveWake(runtime, rootWorkId, app.collaboration.maxCrossEmployeeWakes))) {
-        return toolError(`本次协作已达到跨员工唤醒上限（${app.collaboration.maxCrossEmployeeWakes} 次）`);
+        return toolError(appMessages.work.wakeLimit(app.collaboration.maxCrossEmployeeWakes).text);
       }
-      const work = await startWork(resume0, {
+      const callerWork = await findWork(runtime, currentWork);
+      if (callerWork === undefined) return toolError(appMessages.work.workNotFound(currentWork).text);
+      const work = await createQueuedWork(resume0, {
         roomId: "",
         employeeId: target.id,
+        workContextId: callerWork.workContextId,
         intent: args.task,
         kind: "delegation",
         sourceEntryId: "",
         parentWorkId: currentWork,
         rootWorkId,
         depth,
+        dispatchConversationId: api.conversationId,
       });
       return toolText(
         renderToolResult("delegate-ok", { name: target.name, workId: work.id }),
@@ -1131,7 +1187,7 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
     },
   });
 
-  return [sendMessage, sendMail, delegate];
+  return [sendMail, delegate];
 }
 
 /** True when `employeeId` already appears among this work's ancestors. */
@@ -1192,37 +1248,30 @@ async function resolveTarget(runtime: EmitRuntime, token: string): Promise<Emplo
   return resolveEmployee(await listEmployees(runtime), token);
 }
 
-/** Find or create the target's direct-message conversation. */
-async function ensureEmployeeDm(resume0: Resume, from: EmployeeRecord, target: EmployeeRecord): Promise<RoomRecord> {
-  const existing = await findEmployeeDm(resume0.runtime, target.id);
-  if (existing !== undefined) return existing;
-  const app = await resume0.runtime.readSession(AppDoc);
-  return createRoom(resume0.runtime, {
-    kind: "dm",
-    name: `${from.name} ↔ ${target.name}`,
-    topic: `私信：${target.name}（${app.workspaceName}）`,
-    employeeId: target.id,
-    memberIds: [from.id, target.id],
-  });
-}
-
+/**
+ * The directory snapshot a new work may use.
+ *
+ * A child inherits its parent's snapshot verbatim — a delegation must not see
+ * directories the parent never had — while a root work snapshots its work
+ * context's current configuration. Either way the snapshot's version must
+ * still be the context's live version, so a concurrent directory save fails
+ * the send instead of silently widening the run.
+ */
 async function directoriesForWork(runtime: EmitRuntime, input: StartWorkInput): Promise<WorkDirectoryScopeRecord> {
   const parent = input.parentWorkId ? await findWork(runtime, input.parentWorkId) : undefined;
-  if (!input.roomId) {
-    if (!parent?.directoryScope?.roomId) throw new AppError(appMessages.work.delegationSourceMissing());
-    const room = await findRoom(runtime, parent.directoryScope.roomId);
-    if (!room?.directories || room.directories.version !== parent.directoryScope.version) {
+  if (parent !== undefined) {
+    if (parent.workContextId !== input.workContextId) {
+      throw new AppError(appMessages.work.directoryChanged());
+    }
+    const context = await findWorkContext(runtime, parent.workContextId);
+    if (context === undefined || context.directories.version !== parent.directoryScope.version) {
       throw new AppError(appMessages.work.directoryChanged());
     }
     return { ...parent.directoryScope, paths: [...parent.directoryScope.paths] };
   }
-  const room = await findRoom(runtime, input.roomId);
-  if (!room) throw new AppError(appMessages.work.sourceRoomMissing());
-  if (!room.directories) throw new AppError(appMessages.rooms.directoriesMissingRecreate);
-  if (parent?.directoryScope?.roomId === room.id && parent.directoryScope.version !== room.directories.version) {
-    throw new AppError(appMessages.work.directoryChanged());
-  }
-  return { roomId: room.id, ...room.directories, paths: [...room.directories.paths] };
+  const context = await findWorkContext(runtime, input.workContextId);
+  if (context === undefined) throw new AppError(appMessages.workContexts.notFound(input.workContextId));
+  return workContextDirectorySnapshot(context, input.roomId);
 }
 
 async function mailParent(runtime: EmitRuntime, caller: WorkRecord, room: RoomRecord): Promise<string> {

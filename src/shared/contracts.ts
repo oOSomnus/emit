@@ -148,26 +148,101 @@ export type EmployeeDraftDTO = {
 
 export type RoomKind = "channel" | "dm" | "mail";
 
-export type RoomDirectoriesDTO = {
+/** One work context's authorized directories and the version they were saved at. */
+export type DirectoryConfigDTO = {
   paths: string[];
   defaultPath: string;
   version: number;
 };
 
-export type RoomDirectoryDraftDTO = {
+export type DirectoryDraftDTO = {
   paths: string[];
   defaultPath: string;
 };
 
-export type RoomDirectoryPatchDTO = RoomDirectoryDraftDTO & { expectedVersion: number };
+/** One reference a work context carries: a local file or a URL. */
+export type WorkResourceDTO = {
+  id: string;
+  kind: "file" | "url";
+  name: string;
+  location: string;
+};
+
+/** The editable resource shape; a missing id means "create a new reference". */
+export type WorkResourceDraftDTO = Omit<WorkResourceDTO, "id"> & { id?: string };
+
+/** One shared note of a work context, with the real message it came from. */
+export type WorkNoteDTO = {
+  id: string;
+  title: string;
+  body: string;
+  /** "user" or the employee id that last wrote it. */
+  authorId: string;
+  sourceRoomId: string;
+  sourceEntryId: string;
+  sourceWorkId: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** Note metadata without the body; bodies are fetched by id on demand. */
+export type WorkNoteSummaryDTO = Omit<WorkNoteDTO, "body">;
+
+/** One first-class work context: goal, instructions, directories, resources, notes. */
+export type WorkContextDTO = {
+  id: string;
+  name: string;
+  goal: string;
+  instructions: string;
+  directories: DirectoryConfigDTO;
+  resources: WorkResourceDTO[];
+  notes: WorkNoteSummaryDTO[];
+  version: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type WorkContextDraftDTO = {
+  name: string;
+  goal?: string;
+  instructions?: string;
+  directories?: DirectoryDraftDTO;
+  resources?: WorkResourceDraftDTO[];
+};
+
+export type WorkContextPatchDTO = Partial<WorkContextDraftDTO> & { expectedVersion: number };
+
+export type WorkNoteCreateDTO = {
+  title: string;
+  body: string;
+  expectedVersion: number;
+  /** The real room message this note was saved from, when it came from one. */
+  source?: { roomId: string; entryId: string };
+};
+
+export type WorkNotePatchDTO = {
+  title: string;
+  body: string;
+  expectedVersion: number;
+};
+
+export type WorkNoteDeleteDTO = { expectedVersion: number };
+
+export type WorkNoteResponseDTO = { note: WorkNoteDTO; workContext: WorkContextDTO };
 
 export type RoomDTO = {
   id: string;
   kind: RoomKind;
   name: string;
   topic: string;
+  /** The work context this conversation is fixed to; never rebound. */
+  workContextId: string;
+  /** Channel members: the employees that may be addressed in this room. */
   memberIds: string[];
-  directories: RoomDirectoriesDTO;
+  /** Bumped on every membership change; the concurrency token for members. */
+  membershipVersion: number;
+  /** For DMs: the two sorted participants ("user" or an employee id). */
+  dmParticipantIds: string[];
   /** Employee id for DMs; absent otherwise. */
   employeeId?: string;
   createdAt: number;
@@ -217,6 +292,14 @@ export type ToolActivityDTO = {
   output?: string;
 };
 
+/**
+ * The wake set of one group message, as it was resolved at send time.
+ *
+ * A plain channel message stores an empty set: everyone can read it, nobody
+ * was started by it.
+ */
+export type MessageAddressingDTO = { recipientIds: string[]; mentionAll: boolean };
+
 export type MessageDTO = {
   id: string;
   roomId: string;
@@ -227,6 +310,8 @@ export type MessageDTO = {
   createdAt: number;
   /** Work id when this message started or carries employee work. */
   workId?: string;
+  /** The employees this group message was addressed to, when it was routed. */
+  addressing?: MessageAddressingDTO;
   mail?: MailMetaDTO;
   /** Marks a system notice, such as a stopped run or an interrupted tool. */
   notice?: boolean;
@@ -247,6 +332,8 @@ export type WorkDTO = {
   employeeName: string;
   roomId: string;
   roomName: string;
+  /** The work context this run belongs to. */
+  workContextId: string;
   kind: "message" | "mail" | "delegation";
   status: WorkStatusDTO;
   /** Message that started this work, when it came from a room. */
@@ -265,8 +352,8 @@ export type WorkDTO = {
   answer?: string;
   tools?: ToolActivityDTO[];
   usage?: { input: number; output: number; cost: number };
-  /** Durable task that will start this queued mail; present for queued mail. */
-  mailDispatchTaskId?: string;
+  /** Durable task that will start this queued work; present for queued work. */
+  dispatchTaskId?: string;
   /** Durable task that feeds a related reply back into this work. */
   mailResumeTaskId?: string;
   /** Child works whose replies this work waits for before answering. */
@@ -386,6 +473,9 @@ export type ApprovalDTO = {
   /** Redacted, human-readable argument preview. */
   argumentsPreview: string;
   cwd: string;
+  /** The work context whose directory version this grant is bound to. */
+  directoryWorkContextId: string;
+  /** The conversation the call came from; kept for audit, not for the check. */
   directoryRoomId: string;
   directoryVersion: number;
   directoryPaths: string[];
@@ -536,6 +626,7 @@ export type BootstrapDTO = {
   app: AppConfigDTO;
   employees: EmployeeDTO[];
   rooms: RoomDTO[];
+  workContexts: WorkContextDTO[];
   work: WorkDTO[];
   approvals: ApprovalDTO[];
   skills: SkillDTO[];
@@ -549,6 +640,7 @@ export type BootstrapDTO = {
 export type ServerEvent =
   | { type: "message"; roomId: string; message: MessageDTO }
   | { type: "room"; room: RoomDTO }
+  | { type: "work-context"; workContext: WorkContextDTO }
   | { type: "work"; work: WorkDTO }
   | { type: "approval"; approval: ApprovalDTO }
   /** Live text and tool activity of one running work item. */

@@ -11,6 +11,9 @@ import { defineDoc, defineDocFamily, defineEntry } from "@earendil-works/pi-dura
 import type { ReviewOutcome, RiskLevel, UserAuthorizationLevel } from "../shared/contracts.ts";
 import type { LocalizedText } from "../shared/i18n.ts";
 
+/** The resolved wake set stored on a routed group message. */
+export type RoomMessageAddressing = { recipientIds: string[]; mentionAll: boolean };
+
 /** Immutable public message written into a room conversation's transcript. */
 export type RoomMessageData = {
   authorType: "user" | "employee" | "system";
@@ -24,6 +27,8 @@ export type RoomMessageData = {
   createdAt: number;
   /** Present when the message is a delivery or answer for a work item. */
   workId: string;
+  /** The wake set of a routed group message; null for mail, notices, and answers. */
+  addressing: RoomMessageAddressing | null;
   notice: boolean;
   mail: MailEnvelope | null;
 };
@@ -89,14 +94,58 @@ export type EmployeeRecord = {
   createdAt: number;
 };
 
-export type RoomDirectoriesRecord = {
+/** Authorized directories of one work context, with their save version. */
+export type DirectoryConfigRecord = {
   paths: string[];
   defaultPath: string;
   version: number;
 };
 
+/** One employee-shared note of a work context, with its real source. */
+export type WorkNoteRecord = {
+  id: string;
+  title: string;
+  body: string;
+  /** "user" or the employee id that last wrote it. */
+  authorId: string;
+  sourceRoomId: string;
+  sourceEntryId: string;
+  sourceWorkId: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** One reference a work context carries: a local file or a URL. */
+export type WorkResourceRecord = {
+  id: string;
+  kind: "file" | "url";
+  name: string;
+  location: string;
+};
+
+/**
+ * A first-class work object: goal, instructions, directories, references, and
+ * the notes employees explicitly share with each other inside it.
+ */
+export type WorkContextRecord = {
+  id: string;
+  name: string;
+  goal: string;
+  instructions: string;
+  directories: DirectoryConfigRecord;
+  resources: WorkResourceRecord[];
+  notes: WorkNoteRecord[];
+  version: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** Immutable snapshot of the directory configuration one run was authorized under. */
 export type WorkDirectoryScopeRecord = {
+  /** The conversation the work started from, kept for audit. */
   roomId: string;
+  /** The work context whose directory version this snapshot matches. */
+  workContextId: string;
   version: number;
   paths: string[];
   defaultPath: string;
@@ -107,10 +156,16 @@ export type RoomRecord = {
   kind: "channel" | "dm" | "mail";
   name: string;
   topic: string;
+  /** The work context this conversation is fixed to. */
+  workContextId: string;
+  /** Channel members: the employees that may be addressed in this room. */
   memberIds: string[];
+  /** Bumped on every membership change; the concurrency token for members. */
+  membershipVersion: number;
+  /** For DMs: the two sorted participants ("user" or an employee id). */
+  dmParticipantIds: string[];
   /** Employee id used to identify a DM; it never determines directory scope. */
   employeeId: string;
-  directories: RoomDirectoriesRecord;
   createdAt: number;
   lastMessageAt: number;
   messageCount: number;
@@ -150,6 +205,8 @@ export type WorkRecord = {
   id: string;
   employeeId: string;
   roomId: string;
+  /** The work context this run belongs to. */
+  workContextId: string;
   kind: "message" | "mail" | "delegation";
   status: "queued" | "running" | "succeeded" | "failed" | "stopped" | "waiting-approval" | "waiting-mail";
   sourceEntryId: string;
@@ -163,7 +220,7 @@ export type WorkRecord = {
   errorLocalized?: LocalizedText;
   /** Employee execution conversation carrying this work. */
   conversationId: number;
-  /** Immutable room-directory snapshot bound to this run. */
+  /** Immutable work-context directory snapshot bound to this run. */
   directoryScope: WorkDirectoryScopeRecord;
   /** The plain-text request that started this work, for audit context. */
   intent: string;
@@ -172,8 +229,8 @@ export type WorkRecord = {
   inputTokens: number;
   outputTokens: number;
   cost: number;
-  /** Durable task that starts this queued mail work; empty for non-mail work. */
-  mailDispatchTaskId: string;
+  /** Durable task that starts this queued work; empty once started. */
+  dispatchTaskId: string;
   /** Durable task that feeds a finished child's reply back into this work. */
   mailResumeTaskId: string;
   /** Child works whose replies this work waits for before it may answer. */
@@ -240,6 +297,9 @@ export type ApprovalRecord = {
   /** Redacted argument preview for humans. */
   argumentsPreview: string;
   cwd: string;
+  /** The work context whose directory version this grant is bound to. */
+  directoryWorkContextId: string;
+  /** The conversation the call came from; kept for audit, not for the check. */
   directoryRoomId: string;
   directoryVersion: number;
   directoryPaths: string[];
@@ -360,9 +420,11 @@ export const RoomDoc = defineDocFamily<RoomRecord, { id: string }>({
     kind: "channel",
     name: "",
     topic: "",
+    workContextId: "",
     memberIds: [],
+    membershipVersion: 1,
+    dmParticipantIds: [],
     employeeId: "",
-    directories: { paths: [], defaultPath: "", version: 1 },
     createdAt: 0,
     lastMessageAt: 0,
     messageCount: 0,
@@ -412,13 +474,14 @@ export const McpDoc = defineDocFamily<McpServerRecord, { id: string }>({
 
 export const WorkDoc = defineDocFamily<WorkRecord, { id: string }>({
   kind: "emit.work",
-  version: 2,
+  version: 1,
   scope: "session",
   family: true,
   initial: (seed) => ({
     id: seed.id,
     employeeId: "",
     roomId: "",
+    workContextId: "",
     kind: "message",
     status: "queued",
     sourceEntryId: "",
@@ -430,26 +493,15 @@ export const WorkDoc = defineDocFamily<WorkRecord, { id: string }>({
     error: "",
     conversationId: 0,
     intent: "",
-    directoryScope: { roomId: "", version: 0, paths: [], defaultPath: "" },
+    directoryScope: { roomId: "", workContextId: "", version: 0, paths: [], defaultPath: "" },
     answer: "",
     inputTokens: 0,
     outputTokens: 0,
     cost: 0,
-    mailDispatchTaskId: "",
+    dispatchTaskId: "",
     mailResumeTaskId: "",
     awaitedMailWorkIds: [],
   }),
-  // v1 works predate durable mail dispatch; they only miss the three mail
-  // bookkeeping fields, and nothing else may be touched.
-  migrate: (value, fromVersion): WorkRecord => {
-    if (fromVersion !== 1) throw new Error(`emit.work 没有从版本 ${fromVersion} 的迁移`);
-    return {
-      ...value,
-      mailDispatchTaskId: "",
-      mailResumeTaskId: "",
-      awaitedMailWorkIds: [],
-    } as unknown as WorkRecord;
-  },
 });
 
 export const ApprovalDoc = defineDocFamily<ApprovalRecord, { id: string }>({
@@ -468,6 +520,7 @@ export const ApprovalDoc = defineDocFamily<ApprovalRecord, { id: string }>({
     argsHash: "",
     argumentsPreview: "",
     cwd: "",
+    directoryWorkContextId: "",
     directoryRoomId: "",
     directoryVersion: 0,
     directoryPaths: [],
@@ -524,6 +577,79 @@ export const MailSendReceiptDoc = defineDocFamily<MailSendReceiptRecord, { key: 
   scope: "session",
   family: true,
   initial: (seed) => ({ key: seed.key, roomId: "", entryId: "", workIds: [] }),
+});
+
+/**
+ * Durable receipt of one employee group message.
+ *
+ * Like the mail receipt: the entry, the queued works, the dispatch tasks, and
+ * this receipt are one commit, so a replayed tool call returns the recorded
+ * outcome instead of sending (and waking) a second time. The key is
+ * `tool:<toolTaskId>`.
+ */
+export type MessageSendReceiptRecord = {
+  key: string;
+  roomId: string;
+  entryId: string;
+  workIds: string[];
+};
+
+export const MessageSendReceiptDoc = defineDocFamily<MessageSendReceiptRecord, { key: string }>({
+  kind: "emit.message-send-receipt",
+  version: 1,
+  scope: "session",
+  family: true,
+  initial: (seed) => ({ key: seed.key, roomId: "", entryId: "", workIds: [] }),
+});
+
+/**
+ * Durable receipt of one work-context mutation made by a tool.
+ *
+ * Inviting members and saving notes both happen inside a tool call, so both
+ * write this receipt in the same commit as the change: a replay with the same
+ * tool task id returns the recorded outcome without repeating the notice or
+ * overwriting a newer note. The key is `tool:<toolTaskId>`.
+ */
+export type WorkContextMutationReceiptRecord = {
+  key: string;
+  workContextId: string;
+  roomId: string;
+  noteId: string;
+  version: number;
+};
+
+export const WorkContextMutationReceiptDoc = defineDocFamily<WorkContextMutationReceiptRecord, { key: string }>({
+  kind: "emit.work-context-mutation-receipt",
+  version: 1,
+  scope: "session",
+  family: true,
+  initial: (seed) => ({ key: seed.key, workContextId: "", roomId: "", noteId: "", version: 0 }),
+});
+
+/**
+ * One first-class work object.
+ *
+ * A work context is what a conversation is fixed to: its goal, instructions,
+ * authorized directories, references, and the notes employees explicitly
+ * share inside it. Conversations never own directories themselves.
+ */
+export const WorkContextDoc = defineDocFamily<WorkContextRecord, { id: string }>({
+  kind: "emit.work-context",
+  version: 1,
+  scope: "session",
+  family: true,
+  initial: (seed) => ({
+    id: seed.id,
+    name: "",
+    goal: "",
+    instructions: "",
+    directories: { paths: [], defaultPath: "", version: 1 },
+    resources: [],
+    notes: [],
+    version: 1,
+    createdAt: 0,
+    updatedAt: 0,
+  }),
 });
 
 export const CollaborationDoc = defineDocFamily<CollaborationRecord, { rootWorkId: string }>({

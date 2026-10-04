@@ -13,7 +13,7 @@ import { errorDisplay } from "../../shared/i18n.ts";
 import { useApp } from "../state.tsx";
 import { uiText } from "../messages.ts";
 import { useI18n } from "../i18n.tsx";
-import { Chip, ConnectionCheckButton, EffortPicker, ModelPicker, modelKey } from "./ui.tsx";
+import { Chip, ConnectionCheckButton, EffortPicker, EmployeeAvatar, ModelPicker, modelKey } from "./ui.tsx";
 import type { EmployeeDTO } from "../../shared/contracts.ts";
 
 const BUILTIN_TOOLS = ["read_file", "write_file", "edit_file", "run_shell", "load_skill"];
@@ -147,7 +147,7 @@ export function EmployeesView(): ReactNode {
               onClick={() => openEdit(employee)}
             >
               <span className="identity">
-                <span className="avatar">{[...employee.name.trim()][0] ?? "?"}</span>
+                <EmployeeAvatar employeeId={employee.id} />
                 <span className="identity-meta">
                   <strong>{employee.name}</strong>
                   <span className="role">{employee.role}</span>

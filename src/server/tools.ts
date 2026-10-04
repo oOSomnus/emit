@@ -43,6 +43,10 @@ export const BUILTIN_TOOL_RISK: Record<string, ToolRisk> = {
   edit_file: { risk: "gated", kind: "file-write" },
   run_shell: { risk: "gated", kind: "shell" },
   send_message: { risk: "safe" },
+  invite_to_channel: { risk: "safe" },
+  list_work_notes: { risk: "safe" },
+  read_work_note: { risk: "safe" },
+  save_work_note: { risk: "safe" },
   send_mail: { risk: "safe" },
   delegate_task: { risk: "safe" },
 };
@@ -104,6 +108,7 @@ export function gatedExecute<T>(
       toolKind: spec.kind,
       arguments: args,
       cwd: directory.cwd,
+      directoryWorkContextId: directory.scope.workContextId,
       directoryRoomId: directory.scope.roomId,
       directoryVersion: directory.scope.version,
       directoryPaths: [...directory.scope.paths],

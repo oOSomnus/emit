@@ -4,7 +4,7 @@
  * Sending a mail and starting its recipients used to be two independent
  * commits, so a crash in between silently dropped the wake-up. Here the send
  * transaction writes the entry, every recipient's queued work, and one
- * `emit.mail-dispatch` task per recipient; the native task scheduler then
+ * `emit.work-dispatch` task per recipient; the native task scheduler then
  * creates the execution conversation and admits the prompt, and re-schedules
  * both after a crash. A second task kind, `emit.mail-resume`, feeds a finished
  * child's reply back into a parent that asked for it (see `awaitReply`).
@@ -12,9 +12,8 @@
  * Nothing here polls, waits a random interval, or queues outside the storage:
  * scheduling is Pi Durable's, and the phases only commit checkpoints.
  */
-import { defineExtension, defineTask, type Extension, type Task, type TaskOutcome, type TaskRuntime } from "@earendil-works/pi-durable";
-import type { ConversationId, EntryId } from "@earendil-works/pi-durable";
-import type { Context as ChordContext } from "@earendil-works/chord";
+import { defineExtension, defineTask, type Extension, type Task } from "@earendil-works/pi-durable";
+import type { ConversationId, EntryId, EntryRecord } from "@earendil-works/pi-durable";
 import type { Draft } from "@earendil-works/chord/delta";
 import { randomUUID } from "node:crypto";
 import type { EmitRuntime } from "./runtime.ts";
@@ -28,7 +27,6 @@ import {
   RoomMessageEntry,
   WorkDoc,
   type MailSendReceiptRecord,
-  type RoomDirectoriesRecord,
   type RoomMessageData,
   type RoomRecord,
   type WorkRecord,
@@ -43,28 +41,14 @@ import {
   toMessageDTO,
   type RoomCreateInput,
 } from "./rooms.ts";
-import {
-  WorkFinishedError,
-  createQueuedWorkIn,
-  ensureWorkConversationIn,
-  findWork,
-  installEmployeeExtension,
-  isTerminal,
-  markFailed,
-  startQueuedWork,
-  type Resume,
-} from "./work.ts";
-import { toWorkDTO } from "./dto.ts";
-import { toThinkingLevel } from "./agents.ts";
+import { createQueuedWorkIn, findWork, isTerminal, markFailed, type Resume } from "./work.ts";
+import { commitTerminal } from "./work-dispatch.ts";
 import { renderMailContinuation } from "./prompts/index.ts";
-import { AppError, fromError, type AppText } from "./app-text.ts";
+import { AppError, type AppText } from "./app-text.ts";
 import { appMessages } from "./messages.ts";
 import type { LocalizedText } from "../shared/i18n.ts";
 import type { MessageDTO } from "../shared/contracts.ts";
-
-export type MailDispatchInput = { workId: string };
-export type MailDispatchState = { phase: "start" | "submit" };
-export type MailDispatchResult = { workId: string };
+import { findWorkContext, readWorkContextIn, workContextDirectorySnapshot } from "./work-contexts.ts";
 
 export type MailResumeInput = {
   parentWorkId: string;
@@ -80,158 +64,19 @@ export type MailResumeState = { phase: "submit" };
 export type MailResumeResult = { submitted: boolean };
 
 export type MailTasks = {
-  dispatch: Task<MailDispatchInput, MailDispatchState, MailDispatchResult, object>;
   resumeTask: Task<MailResumeInput, MailResumeState, MailResumeResult, object>;
   /** The atomic send every mail entry point uses, bound to this process's resume. */
   sendQueuedMail: (input: SendQueuedMailInput) => Promise<SendQueuedMailResult>;
 };
 
-/** Commit one terminal outcome; a phase that ends without durable progress faults the task. */
-async function commitTerminal<I, S extends { phase: string }, R>(
-  taskRuntime: TaskRuntime<I, S, R, object>,
-  outcome: TaskOutcome<R>,
-  context: ChordContext,
-): Promise<void> {
-  await taskRuntime.commit(async () => ({ status: "terminal", outcome }), context);
-}
-
-/** Settle a dispatch failure: fail the work once with a notice, then the task. */
-async function failDispatch(
-  resume: Resume,
-  taskRuntime: TaskRuntime<MailDispatchInput, MailDispatchState, MailDispatchResult, object>,
-  work: WorkRecord,
-  reason: AppText,
-  context: ChordContext,
-): Promise<void> {
-  if (!isTerminal(work.status) && work.status !== "stopped") {
-    await markFailed(resume, work, reason);
-  }
-  await commitTerminal(taskRuntime, { status: "failed", error: { message: reason.text } }, context);
-}
-
 /**
- * The two durable mail tasks.
+ * The reply-resume task.
  *
  * `resolve` hands back the process `Resume` only when a phase actually runs,
- * so the task definitions can be built before the rest of the application is
+ * so the task definition can be built before the rest of the application is
  * wired without module cycles.
  */
 export function buildMailTasks(resolve: () => Resume): MailTasks {
-  const dispatch = defineTask<MailDispatchInput, MailDispatchState, MailDispatchResult, object>({
-    name: "emit.mail-dispatch",
-    version: 1,
-    initial: () => ({ phase: "start" }),
-    phases: {
-      start: async (task, taskRuntime, context) => {
-        const resume = resolve();
-        const { runtime } = resume;
-        const work = await findWork(runtime, task.input.workId);
-        if (work === undefined) {
-          await commitTerminal(taskRuntime, { status: "failed", error: { message: `找不到邮件工作 ${task.input.workId}` } }, context);
-          return;
-        }
-        // A work stopped before its start must not be started by the
-        // scheduler that just recovered the task.
-        if (work.status === "stopped" || isTerminal(work.status)) {
-          await commitTerminal(taskRuntime, { status: "completed", result: { workId: task.input.workId } }, context);
-          return;
-        }
-        const app = await runtime.readSession(AppDoc);
-        if (work.depth > app.collaboration.maxDepth) {
-          await failDispatch(resume, taskRuntime, work, appMessages.work.depthOverLimit(app.collaboration.maxDepth), context);
-          return;
-        }
-        const employee = await runtime.readFamily(EmployeeDoc, work.employeeId, { id: work.employeeId });
-        if (employee === undefined) {
-          await failDispatch(resume, taskRuntime, work, appMessages.work.employeeNotFound(work.employeeId), context);
-          return;
-        }
-        if (!employee.enabled) {
-          await failDispatch(resume, taskRuntime, work, appMessages.work.employeeDisabled(employee.name), context);
-          return;
-        }
-        const modelProblem = runtime.catalog.chatSelectionProblem({
-          providerId: employee.executionModel.providerId,
-          modelId: employee.executionModel.modelId,
-          effort: employee.executionModel.effort,
-        });
-        if (modelProblem !== undefined) {
-          await failDispatch(resume, taskRuntime, work, appMessages.work.modelUnavailable(employee.name, modelProblem), context);
-          return;
-        }
-        try {
-          // The extension must be built and installed before the commit: the
-          // agent configuration inside the transaction stores it by name.
-          const extension = work.conversationId === 0 ? await installEmployeeExtension(resume, employee) : undefined;
-          await taskRuntime.commit(async (tx) => {
-            if (work.conversationId === 0) {
-              // The send-time directory snapshot is what this run may use;
-              // later authorization must not leak into a queued mail.
-              const room = await tx.doc(RoomDoc, work.directoryScope.roomId, { id: work.directoryScope.roomId });
-              if (
-                room === undefined ||
-                room.directories === undefined ||
-                room.directories.version !== work.directoryScope.version
-              ) {
-                throw new AppError(appMessages.work.directoryChanged());
-              }
-              await ensureWorkConversationIn(tx, work.id, {
-                extension: extension!,
-                model: { provider: employee.executionModel.providerId, modelId: employee.executionModel.modelId },
-                thinkingLevel: toThinkingLevel(employee.executionModel.effort),
-                cwd: work.directoryScope.defaultPath || null,
-              });
-            }
-            return { status: "running", checkpoint: { phase: "submit" } };
-          }, context);
-        } catch (error) {
-          if (error instanceof WorkFinishedError) {
-            await commitTerminal(taskRuntime, { status: "completed", result: { workId: task.input.workId } }, context);
-            return;
-          }
-          const reason = fromError(error);
-          const current = await findWork(runtime, task.input.workId);
-          if (current !== undefined && !isTerminal(current.status) && current.status !== "stopped") {
-            await failDispatch(resume, taskRuntime, current, reason, context);
-            return;
-          }
-          await commitTerminal(taskRuntime, { status: "failed", error: { message: reason.text } }, context);
-        }
-      },
-      submit: async (task, taskRuntime, context) => {
-        const resume = resolve();
-        try {
-          await startQueuedWork(resume, task.input.workId);
-        } catch (error) {
-          if (error instanceof WorkFinishedError) {
-            await commitTerminal(taskRuntime, { status: "completed", result: { workId: task.input.workId } }, context);
-            return;
-          }
-          const reason = fromError(error);
-          const current = await findWork(resume.runtime, task.input.workId);
-          if (current !== undefined && !isTerminal(current.status) && current.status !== "stopped") {
-            await failDispatch(resume, taskRuntime, current, reason, context);
-            return;
-          }
-          await commitTerminal(taskRuntime, { status: "failed", error: { message: reason.text } }, context);
-          return;
-        }
-        await commitTerminal(taskRuntime, { status: "completed", result: { workId: task.input.workId } }, context);
-      },
-    },
-    abort: async (_task, taskRuntime, context) => {
-      // The work itself was already marked stopped by `stopWork`; the task
-      // only records that it will never submit.
-      await taskRuntime.commit(
-        async () => ({
-          status: "terminal",
-          outcome: { status: "failed", error: { message: "邮件投递已被停止" } },
-        }),
-        context,
-      );
-    },
-  });
-
   const resumeTask = defineTask<MailResumeInput, MailResumeState, MailResumeResult, object>({
     name: "emit.mail-resume",
     version: 1,
@@ -242,11 +87,11 @@ export function buildMailTasks(resolve: () => Resume): MailTasks {
         const { runtime } = resume;
         const parent = await findWork(runtime, task.input.parentWorkId);
         if (parent === undefined) {
-          await commitTerminal(taskRuntime, { status: "failed", error: { message: "原任务不存在，无法续接回信" } }, context);
+          await commitTerminal(taskRuntime, { status: "failed", error: { message: appMessages.mail.parentWorkMissing().text } }, context);
           return;
         }
         if (parent.conversationId === 0) {
-          await commitTerminal(taskRuntime, { status: "failed", error: { message: "原任务执行会话不存在" } }, context);
+          await commitTerminal(taskRuntime, { status: "failed", error: { message: appMessages.mail.parentConversationMissing().text } }, context);
           return;
         }
         // A parent that already ended must not be revived by a late reply. A
@@ -258,21 +103,20 @@ export function buildMailTasks(resolve: () => Resume): MailTasks {
         }
         const room = await findRoom(runtime, task.input.roomId);
         if (room === undefined) {
-          await commitTerminal(taskRuntime, { status: "failed", error: { message: "邮件会话不存在" } }, context);
+          await commitTerminal(taskRuntime, { status: "failed", error: { message: appMessages.mail.resumeRoomMissing().text } }, context);
           return;
         }
-        if (
-          parent.directoryScope.roomId === room.id &&
-          room.directories !== undefined &&
-          room.directories.version !== parent.directoryScope.version
-        ) {
-          await markFailed(resume, parent, appMessages.mail.resumeDirectoryChanged());
-          await commitTerminal(taskRuntime, { status: "completed", result: { submitted: false } }, context);
-          return;
+        if (parent.directoryScope.roomId === room.id) {
+          const workContext = await findWorkContext(runtime, parent.workContextId);
+          if (workContext === undefined || workContext.directories.version !== parent.directoryScope.version) {
+            await markFailed(resume, parent, appMessages.mail.resumeDirectoryChanged());
+            await commitTerminal(taskRuntime, { status: "completed", result: { submitted: false } }, context);
+            return;
+          }
         }
         const conversation = await taskRuntime.conversation(parent.conversationId as ConversationId, context);
         if (conversation === undefined) {
-          await commitTerminal(taskRuntime, { status: "failed", error: { message: "原任务执行会话不存在" } }, context);
+          await commitTerminal(taskRuntime, { status: "failed", error: { message: appMessages.mail.parentConversationMissing().text } }, context);
           return;
         }
         // A reply continues from the child's answer; a failure or a stop has
@@ -281,11 +125,11 @@ export function buildMailTasks(resolve: () => Resume): MailTasks {
         const child = await findWork(runtime, task.input.childWorkId);
         const source =
           task.input.outcome === "reply"
-            ? await readMessageEntry(runtime, room, task.input.entryId, context)
-            : await readMessageEntry(runtime, room, child?.sourceEntryId ?? "", context);
-        const mail = source?.mail ?? null;
+            ? await readMessageEntry(runtime, room, task.input.entryId)
+            : await readMessageEntry(runtime, room, child?.sourceEntryId ?? "");
+        const mail = source?.data.mail ?? null;
         if (source === undefined || mail === null) {
-          await commitTerminal(taskRuntime, { status: "failed", error: { message: "找不到回信原文，无法续接" } }, context);
+          await commitTerminal(taskRuntime, { status: "failed", error: { message: appMessages.mail.resumeSourceMissing().text } }, context);
           return;
         }
         const childEmployee =
@@ -299,14 +143,14 @@ export function buildMailTasks(resolve: () => Resume): MailTasks {
               subject: mail.subject,
               from:
                 task.input.outcome === "reply"
-                  ? { name: source.authorName, address: source.address }
+                  ? { name: source.data.authorName, address: source.data.address }
                   : { name: childEmployee?.name ?? child?.employeeId ?? "", address: childEmployee?.address ?? "" },
               to: mail.to,
               cc: mail.cc,
               inReplyTo: mail.inReplyTo,
               entryId: task.input.outcome === "reply" ? task.input.entryId : "",
               outcome: task.input.outcome,
-              body: task.input.outcome === "reply" ? source.body : "",
+              body: task.input.outcome === "reply" ? source.data.body : "",
               error: task.input.error,
             }),
             whenBusy: "followUp",
@@ -321,24 +165,24 @@ export function buildMailTasks(resolve: () => Resume): MailTasks {
       await taskRuntime.commit(
         async () => ({
           status: "terminal",
-          outcome: { status: "failed", error: { message: "回信续接已被停止" } },
+          outcome: { status: "failed", error: { message: appMessages.mail.resumeStopped().text } },
         }),
         context,
       );
     },
   });
 
-  return { dispatch, resumeTask, sendQueuedMail: (input) => sendQueuedMail(resolve(), input) };
+  return { resumeTask, sendQueuedMail: (input) => sendQueuedMail(resolve(), input) };
 }
 
-/** Extension that registers the mail tasks globally; conversations do not select it. */
+/** Extension that registers the mail task; the shared dispatch is its own extension. */
 export function buildMailExtension(tasks: MailTasks): Extension {
-  return defineExtension({ name: "emit.mail", tasks: [tasks.dispatch, tasks.resumeTask] });
+  return defineExtension({ name: "emit.mail", tasks: [tasks.resumeTask] });
 }
 
 export type SendQueuedMailInput = {
   /** Existing room, or a room created inside the same send transaction. */
-  room: { id: string } | { create: RoomCreateInput & { directories: RoomDirectoriesRecord } };
+  room: { id: string } | { create: RoomCreateInput };
   /** The sent message: author, body, and the mail envelope. */
   data: RoomMessageData;
   /** The plain-text request stored on each recipient's work; defaults to the body. */
@@ -436,6 +280,7 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
     let depth: number | undefined;
     let rootWorkId: string | undefined;
     let parentDraft: Draft<WorkRecord> | undefined;
+    let workContextId = "create" in input.room ? input.room.create.workContextId : "";
     if (input.parentWorkId !== undefined && input.parentWorkId.length > 0) {
       const parentWork = await tx.doc(WorkDoc, input.parentWorkId, { id: input.parentWorkId });
       if (parentWork === undefined) throw new AppError(appMessages.mail.callerWorkMissing(input.parentWorkId));
@@ -445,6 +290,7 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
       parentDraft = parentWork;
       depth = input.awaitReply === true ? parentWork.depth + 1 : parentWork.depth;
       rootWorkId = parentWork.rootWorkId;
+      workContextId = parentWork.workContextId;
       if (input.awaitReply === true) {
         const app = await tx.doc(AppDoc);
         if (depth > app.collaboration.maxDepth) {
@@ -454,12 +300,11 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
       // A continuation shares the caller's room: the send-time snapshot must
       // still be the live configuration, or the mail would silently gain
       // directories that were added after the caller started.
-      if (
-        room !== undefined &&
-        parentWork.directoryScope.roomId === room.id &&
-        room.directories.version !== parentWork.directoryScope.version
-      ) {
-        throw new RoomDirectoryError(409, appMessages.work.directoryChanged());
+      if (room !== undefined && parentWork.directoryScope.roomId === room.id) {
+        const context = await readWorkContextIn(tx, parentWork.workContextId);
+        if (context.directories.version !== parentWork.directoryScope.version) {
+          throw new RoomDirectoryError(409, appMessages.work.directoryChanged());
+        }
       }
     } else if (input.awaitReply === true) {
       throw new RoomDirectoryError(400, appMessages.mail.awaitReplyEmployeeOnly());
@@ -467,17 +312,20 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
 
     if (room === undefined) {
       if (!("create" in input.room)) throw new RoomDirectoryError(404, appMessages.rooms.roomNotFoundWithId(input.room.id));
-      room = await createRoomIn(tx, { ...input.room.create, directories: input.room.create.directories });
+      room = await createRoomIn(tx, input.room.create);
     }
+    if (workContextId.length === 0) workContextId = room.workContextId;
 
     const entry = await appendRoomMessageIn(tx, room, input.data);
 
-    const directoryScope = {
-      roomId: room.id,
-      version: room.directories.version,
-      paths: [...room.directories.paths],
-      defaultPath: room.directories.defaultPath,
-    };
+    // The scope is the parent's snapshot when the parent shares this room;
+    // otherwise it is the work context's current configuration, snapshotted
+    // now so the queued run cannot silently gain directories later.
+    const context = await readWorkContextIn(tx, workContextId);
+    const directoryScope =
+      parentDraft !== undefined && parentDraft.directoryScope.roomId === room.id
+        ? { ...parentDraft.directoryScope, paths: [...parentDraft.directoryScope.paths] }
+        : workContextDirectorySnapshot(context, room.id);
     const now = Date.now();
     const workIds: string[] = [];
     for (const employeeId of recipients) {
@@ -485,6 +333,7 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
       await createQueuedWorkIn(tx, {
         roomId: room.id,
         employeeId,
+        workContextId,
         intent,
         kind: "mail",
         sourceEntryId: String(entry.id),
@@ -496,7 +345,7 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
         now,
       });
       const taskId = await tx.createTask(
-        resume.mail.dispatch,
+        resume.dispatch,
         { workId },
         {
           ownership: { kind: "conversation" },
@@ -505,7 +354,7 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
         },
       );
       const work = await tx.doc(WorkDoc, workId, { id: workId });
-      work.mailDispatchTaskId = String(taskId);
+      work.dispatchTaskId = String(taskId);
       workIds.push(workId);
     }
 
@@ -519,7 +368,7 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
       collaboration.rootWorkId = scope;
       collaboration.crossEmployeeWakes += workIds.length;
       if (collaboration.crossEmployeeWakes > app.collaboration.maxCrossEmployeeWakes) {
-        throw new RoomDirectoryError(409, appMessages.mail.wakeLimit(app.collaboration.maxCrossEmployeeWakes));
+        throw new RoomDirectoryError(409, appMessages.work.wakeLimit(app.collaboration.maxCrossEmployeeWakes));
       }
       parentDraft!.awaitedMailWorkIds = [...parentDraft!.awaitedMailWorkIds, ...workIds];
     }
@@ -535,73 +384,53 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
       const receipt = await tx.doc(MailSendReceiptDoc, receiptKey, { key: receiptKey });
       receipt.roomId = room.id;
       receipt.entryId = String(entry.id);
-      receipt.workIds = [...workIds];
+      receipt.workIds = workIds;
     }
 
     return { room, entry, workIds };
   }, runtime.ctx);
 
   const dto = toMessageDTO(committed.entry);
-  if (dto === undefined) throw new AppError(appMessages.rooms.messageUnexpectedType);
-  dto.roomId = committed.room.id;
+  if (dto === undefined) throw new AppError(appMessages.mail.sentMailInvariant());
+  const unread = await roomDTOWithUnread(runtime, committed.room);
   runtime.emit({ type: "message", roomId: committed.room.id, message: dto });
-  runtime.emit({ type: "room", room: await roomDTOWithUnread(runtime, committed.room) });
-  for (const workId of committed.workIds) {
-    const work = await findWork(runtime, workId);
-    if (work === undefined) continue;
-    const employee = await runtime.readFamily(EmployeeDoc, work.employeeId, { id: work.employeeId });
-    runtime.emit({ type: "work", work: toWorkDTO(work, employee?.name ?? "", committed.room.name) });
-  }
+  runtime.emit({ type: "room", room: unread });
   return { message: dto, workIds: committed.workIds };
 }
 
-/** The receipt of a tool send, when one is already committed. */
-async function readSendReceipt(
-  runtime: EmitRuntime,
-  toolTaskId: string,
-): Promise<MailSendReceiptRecord | undefined> {
+async function readSendReceipt(runtime: EmitRuntime, toolTaskId: string): Promise<MailSendReceiptRecord | undefined> {
   const key = `tool:${toolTaskId}`;
   return runtime.readFamily(MailSendReceiptDoc, key, { key });
 }
 
-/** Rebuild the recorded outcome for a replayed tool send. */
-async function replayedSend(
-  runtime: EmitRuntime,
-  receipt: MailSendReceiptRecord,
-): Promise<SendQueuedMailResult> {
+async function replayedSend(runtime: EmitRuntime, receipt: MailSendReceiptRecord): Promise<SendQueuedMailResult> {
   const room = await findRoom(runtime, receipt.roomId);
-  const conversation =
-    room !== undefined
-      ? await runtime.harness.conversation(room.conversationId as ConversationId, runtime.ctx)
-      : undefined;
-  const entryId = Number(receipt.entryId) as EntryId;
-  const page =
-    conversation !== undefined
-      ? await conversation.entries({ minEntryId: entryId, maxEntryId: entryId }, 1, undefined, runtime.ctx)
-      : undefined;
-  const entry = page?.items[0];
-  const dto = entry !== undefined ? toMessageDTO(entry) : undefined;
-  if (room === undefined || dto === undefined) throw new AppError(appMessages.mail.replayRecordMissing());
+  if (room === undefined) throw new AppError(appMessages.mail.replayRecordMissing());
+  const data = await readMessageEntry(runtime, room, receipt.entryId);
+  const entry = data === undefined ? undefined : data.entry;
+  const dto = entry === undefined ? undefined : toMessageDTO(entry);
+  if (dto === undefined) throw new AppError(appMessages.mail.replayRecordMissing());
   dto.roomId = room.id;
   return { message: dto, workIds: [...receipt.workIds] };
 }
 
-/** One room entry's message data by id, for reading a reply back. */
+/** Read one message entry out of a room's transcript. */
 async function readMessageEntry(
   runtime: EmitRuntime,
   room: RoomRecord,
   entryId: string,
-  context: ChordContext,
-): Promise<RoomMessageData | undefined> {
-  if (entryId.length === 0) return undefined;
-  const conversation = await runtime.harness.conversation(room.conversationId as ConversationId, context);
+): Promise<{ entry: EntryRecord; data: RoomMessageData } | undefined> {
+  const id = Number(entryId);
+  if (entryId.length === 0 || !Number.isSafeInteger(id) || id <= 0) return undefined;
+  const conversation = await runtime.harness.conversation(room.conversationId as ConversationId, runtime.ctx);
   if (conversation === undefined) return undefined;
   const page = await conversation.entries(
-    { minEntryId: Number(entryId) as EntryId, maxEntryId: Number(entryId) as EntryId },
+    { minEntryId: id as EntryId, maxEntryId: id as EntryId },
     1,
     undefined,
-    context,
+    runtime.ctx,
   );
   const entry = page.items[0];
-  return entry !== undefined && RoomMessageEntry.is(entry) ? entry.data : undefined;
+  if (entry === undefined || !RoomMessageEntry.is(entry)) return undefined;
+  return { entry, data: entry.data };
 }

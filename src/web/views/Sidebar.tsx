@@ -11,7 +11,7 @@ import { api } from "../api.ts";
 import { errorDisplay } from "../../shared/i18n.ts";
 import { LanguagePicker, useI18n } from "../i18n.tsx";
 import { useApp, type View } from "../state.tsx";
-import { Chip, Icon, IconButton } from "./ui.tsx";
+import { Chip, EmployeeAvatar, Icon, IconButton } from "./ui.tsx";
 import { ThemePicker } from "../theme.tsx";
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode {
@@ -20,9 +20,12 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
   const [creating, setCreating] = useState<"channel" | "dm" | undefined>(undefined);
   const [draftName, setDraftName] = useState("");
   const [draftEmployee, setDraftEmployee] = useState("");
+  const [draftMembers, setDraftMembers] = useState<string[]>([]);
 
-  const channels = state.rooms.filter((room) => room.kind === "channel");
-  const directs = state.rooms.filter((room) => room.kind === "dm");
+  const channels = state.rooms.filter(
+    (room) => room.kind === "channel" && room.workContextId === state.activeWorkContextId,
+  );
+  const directs = state.rooms.filter((room) => room.kind === "dm" && room.workContextId === state.activeWorkContextId);
   const mailUnread = state.rooms
     .filter((room) => room.kind === "mail")
     .reduce((total, room) => total + room.unread, 0);
@@ -35,21 +38,35 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
   };
 
   const startCreating = (kind: "channel" | "dm") => {
+    if (state.activeWorkContextId === undefined) {
+      select("work-contexts");
+      return;
+    }
     setCreating(kind);
     setDraftName("");
-    setDraftEmployee(state.employees[0]?.id ?? "");
+    setDraftEmployee(state.employees.find((employee) => employee.enabled)?.id ?? "");
+    setDraftMembers([]);
   };
 
   const commit = async () => {
     if (creating === undefined) return;
-    const employee = state.employees.find((entry) => entry.id === draftEmployee);
+    const workContextId = state.activeWorkContextId;
+    if (workContextId === undefined) {
+      setCreating(undefined);
+      select("work-contexts");
+      return;
+    }
+    const employee = state.employees.find((entry) => entry.id === draftEmployee && entry.enabled);
+    if (creating === "dm" && employee === undefined) return;
     const name = draftName.trim().length > 0 ? draftName.trim() : employee?.name ?? "";
     if (name.length === 0) return;
     try {
       const room = await api.createRoom({
         kind: creating,
         name,
-        employeeId: creating === "channel" ? undefined : employee?.id,
+        workContextId,
+        memberIds: creating === "channel" ? draftMembers : [],
+        employeeId: creating === "dm" ? employee?.id : undefined,
       });
       setCreating(undefined);
       dispatch({ type: "room", room });
@@ -64,8 +81,17 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
   const renderRoom = (roomId: string, kind: "channel" | "dm") => {
     const room = state.rooms.find((entry) => entry.id === roomId);
     if (room === undefined) return null;
-    const employee = state.employees.find((entry) => entry.id === room.employeeId);
-    const label = room.kind === "dm" ? (employee?.name ?? room.name) : room.name;
+    const employeeIds = room.dmParticipantIds.filter((id) => id !== "user");
+    const firstParticipant = state.employees.find((entry) => entry.id === employeeIds[0]);
+    const secondParticipant = state.employees.find((entry) => entry.id === employeeIds[1]);
+    const employee = state.employees.find((entry) => entry.id === room.employeeId) ?? firstParticipant;
+    const avatarEmployeeId = employee?.id ?? employeeIds[0];
+    const label =
+      room.kind !== "dm"
+        ? room.name
+        : employeeIds.length > 1
+          ? `${firstParticipant?.name ?? room.name} ↔ ${secondParticipant?.name ?? employeeIds[1]}`
+          : employee?.name ?? room.name;
     const active = state.activeRoomId === room.id && state.view === "chat";
     return (
       <button
@@ -79,7 +105,13 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
           onNavigate?.();
         }}
       >
-        {kind === "channel" ? <Icon name="chat" /> : <span className="avatar">{label.trim().slice(0, 1).toUpperCase()}</span>}
+        {kind === "channel" ? (
+          <Icon name="chat" />
+        ) : avatarEmployeeId !== undefined ? (
+          <EmployeeAvatar employeeId={avatarEmployeeId} />
+        ) : (
+          <span className="avatar">{label.trim().slice(0, 1).toUpperCase()}</span>
+        )}
         <span className="room-label">
           <span className="room-name">{label}</span>
           {kind === "dm" && employee !== undefined ? <span className="room-role">{employee.role}</span> : null}
@@ -97,6 +129,44 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
       </header>
 
       <nav className="sidebar-rooms">
+        <section>
+          <h3>
+            {messages.workContexts.selectWork}
+            <IconButton
+              icon="plus"
+              label={messages.workContexts.createWork}
+              onClick={() => select("work-contexts")}
+            />
+          </h3>
+          <select
+            aria-label={messages.workContexts.selectWork}
+            value={state.activeWorkContextId ?? ""}
+            disabled={state.workContexts.length === 0}
+            style={{ color: "var(--rail-text)", backgroundColor: "var(--rail-hover)", borderColor: "var(--rail-line)" }}
+            onChange={(event) =>
+              dispatch({
+                type: "activeWorkContext",
+                workContextId: event.target.value.length > 0 ? event.target.value : undefined,
+              })
+            }
+          >
+            {state.workContexts.length === 0 ? <option value="">{messages.workContexts.noWorks}</option> : null}
+            {state.workContexts.map((workContext) => (
+              <option key={workContext.id} value={workContext.id}>
+                {workContext.name}
+              </option>
+            ))}
+          </select>
+          {state.workContexts.length > 0 ? (
+            <p className="hint" style={{ color: "var(--rail-muted)", whiteSpace: "normal", margin: "8px 4px 0" }}>
+              {messages.workContexts.switchWorkHint}
+            </p>
+          ) : (
+            <p className="hint" style={{ color: "var(--rail-muted)", whiteSpace: "normal", margin: "8px 4px 0" }}>
+              {messages.sidebar.noWorkSelected}
+            </p>
+          )}
+        </section>
         <section>
           <h3>
             {messages.sidebar.channels}
@@ -135,27 +205,70 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
             <span>{creating === "channel" ? messages.sidebar.creatorChannel : messages.sidebar.creatorDirect}</span>
           </div>
           {creating === "channel" ? (
-            <input
-              autoFocus
-              placeholder={messages.sidebar.channelPlaceholder}
-              value={draftName}
-              onChange={(event) => setDraftName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void commit();
-              }}
-            />
+            <>
+              <input
+                autoFocus
+                aria-label={messages.sidebar.channelPlaceholder}
+                placeholder={messages.sidebar.channelPlaceholder}
+                value={draftName}
+                onChange={(event) => setDraftName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void commit();
+                }}
+              />
+              <label>
+                {messages.sidebar.initialMembers}
+                <select
+                  multiple
+                  size={Math.max(2, Math.min(5, state.employees.filter((employee) => employee.enabled).length))}
+                  value={draftMembers}
+                  aria-label={messages.sidebar.initialMembers}
+                  onChange={(event) =>
+                    setDraftMembers(Array.from(event.currentTarget.selectedOptions, (option) => option.value))
+                  }
+                >
+                  {state.employees
+                    .filter((employee) => employee.enabled)
+                    .map((employee) => (
+                      <option key={employee.id} value={employee.id}>
+                        {employee.name} · {employee.role}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <p className="hint" style={{ color: "var(--rail-muted)" }}>
+                {messages.sidebar.initialMembersHint}
+              </p>
+            </>
           ) : (
-            <select value={draftEmployee} onChange={(event) => setDraftEmployee(event.target.value)}>
-              {state.employees.length === 0 ? <option value="">{messages.sidebar.noEmployees}</option> : null}
-              {state.employees.map((employee) => (
-                <option key={employee.id} value={employee.id}>
-                  {employee.name} · {employee.role}
-                </option>
-              ))}
+            <select
+              value={draftEmployee}
+              aria-label={messages.sidebar.creatorDirect}
+              onChange={(event) => setDraftEmployee(event.target.value)}
+            >
+              {state.employees.filter((employee) => employee.enabled).length === 0 ? (
+                <option value="">{messages.sidebar.noEmployees}</option>
+              ) : null}
+              {state.employees
+                .filter((employee) => employee.enabled)
+                .map((employee) => (
+                  <option key={employee.id} value={employee.id}>
+                    {employee.name} · {employee.role}
+                  </option>
+                ))}
             </select>
           )}
           <div className="row">
-            <button type="button" className="primary" onClick={() => void commit()}>
+            <button
+              type="button"
+              className="primary"
+              disabled={
+                creating === "channel"
+                  ? draftName.trim().length === 0
+                  : !state.employees.some((employee) => employee.enabled)
+              }
+              onClick={() => void commit()}
+            >
               {messages.common.create}
             </button>
             <button type="button" onClick={() => setCreating(undefined)}>
@@ -178,12 +291,21 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }): ReactNode 
         </button>
         <button
           type="button"
+          className={state.view === "work-contexts" ? "active" : ""}
+          aria-current={state.view === "work-contexts" ? "page" : undefined}
+          onClick={() => select("work-contexts")}
+        >
+          <Icon name="work" />
+          <span className="label">{messages.workContexts.navLabel}</span>
+        </button>
+        <button
+          type="button"
           className={state.view === "work" ? "active" : ""}
           aria-current={state.view === "work" ? "page" : undefined}
           onClick={() => select("work")}
         >
           <Icon name="work" />
-          <span className="label">{messages.app.view.work}</span>
+          <span className="label">{messages.workContexts.runsLabel}</span>
           {running > 0 ? <Chip tone="info">{running}</Chip> : null}
         </button>
         <button

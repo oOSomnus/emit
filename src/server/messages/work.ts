@@ -62,10 +62,10 @@ export const workMessages = {
       en: "This run produced no answer (the model or a tool failed; see the run's execution record for details)",
       "zh-CN": "本次运行没有产生回答（模型或工具出错，详情见该次运行记录）",
     }),
-  mailDispatchLost: (): AppText =>
+  dispatchLost: (): AppText =>
     appText({
-      en: "The mail dispatch task is missing; this recipient's work never started",
-      "zh-CN": "邮件投递任务丢失，该收件人的工作未能开始",
+      en: "The dispatch task is missing; this work never started",
+      "zh-CN": "执行派发任务丢失，该工作未能开始",
     }),
   startInterrupted: (): AppText =>
     appText({
@@ -116,6 +116,20 @@ export const workMessages = {
     appText({ en: "The delegation has no valid source conversation", "zh-CN": "交办任务没有有效来源会话" }),
   sourceRoomMissing: (): AppText =>
     appText({ en: "The source conversation does not exist", "zh-CN": "来源会话不存在" }),
+
+  /** Collaboration routing. */
+  wakeLimit: (max: number): AppText =>
+    appText({
+      en: `Collaboration has reached the cross-employee wake limit (${max} wakes)`,
+      "zh-CN": `本次协作已达到跨员工唤醒上限（${max} 次）`,
+    }),
+  dispatchStopped: (): AppText =>
+    appText({ en: "The dispatch was stopped", "zh-CN": "任务投递已被停止" }),
+  removedFromConversation: (name: string): AppText =>
+    appText({
+      en: `${name.length > 0 ? name : "The employee"} was removed from the conversation, so this run stopped and its result was not published.`,
+      "zh-CN": `${name.length > 0 ? name : "该员工"} 已被移出会话，本次运行已停止，结果不再发布。`,
+    }),
 
   /** Execution-record paging (work-execution.ts); `游标格式不正确` lives in appMessages.api. */
   cursorUnparsable: (): AppText => appText({ en: "The cursor could not be parsed", "zh-CN": "游标无法解析" }),
