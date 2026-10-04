@@ -7,16 +7,22 @@
 ## 命令
 
 ```bash
-npm run dev          # 构建前端，然后用 tsx watch 启动 src/server/main.ts
-npm run typecheck    # 服务端与前端两个 tsconfig 的类型检查
-npm run build        # typecheck + vite build
-npm test             # vitest run
+make install         # 按 lockfile 安装依赖
+make dev             # 构建前端，然后用 tsx watch 启动 src/server/main.ts
+make typecheck       # 服务端与前端两个 tsconfig 的类型检查
+make build           # typecheck + vite build
+make test            # vitest run
 make                 # 原生单文件构建（dist/emit，Node SEA）
 make smoke           # 重新构建并运行原生二进制冒烟测试
-node tmp/smoke.mjs   # 端到端冒烟测试
+make e2e             # 端到端冒烟测试（运行 node tmp/smoke.mjs）
+make mock            # 从真实配置复制出的临时工作区，用真实模型运行
 ```
 
-`node tmp/smoke.mjs` 用假 provider 驱动真实 harness，覆盖审批、人工裁决、拒绝、停止、邮件与 SIGKILL 恢复；其 fixture 会先创建工作上下文再创建房间，并覆盖频道成员与点名路由。它会清空并重建 `tmp/smoke-data`、`tmp/smoke-work`、`tmp/smoke-outside`，并占用 8898（服务端）与 8899（假 provider）两个端口。它不是普通的快速开始命令：仅在这些目录与端口空闲时运行。`tmp/fake-provider.mjs` 是它使用的 OpenAI-compatible 假模型。
+`make help` 列出全部目标；运行时参数通过 `ARGS` 传递，例如 `make test ARGS='test/mock.test.ts'` 或 `make start ARGS='--port 8787'`。npm scripts 仍是这些目标的内部实现。
+
+`make e2e`（运行 `node tmp/smoke.mjs`）用假 provider 驱动真实 harness，覆盖审批、人工裁决、拒绝、停止、邮件与 SIGKILL 恢复；其 fixture 会先创建工作上下文再创建房间，并覆盖频道成员与点名路由。它会清空并重建 `tmp/smoke-data`、`tmp/smoke-work`、`tmp/smoke-outside`，并占用 8898（服务端）与 8899（假 provider）两个端口。它不是普通的快速开始命令：仅在这些目录与端口空闲时运行。`tmp/fake-provider.mjs` 是它使用的 OpenAI-compatible 假模型。
+
+`make mock` 是另一种取舍：它通过只读 SQLite backup 读取真实数据目录（默认 `~/.emit`、`EMIT_DATA_DIR` 或 `--source-data-dir`）的已提交状态（含 WAL），复制 provider 凭据（绝不复制保存的 OAuth 登录，以免使真实登录失效），在全新的私有临时目录里创建 `Alice`/`Bob`/`Carol`、两个频道与一个工作上下文，并在其上启动真实服务端，因此破坏性改动不再需要手工重建测试场景。初始化不调用模型；在启动的工作区里发消息会调用已配置的真实模型并可能产生费用。服务退出时会删除临时根目录，源工作区也绝不会被当作 runtime 打开。
 
 ## Web 界面
 

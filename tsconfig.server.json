@@ -15,5 +15,5 @@
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true
   },
-  "include": ["src/server/**/*.ts", "src/shared/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+  "include": ["src/server/**/*.ts", "src/shared/**/*.ts", "scripts/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
 }

@@ -6,7 +6,7 @@
 
 ## 命令行
 
-`npm run dev` 会构建前端并用 `tsx watch` 启动后端。`npm start` 运行 TypeScript 服务端，要求已有构建好的 `dist/web`。
+`make dev` 会构建前端并用 `tsx watch` 启动后端。`make start` 先构建 `dist/web`，再运行 TypeScript 服务端。`make help` 列出全部工作流；底层 npm scripts 仍是内部实现。
 
 | 选项 | 含义 | 默认值 | 环境变量 |
 | --- | --- | --- | --- |
@@ -21,8 +21,10 @@
 data-dir、host、port 三项命令行参数优先于对应环境变量。示例（data-dir 路径请替换成自己的目录）：
 
 ```bash
-npm start -- --data-dir /absolute/path/to/data --port 8787
+make start ARGS='--data-dir /absolute/path/to/data --port 8787'
 ```
+
+`make mock` 会从已提交的工作区配置启动一份用完即弃的副本用于试验；见 [开发指南](development.zh-CN.md)。
 
 `.env.example` 只是变量名称与示例——Emit 不会自动加载 `.env`。请在 shell 中 export，或在界面里配置 provider。
 

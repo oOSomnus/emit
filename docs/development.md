@@ -7,16 +7,22 @@ Scripts, the dependency patch, prompt resources, and the technology stack. Setup
 ## Commands
 
 ```bash
-npm run dev          # build the web UI, then tsx watch src/server/main.ts
-npm run typecheck    # tsc for the server project and the web project
-npm run build        # typecheck + vite build
-npm test             # vitest run
+make install         # install dependencies from the lockfile
+make dev             # build the web UI, then tsx watch src/server/main.ts
+make typecheck       # tsc for the server project and the web project
+make build           # typecheck + vite build
+make test            # vitest run
 make                 # native single-file build (dist/emit, Node SEA)
 make smoke           # rebuild and run the native-binary smoke suite
-node tmp/smoke.mjs   # end-to-end smoke test
+make e2e             # end-to-end smoke test (runs node tmp/smoke.mjs)
+make mock            # throwaway workspace seeded from the real config, run with real models
 ```
 
-`node tmp/smoke.mjs` drives a fake provider through the real harness and covers approvals, manual decisions, denials, stopping, mail, and SIGKILL recovery; its fixtures create a work context before rooms and exercise channel membership and addressing. It clears and rebuilds `tmp/smoke-data`, `tmp/smoke-work`, and `tmp/smoke-outside`, and it uses ports 8898 (server) and 8899 (fake provider). It is not a normal quick-start command: run it only when those directories and ports are free. `tmp/fake-provider.mjs` is the OpenAI-compatible fake model it uses.
+`make help` lists every target; runtime arguments go through `ARGS`, for example `make test ARGS='test/mock.test.ts'` or `make start ARGS='--port 8787'`. The npm scripts remain the internal implementation of these targets.
+
+`make e2e` (running `node tmp/smoke.mjs`) drives a fake provider through the real harness and covers approvals, manual decisions, denials, stopping, mail, and SIGKILL recovery; its fixtures create a work context before rooms and exercise channel membership and addressing. It clears and rebuilds `tmp/smoke-data`, `tmp/smoke-work`, and `tmp/smoke-outside`, and it uses ports 8898 (server) and 8899 (fake provider). It is not a normal quick-start command: run it only when those directories and ports are free. `tmp/fake-provider.mjs` is the OpenAI-compatible fake model it uses.
+
+`make mock` is the opposite trade-off: it reads the real data directory (default `~/.emit`, `EMIT_DATA_DIR`, or `--source-data-dir`) through a read-only SQLite backup — committed state including the WAL — copies the provider credentials (never saved OAuth logins, which could invalidate the real session), seeds `Alice`/`Bob`/`Carol` plus two channels and a work context in a fresh private temp directory, and starts the real server on it, so a breaking change never requires hand-rebuilding a test scenario. Seeding makes no model calls; sending messages in the started workspace does, with the configured real models, and may cost money. The temp root is removed when the service exits, and the source workspace is never opened as a runtime.
 
 ## Web interface
 

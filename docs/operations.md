@@ -6,7 +6,7 @@ CLI options, environment variables, data files, credentials, locking, and crash 
 
 ## Command line
 
-`npm run dev` builds the web UI and starts the backend with `tsx watch`. `npm start` runs the TypeScript server and expects an already built `dist/web`.
+`make dev` builds the web UI and starts the backend with `tsx watch`. `make start` builds `dist/web` and then runs the TypeScript server. `make help` lists every workflow; the underlying npm scripts remain the internal implementation.
 
 | Option | Meaning | Default | Environment |
 | --- | --- | --- | --- |
@@ -21,8 +21,10 @@ CLI options, environment variables, data files, credentials, locking, and crash 
 For data-dir, host, and port, the command-line option takes precedence over the environment variable. Example (replace the data-dir path with your own directory):
 
 ```bash
-npm start -- --data-dir /absolute/path/to/data --port 8787
+make start ARGS='--data-dir /absolute/path/to/data --port 8787'
 ```
+
+`make mock` starts a disposable copy of the committed workspace configuration for experiments; see [Development](development.md).
 
 `.env.example` lists variable names and examples only — Emit does not load `.env` automatically. Export variables in the shell, or configure providers in the UI.
 

@@ -20,8 +20,8 @@ The backend is a single Node process that exclusively owns one SQLite database a
 Requires Node.js >= 22.19.0.
 
 ```bash
-npm install
-npm run dev          # build the web UI and start the backend (tsx watch)
+make install
+make dev             # build the web UI and start the backend (tsx watch)
 ```
 
 Open the URL printed by the startup log (`Emit 已启动：…`); the server picks a free loopback port by default — pass `--port` or set `EMIT_PORT` to pin one. Complete the first-run setup: a workspace name (prefilled with a default), your name, a usable default chat model with a supported reasoning effort, and a separately configured approval judge (a chat model or a classifier). The judge never silently falls back to an employee model. Providers authenticate through their native flows: API key, OAuth/subscription, cloud credentials, or credentials already present in the process environment.
@@ -29,8 +29,7 @@ Open the URL printed by the startup log (`Emit 已启动：…`); the server pic
 Production start:
 
 ```bash
-npm run build
-npm start            # requires a built dist/web
+make start           # builds dist/web, then starts the server
 ```
 
 Single-file build:
@@ -66,11 +65,14 @@ History: [CHANGELOG.md](CHANGELOG.md) (English).
 ## Development
 
 ```bash
-npm run typecheck    # server and web type checks
-npm run build        # typecheck + build the front end
-npm test             # vitest
+make typecheck       # server and web type checks
+make build           # typecheck + build the front end
+make test            # vitest
 make                 # native single-file build (dist/emit)
 make smoke           # native-binary smoke suite
+make mock            # disposable workspace seeded from ~/.emit, run with the real models
 ```
+
+`make help` lists every target, and `ARGS` forwards runtime arguments (`make test ARGS='test/mock.test.ts'`). The npm scripts remain the internal implementation.
 
 The end-to-end smoke test, prompt resources, dependency patch, and technology stack are in [docs/development.md](docs/development.md).

@@ -20,8 +20,8 @@
 需要 Node.js >= 22.19.0。
 
 ```bash
-npm install
-npm run dev          # 构建前端并启动后端（tsx watch）
+make install
+make dev             # 构建前端并启动后端（tsx watch）
 ```
 
 打开启动日志打印的地址（`Emit 已启动：…`）完成首次设置：服务端默认自动挑选空闲回环端口，可用 `--port` 或 `EMIT_PORT` 固定端口。首次设置包括工作区名称（已有默认值）、你的名字、一个可用且推理强度受支持的默认对话模型，以及单独配置的审批判断模型（对话模型或 classifier）。审批判断不会暗中回退到员工模型。Provider 认证走各自的原生流程：API key、OAuth/订阅、云平台凭据，或进程环境中已有的凭据。
@@ -29,8 +29,7 @@ npm run dev          # 构建前端并启动后端（tsx watch）
 生产启动：
 
 ```bash
-npm run build
-npm start            # 需要已构建的 dist/web
+make start           # 构建 dist/web 后启动服务端
 ```
 
 单文件构建：
@@ -66,11 +65,14 @@ make smoke           # 重新构建并运行原生二进制冒烟测试
 ## 开发
 
 ```bash
-npm run typecheck    # 服务端与前端类型检查
-npm run build        # typecheck + 构建前端
-npm test             # vitest
+make typecheck       # 服务端与前端类型检查
+make build           # typecheck + 构建前端
+make test            # vitest
 make                 # 原生单文件构建（dist/emit）
 make smoke           # 原生二进制冒烟测试
+make mock            # 从 ~/.emit 复制出的临时工作区，用真实模型运行
 ```
+
+`make help` 列出全部目标，`ARGS` 传递运行时参数（`make test ARGS='test/mock.test.ts'`）。npm scripts 仍是内部实现。
 
 端到端冒烟测试、提示词资源、依赖补丁与技术栈见 [开发指南](docs/development.zh-CN.md)。
