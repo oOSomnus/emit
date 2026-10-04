@@ -8,9 +8,9 @@ The backend is a single Node process that exclusively owns one SQLite database a
 
 ## Features
 
-- Each employee has its own model, reasoning effort, skill bindings, MCP bindings, allowed tools, and an MCP read-only trust list. Employees can message each other, send mail, and delegate work, with depth, wake, and turn budgets that stop runaway loops.
-- Channels, direct messages, and asynchronous in-app mail. A channel wakes an employee only when you assign one in the `Assign employee` dropdown; direct messages wake their employee by default. Delegated work's final answer is visible on the Work page and returns to the originating session.
-- Sessions own their working directories: channels, DMs, and mail threads each keep their own server-local directories and default execution directory, and every run snapshots them.
+- Each employee has its own model, reasoning effort, skill bindings, MCP bindings, allowed tools, an MCP read-only trust list, and a generated default avatar (a stable mosaic derived from the employee id, with no network requests). Employees can message each other, send mail, and delegate work, with depth, wake, and turn budgets that stop runaway loops. Delegated work's final answer is visible on the Runs page and returns to the originating session.
+- Works are first-class: each channel, DM, and mail thread belongs to exactly one work, which owns the server-local directories, default execution directory, goal, work instructions, file/URL resources, and shared notes. Notes are the only memory a work's conversations share — other conversations' full histories are never loaded automatically.
+- Channels are real group chats with explicit members: pick members at creation, manage them later, and let employees invite each other. A message wakes only the employees it addresses (`@name`/`@address`, member chips, or `@all`); an unaddressed message is recorded without starting anyone, and the composer previews who will reply. DMs are per work, and employee-to-employee DMs sit alongside user DMs.
 - Mail is durable and asynchronous: sending commits the body, each recipient's queued work, and the dispatch tasks before the model runs, so nothing is lost when the browser closes or the process is killed.
 - Automatic risk review: low and medium risk are approved automatically, high risk goes to a manual queue, `deny`/`critical` is rejected, and unknown risk or a judge failure blocks execution.
 - Results and completion are committed atomically; a restart resumes live runs and marks unrecoverable work as failed, and an interrupted tool is re-run only when the tool declares its replay safe.
@@ -46,7 +46,7 @@ The default data directory is `~/.emit`, and one process owns it at a time; save
 
 ## Safety boundaries
 
-- Session working directories are **not an OS sandbox**. Built-in file tools validate real paths and symlinks, and Shell validates its starting cwd, but arbitrary commands and stdio/remote MCP servers still run with their own process privileges, and a directory list does not guarantee they cannot see other paths.
+- Work directories are **not an OS sandbox**. Built-in file tools validate real paths and symlinks, and Shell validates its starting cwd, but arbitrary commands and stdio/remote MCP servers still run with their own process privileges, and a directory list does not guarantee they cannot see other paths.
 - Automatic risk review is **not a sandbox** either: it judges a redacted action with a budgeted context, so it cannot give kernel-level read-only guarantees and the model can misjudge. Unknown or failed evaluations block execution and high risk needs a human, but neither replaces process isolation.
 - The judge model is not a security guarantee and cannot audit history omitted by the budget.
 - Connecting a remote model sends the corresponding context to that provider; when using local models, the model context stays on this machine.

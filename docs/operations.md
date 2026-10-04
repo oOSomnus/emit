@@ -50,6 +50,8 @@ npm start -- --data-dir /absolute/path/to/data --port 8787
 - On startup the process resumes running tasks first, then marks work that has no live task and no unsettled submission as failed and explains why in its original session.
 - Recovery follows each tool's replay declaration. `read_file`, `load_skill`, and `send_mail` declare `replay=safe`, so an interrupted call may be re-run (mail is deduplicated by a durable receipt); tools that do not declare it (file writes/edits, Shell, ...) and MCP tools with `replay=unsafe` are not re-run automatically after an interruption, and the model sees the interrupted call and decides what to do next. External side effects are not promised exactly-once.
 
-## Upgrading from employee-owned directories
+## Upgrading from earlier data models
 
-Session-owned working directories replaced employee-owned `cwd`, and the approval contract moved to v3 with a separately configured evaluation model. The directory change was a clean cutover: old employee directories are not migrated, old paths are not granted automatically, and the database is not cleared. Old sessions that lack the new directory configuration must be recreated.
+Work contexts replaced session-owned working directories and the per-channel assignment model. This was a clean cutover: existing rooms, messages, notes, and approvals are not migrated, old session directories and grants are not inherited automatically, and the database is not cleared. Conversations created by an older version must be recreated under a work.
+
+Earlier, session-owned working directories replaced employee-owned `cwd`, and the approval contract moved to v3 with a separately configured evaluation model; that change was a clean cutover too — old employee directories are not migrated and old paths are not granted automatically.

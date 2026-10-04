@@ -113,9 +113,8 @@ components:
     rounded: "{rounded.control}"
     padding: "16px"
   identity-avatar:
-    backgroundColor: "var(--accent-soft)"
-    textColor: "var(--selected-text)"
-    typography: "{typography.ui}"
+    backgroundColor: "generated mosaic palette"
+    textColor: "generated mosaic palette"
     rounded: "{rounded.control}"
     width: "32px"
     height: "32px"
@@ -216,13 +215,13 @@ The component language is quiet and native: clear action hierarchy, visible keyb
 - **Placeholder / Disabled:** Placeholder color is secondary ink with opacity 1. Disabled controls remain visibly subdued and non-interactive.
 
 ### Navigation
-The rail uses a stable aubergine background with 40px room rows. The selected destination fills the full row and carries a narrow inset leading marker; labels and secondary room details remain readable at compact density. Mail folders are flat, left-aligned rows rather than pills. On narrow viewports the workspace navigation becomes a drawer, while mail switches to a native folder select at its own container threshold.
+The rail uses a stable aubergine background with 40px room rows. A work selector sits at the top and only filters what gets created next; channels and DMs keep their fixed work. The selected destination fills the full row and carries a narrow inset leading marker; labels and secondary room details remain readable at compact density. Mail folders are flat, left-aligned rows rather than pills. On narrow viewports the workspace navigation becomes a drawer, while mail switches to a native folder select at its own container threshold.
 
 ### Identity Marginalia
-A 32px neutral lavender initial avatar sits beside a metadata line with a one-pixel accent lead-in. Author names use the UI role; role, address, and time use secondary metadata. Reuse this grammar in chat messages, mail messages, and employee cards, and only show role details when supplied by the existing employee record.
+A 32px generated mosaic avatar sits beside a metadata line with a one-pixel accent lead-in: a rounded 5×5 SVG pattern derived deterministically from the employee id, drawn from one of six low-saturation identity palettes with a matching dark-theme variant. Renaming an employee never changes the pattern, and deleted employees keep theirs in history. Author names use the UI role; role, address, and time use secondary metadata. Reuse this grammar in chat messages, mail messages, employee cards, and member lists, and only show role details when supplied by the existing employee record. Users and system notices keep the neutral initial; the mosaic is reserved for employees and is `aria-hidden` — the name and role next to it carry the identity, and no control is labeled by the pattern alone.
 
 ### Chat Composer
-The composer is a single 840px-aligned frame, with a multiline prose field above a native employee-target select and send action. Focus is expressed by the containing frame so the textarea does not draw a competing inner ring. On narrow screens the toolbar remains a row and the message field remains reachable above the keyboard.
+The composer is a single 840px-aligned frame, with a multiline prose field above a member chip row and the send action. Typing `@` opens a keyboard-driven suggestion list of the channel's enabled members and `@all`; choosing a suggestion inserts the full address, and chips address members without typing. A live line under the field previews exactly who will reply (`replies: A, B`, `no one is addressed`, or the addressing error), and the frame states that the message is visible to everyone. Focus is expressed by the containing frame so the textarea does not draw a competing inner ring. On narrow screens the toolbar remains a row and the message field remains reachable above the keyboard.
 
 ## Do's and Don'ts
 

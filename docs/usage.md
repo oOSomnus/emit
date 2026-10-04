@@ -19,6 +19,7 @@ Day-to-day behavior of employees, collaboration, sessions, mail, and the interfa
 - Each employee has an execution model and reasoning effort, skill bindings, MCP bindings, the tools it may call, and a list of MCP tools trusted as read-only.
 - The model must exist in the catalog, be a chat model that supports tool calling, and support the selected effort; otherwise saving fails with a clear reason. If the model is later removed from the credentials, new work fails explicitly instead of silently switching to another model.
 - Working directories do not belong to employees. Changing an employee's configuration bumps its configuration version.
+- Every employee has a generated default avatar: a rounded mosaic pattern derived deterministically from the employee's stable id. Renaming an employee does not change the pattern, deleted employees keep their pattern in history, and nothing is fetched from the network; the name and role stay next to the image.
 
 ### Collaboration and delegation
 
@@ -27,18 +28,21 @@ Day-to-day behavior of employees, collaboration, sessions, mail, and the interfa
 
 ### Channels and direct messages
 
-- In a channel, an employee is woken only when you assign one in the `Assign employee` dropdown. The options show `@name · role`; the default option records the message without assigning anyone. `@` mentions in the body do not wake employees by themselves.
-- Direct messages wake the target employee by default.
+- A channel has explicit members: choose them when creating the channel, or later under `Manage members`. Employees can also invite each other with `invite_to_channel`; an invitation takes effect immediately and does not start the invited employee. Every member can read the channel's public history, including messages from before they joined.
+- A message wakes only the employees it addresses. Type `@` in the composer to pick from the channel's enabled members and `@all`, or use the member chips; the composer previews exactly who will reply (`replies: A, B`) or states that nobody is addressed. `@all` starts every enabled member; disabled members are skipped and reported. An email address or an `@` inside code does not address anyone.
+- An unaddressed message is still recorded — every member can read it — but it starts zero model calls. Adding a member later does not re-send past messages, and an invitation never wakes anyone by itself.
+- Duplicate display names must be disambiguated by full address or chips: an ambiguous `@name` is rejected instead of guessed, and addressing a non-member or a disabled employee is rejected before the message is saved.
+- Direct messages are per work: the same employee has a separate DM thread in each work. Employee-to-employee DMs sit alongside user DMs; the user cannot be added to an employee-to-employee thread, which the interface shows as `A ↔ B` with sending disabled.
+- Removing a member stops that employee's unfinished work in the channel; other members' work and every existing message stay untouched.
 - Only actual user room messages constitute human authorization; delegated tasks, tool results, and synthetic user roles do not escalate it (see [Security](security.md)).
 
-## Session working directories
+## Works, directories, and shared notes
 
-- Channel, direct-message, and mail sessions each keep multiple server-local directories plus one default execution directory. Channel employees share the room's configuration; a DM's configuration applies to that conversation only; mail reply chains and graph branches in the same room share their session configuration, while different sessions stay independent.
-- Edit directories in the chat page under `Working directories`, or in the mail reading pane and Compose panel under `Session working directories`.
-- A brand-new Compose starts with an empty directory list — it does not copy the authorization of the mail you are reading. A draft keeps its own session and directories, and a reply reuses the directory configuration of the thread it answers (employees answering mail follow the mailbox session's directories).
-- Paths must be absolute, must exist, and must be accessible. Saving resolves real paths, removes duplicates, and validates the default directory.
-- With an empty configuration, local Shell and ordinary file access are unavailable. Skill directories already bound to an employee still load read-only, and remote MCP servers do not depend on a local directory.
-- Every run snapshots the directory version. Delegated work inherits the source session's directories; a cross-employee DM uses the target DM's configuration. Changing directories immediately invalidates unexecuted approvals and waiting-approval work in that session; later calls of old work must stop and be re-sent, while tools that have already started may finish.
+- A **work** is a first-class object — a project, a feature, or any piece of work. It owns multiple server-local directories plus one default execution directory, a goal, work instructions, file/URL resources, and shared notes. Each channel, DM, and mail thread belongs to exactly one work; switching the work only changes what you create next, and it never re-binds an existing conversation.
+- Manage works under `Work` in the sidebar: name, goal, work instructions, directories, file/URL resources, and shared notes. Paths must be absolute, must exist, and must be accessible; saving resolves real paths, removes duplicates, and validates the default directory. A URL resource is listed only — Emit never fetches it — and a file resource must already exist inside the work's directories.
+- Directories no longer belong to a session. With an empty work configuration, local Shell and ordinary file access are unavailable; skill directories already bound to an employee still load read-only, and remote MCP servers do not depend on a local directory.
+- Shared notes are the only memory a work's conversations share. Employees read them only when asked (`list_work_notes` / `read_work_note`); the goal, instructions, and the note and resource indexes enter the prompt, and other conversations' full histories are never loaded automatically. Notes saved from a private conversation become readable by everyone working in that work — the interface says so before saving. A work's notes are invisible to other works, and a note can be read only inside the work that owns it.
+- Every run snapshots the work's directory version. Delegated work inherits the source snapshot; a new DM or mail thread binds to the work without copying a snapshot. Changing a work's directories immediately invalidates unexecuted approvals and waiting-approval work in **every** room of that work — later calls of old work must stop and be re-sent, while tools that have already started may finish. Changing the goal, instructions, resources, or notes does not invalidate directory approvals.
 
 ## Mail
 
@@ -60,11 +64,12 @@ Day-to-day behavior of employees, collaboration, sessions, mail, and the interfa
 - Mail is asynchronous and does not pretend to be chat: the reading pane does not stream text an employee is still generating. It shows the mail's work status — `Queued / Running / Waiting for approval / Waiting for reply / Completed / Failed / Stopped` — and a `View execution` panel with the real input, tool calls, tool results, and answer, paginated for earlier steps. Work that is waiting can be stopped from the panel.
 - An employee task receives the complete original envelope (sender, To/CC, subject, parents, and body). The employee's final text answer is delivered automatically as a reply to this mail, so an ordinary reply needs no `send_mail` call and no working directory. `send_mail` is for sending a separate mail or creating a collaboration branch.
 - `send_mail` with `awaitReply: true` is a real request for help: the initiator's work pauses as `Waiting for reply`, and any answer written while waiting is withheld from delivery. When the other employee replies, the initiator continues with the reply text and delivers only one final answer. Stopping waiting work also clears the waiting link; a late reply still arrives as ordinary mail but is no longer treated as an answer.
-- An employee's `send_mail` continues the current session by default and branches with the current mail as `inReplyTo`. An explicit `newSession=true`, or a non-mail origin, creates an independent session with an empty directory; cross-session parents are rejected.
+- An employee's `send_mail` continues the current session by default and branches with the current mail as `inReplyTo`. An explicit `newSession=true`, or a non-mail origin, creates an independent session in the same work (the work's directories still apply; no directory snapshot is copied), and cross-session parents are rejected.
 
 ### Drafts and Compose
 
 - Drafts live in their thread, are never delivered, and wake nobody. Each draft is listed as its own entry: multiple drafts in one thread can each be edited, sent, or discarded, and saving an edit retires the older version, keeping only the newest.
+- Compose picks a work; the new thread is fixed to it and uses that work's directories. It copies nothing from the mail you are reading. A draft keeps its own thread and work, and a reply stays in the work of the thread it answers.
 - Compose is a fixed panel at the bottom right (full-screen on narrow displays). Switching folders or reading other mail does not discard unfinished content; closing with unsaved text first asks `Save draft / Discard / Keep editing`. Manually saving a draft requires body text.
 - Read and archive are per-message flags: you can mark them directly on a list row. Opening a thread marks only the unread mail you received as read, and only once per thread per session; manually marking a message unread again will not be immediately changed back.
 
@@ -75,7 +80,7 @@ Day-to-day behavior of employees, collaboration, sessions, mail, and the interfa
 
 ## Appearance and navigation
 
-- The left sidebar contains the workspace name; channels and DMs (each list scrolls independently and has a `+` to create); a single `Mailbox` entry; and a fixed bottom section with `Approvals / Work / Employees / Settings` plus the appearance and language pickers. Count badges show counts only.
+- The left sidebar contains the workspace name and the work selector; channels and DMs (each list scrolls independently and has a `+` to create); a single `Mailbox` entry; and a fixed bottom section with `Approvals / Work / Runs / Employees / Settings` plus the appearance and language pickers. `Work` manages works (goal, instructions, directories, resources, notes); `Runs` is the execution-record page. Count badges show counts only.
 - Three themes are available: light, dark, and follow-system. Switch them from the sidebar bottom, `Settings → Workspace`, or first-run setup. The choice is stored in the browser and applied before the first frame, so navigating never flashes the old palette.
 - The interface has two languages, English and Simplified Chinese. The language picker (sidebar bottom, `Settings → Workspace`, or first-run setup) has three states: follow-browser, English, and Simplified Chinese. Follow-browser uses the first browser language (`zh*` → Simplified Chinese, otherwise English); the choice is saved in the browser, applied before the first frame (`<html lang>` and the document title included), and synchronizes across tabs of the same origin. Switching the language redraws the interface and the application messages already on screen in place — it never reloads the page, restarts a live run, or resends anything. Only interface text and application-authored messages change: user content, model answers, third-party provider and MCP output, and recorded execution evidence keep their original text, and records saved before a translation existed keep their original text too.
 - On narrow screens the sidebar becomes an overlay drawer reached from the top bar's menu button. Escape or clicking the overlay closes it and returns focus to the menu button; selecting a navigation item only closes the drawer. Forms and lists collapse to a single column.
