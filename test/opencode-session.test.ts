@@ -252,7 +252,7 @@ function approvalCase(id: string): ApprovalCase {
     argumentsPreview: '{"path":"notes.txt"}',
     arguments: '{"path":"notes.txt"}',
     cwd: "/tmp",
-    directories: { roomId: "room-1", version: 1, paths: ["/tmp"], defaultPath: "/tmp" },
+    directories: { roomId: "room-1", workContextId: "ctx-1", version: 1, paths: ["/tmp"], defaultPath: "/tmp" },
     targetPaths: [],
     allowedTools: ["read_file"],
     userIntent: {

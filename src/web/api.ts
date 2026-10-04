@@ -22,11 +22,17 @@ import type {
   MessageDTO,
   ModelInfoDTO,
   ProviderStatusDTO,
-  RoomDirectoryDraftDTO,
-  RoomDirectoryPatchDTO,
   RoomDTO,
   ServerEvent,
   SkillDTO,
+  WorkContextDTO,
+  WorkContextDraftDTO,
+  WorkContextPatchDTO,
+  WorkNoteCreateDTO,
+  WorkNoteDTO,
+  WorkNoteDeleteDTO,
+  WorkNotePatchDTO,
+  WorkNoteResponseDTO,
   WorkDTO,
   WorkExecutionDTO,
 } from "../shared/contracts.ts";
@@ -104,41 +110,79 @@ export const api = {
   createRoom: (input: {
     kind: "channel" | "dm" | "mail";
     name: string;
+    workContextId: string;
+    memberIds: string[];
     topic?: string;
     employeeId?: string;
-    directories?: RoomDirectoryDraftDTO;
   }) => request<RoomDTO>("/api/rooms", { method: "POST", body: JSON.stringify(input) }),
 
-  updateRoomDirectories: (id: string, draft: RoomDirectoryPatchDTO) =>
-    request<RoomDTO>(`/api/rooms/${id}/directories`, { method: "PATCH", body: JSON.stringify(draft) }),
+  patchRoomMembers: (id: string, input: { memberIds: string[]; expectedVersion: number }) =>
+    request<RoomDTO>(`/api/rooms/${id}/members`, { method: "PATCH", body: JSON.stringify(input) }),
 
   messages: (roomId: string) => request<{ room: RoomDTO; messages: MessageDTO[] }>(`/api/rooms/${roomId}/messages`),
 
-  sendMessage: (
+  sendRoomMessage: (
+    roomId: string,
+    input: { body: string; recipientIds?: string[]; mentionAll?: boolean },
+  ) =>
+    request<{ message: MessageDTO; workIds: string[] }>(`/api/rooms/${roomId}/messages`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  sendMail: (
     roomId: string,
     input: {
       body: string;
-      employeeId?: string;
-      subject?: string;
-      to?: string[];
+      subject: string;
+      to: string[];
       cc?: string[];
       draft?: boolean;
       inReplyTo?: string;
+      workContextId?: string;
     },
   ) =>
-    request<{ message: MessageDTO; workId?: string; workIds?: string[]; error?: string; errorLocalized?: LocalizedText }>(
-      `/api/rooms/${roomId}/messages`,
-      { method: "POST", body: JSON.stringify(input) },
-    ),
+    request<{ message: MessageDTO; workIds: string[] }>(`/api/rooms/${roomId}/mail-send`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
 
-  sendDraft: (roomId: string, entryId: string) =>
-    request<{ message: MessageDTO; workIds: string[]; error?: string; errorLocalized?: LocalizedText }>(
-      `/api/rooms/${roomId}/mail-send`,
-      {
-        method: "POST",
-        body: JSON.stringify({ entryId }),
-      },
-    ),
+  sendDraft: (roomId: string, input: { entryId: string }) =>
+    request<{ message: MessageDTO; workIds: string[] }>(`/api/rooms/${roomId}/mail-send`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  listWorkContexts: () => request<{ workContexts: WorkContextDTO[] }>("/api/work-contexts"),
+
+  createWorkContext: (draft: WorkContextDraftDTO) =>
+    request<WorkContextDTO>("/api/work-contexts", { method: "POST", body: JSON.stringify(draft) }),
+
+  getWorkContext: (id: string) => request<WorkContextDTO>(`/api/work-contexts/${id}`),
+
+  patchWorkContext: (id: string, patch: WorkContextPatchDTO) =>
+    request<WorkContextDTO>(`/api/work-contexts/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+
+  getWorkContextNote: (id: string, noteId: string) =>
+    request<WorkNoteDTO>(`/api/work-contexts/${id}/notes/${noteId}`),
+
+  createWorkContextNote: (id: string, draft: WorkNoteCreateDTO) =>
+    request<WorkNoteResponseDTO>(`/api/work-contexts/${id}/notes`, {
+      method: "POST",
+      body: JSON.stringify(draft),
+    }),
+
+  patchWorkContextNote: (id: string, noteId: string, patch: WorkNotePatchDTO) =>
+    request<WorkNoteResponseDTO>(`/api/work-contexts/${id}/notes/${noteId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
+  deleteWorkContextNote: (id: string, noteId: string, input: WorkNoteDeleteDTO) =>
+    request<WorkContextDTO>(`/api/work-contexts/${id}/notes/${noteId}`, {
+      method: "DELETE",
+      body: JSON.stringify(input),
+    }),
 
   mailbox: () => request<{ items: MailboxItemDTO[] }>("/api/mail"),
 

@@ -22,6 +22,7 @@ import {
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { EmitRuntime } from "./runtime.ts";
 import { AppDoc, ConversationContextDoc, RoomDoc, type EmployeeRecord, type SkillRecord } from "./documents.ts";
+import { findWorkContext } from "./work-contexts.ts";
 import {
   renderEmployeeContext,
   renderEmployeeIdentity,
@@ -56,9 +57,18 @@ export type EmployeeTools = {
  * gate never has to guess. `allowedTools` is the employee's allow list; an empty
  * list means the collaboration tools only, matching what the editor shows.
  */
+const COLLABORATION_TOOL_NAMES: Record<string, true> = {
+  send_message: true,
+  invite_to_channel: true,
+  list_work_notes: true,
+  read_work_note: true,
+  save_work_note: true,
+  send_mail: true,
+  delegate_task: true,
+};
+
 export function classifyTool(employee: EmployeeRecord, toolName: string): ToolRisk | { blocked: string } {
-  const collaborationNames = new Set(["send_message", "send_mail", "delegate_task"]);
-  if (collaborationNames.has(toolName)) return { risk: "safe" };
+  if (COLLABORATION_TOOL_NAMES[toolName] === true) return { risk: "safe" };
 
   const builtin = BUILTIN_TOOL_RISK[toolName];
   if (builtin !== undefined) {
@@ -147,9 +157,39 @@ export function buildEmployeeExtension(input: EmployeeAgentInput): Extension {
         app: appInput,
         directory: { kind: "error", message: directory.message },
         work,
+        workContext: null,
       });
     }
     const { scope } = directory;
+    const workContextRecord = await findWorkContext(runtime, directory.scope.workContextId);
+    const workContext =
+      workContextRecord === undefined
+        ? null
+        : {
+            id: workContextRecord.id,
+            name: workContextRecord.name,
+            goal: workContextRecord.goal,
+            instructions: workContextRecord.instructions,
+            resources: workContextRecord.resources.slice(0, 40).map((resource) => ({
+              id: resource.id,
+              kind: resource.kind,
+              name: resource.name,
+              location: resource.location.slice(0, 240),
+            })),
+            remainingResources: Math.max(0, workContextRecord.resources.length - 40),
+            notes: [...workContextRecord.notes]
+              .sort((left, right) => right.updatedAt - left.updatedAt)
+              .slice(0, 20)
+              .map((note) => ({
+                id: note.id,
+                title: note.title,
+                authorId: note.authorId,
+                sourceRoomId: note.sourceRoomId,
+                sourceEntryId: note.sourceEntryId,
+                sourceWorkId: note.sourceWorkId,
+              })),
+            remainingNotes: Math.max(0, workContextRecord.notes.length - 20),
+          };
     const room = await promptInput.read.snapshot(RoomDoc, scope.roomId, ctx);
     return renderEmployeeContext({
       app: appInput,
@@ -165,6 +205,7 @@ export function buildEmployeeExtension(input: EmployeeAgentInput): Extension {
               defaultPath: scope.defaultPath,
             },
       work,
+      workContext,
     });
   });
 

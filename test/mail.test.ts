@@ -2,22 +2,19 @@
  * Mail delivery is durable before it is fast.
  *
  * Sending a mail writes the entry, every recipient's queued work, and one
- * `emit.mail-dispatch` task in a single commit; a process that dies before its
+ * `emit.work-dispatch` task in a single commit; a process that dies before its
  * scheduler resumes must not lose a recipient, and a process that restarts
  * must not wake one twice. These tests run the real EmitRuntime over SQLite
  * and a local OpenAI-completions fixture, so the restart is a real close and
  * reopen of the same data directory rather than a mocked scheduler.
  */
 
-import { createServer, type Server, type ServerResponse } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { ConversationId, TaskId } from "@earendil-works/pi-durable";
-import { EmitRuntime } from "../src/server/runtime.ts";
-import { McpManager } from "../src/server/mcp.ts";
-import { buildMailExtension, buildMailTasks, sendQueuedMail, type MailTasks } from "../src/server/mail.ts";
+import type { EmitRuntime } from "../src/server/runtime.ts";
+import { sendQueuedMail } from "../src/server/mail.ts";
 import { installEmployeeExtension, listWorks, reconcileWorks, stopWork, type Resume } from "../src/server/work.ts";
 import { createEmployee, listEmployees, setupWorkspace, updateEmployee } from "../src/server/workspace.ts";
 import {
@@ -33,6 +30,14 @@ import { RoomMessageEntry, type EmployeeRecord, type RoomRecord } from "../src/s
 import { WorkExecutionCursorError, readWorkExecution } from "../src/server/work-execution.ts";
 import type { EmployeeDraftDTO, MessageDTO } from "../src/shared/contracts.ts";
 import { toWorkDTO } from "../src/server/dto.ts";
+import {
+  FAKE_KEY_ENV,
+  createWorkContextFixture,
+  mkdtempDataDir,
+  openRuntime,
+  providerConfig,
+  startFixture,
+} from "./helpers/emit-fixture.ts";
 
 /** The employee with this name, or a test failure. */
 function employeeNamed(employees: EmployeeRecord[], name: string): EmployeeRecord {
@@ -41,100 +46,6 @@ function employeeNamed(employees: EmployeeRecord[], name: string): EmployeeRecor
   return found;
 }
 
-const FAKE_KEY_ENV = "EMIT_MAIL_TEST_KEY";
-
-type FixtureRequest = { model: string | undefined; system: string; prompt: string };
-type FixtureAnswer = {
-  content?: string;
-  toolCall?: { name: string; args: unknown };
-  /** Hold the response until this settles: a deterministic model-side latch. */
-  gate?: Promise<void>;
-};
-type Fixture = { baseUrl: string; requests: FixtureRequest[]; close: () => Promise<void> };
-
-/** Write one OpenAI-completions SSE answer, with or without a tool call. */
-function writeAnswer(response: ServerResponse, model: string | undefined, answer: FixtureAnswer): void {
-  if (response.writableEnded || response.destroyed) return;
-  const base = { id: "chatcmpl-fixture", object: "chat.completion.chunk", created: 0, model: model ?? "fake-chat" };
-  const chunk = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
-  response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-  response.write(chunk({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] }));
-  if (answer.content !== undefined) {
-    response.write(chunk({ ...base, choices: [{ index: 0, delta: { content: answer.content }, finish_reason: null }] }));
-  }
-  if (answer.toolCall !== undefined) {
-    response.write(
-      chunk({
-        ...base,
-        choices: [
-          {
-            index: 0,
-            delta: {
-              tool_calls: [
-                {
-                  index: 0,
-                  id: `call_${answer.toolCall.name}`,
-                  type: "function",
-                  function: { name: answer.toolCall.name, arguments: JSON.stringify(answer.toolCall.args) },
-                },
-              ],
-            },
-            finish_reason: null,
-          },
-        ],
-      }),
-    );
-  }
-  response.write(
-    chunk({
-      ...base,
-      choices: [{ index: 0, delta: {}, finish_reason: answer.toolCall !== undefined ? "tool_calls" : "stop" }],
-    }),
-  );
-  response.write("data: [DONE]\n\n");
-  response.end();
-}
-
-async function startFixture(
-  decide: (request: FixtureRequest) => FixtureAnswer = (request) =>
-    request.prompt.includes("localpart") ? { content: '{"localpart": "tester"}' } : { content: "已完成：我看过邮件了。" },
-): Promise<Fixture> {
-  const requests: FixtureRequest[] = [];
-  const server: Server = createServer((request, response) => {
-    const chunks: Buffer[] = [];
-    request.on("data", (chunk: Buffer) => chunks.push(chunk));
-    request.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8");
-      let model: string | undefined;
-      let messages: { role?: string; content?: unknown }[] = [];
-      try {
-        const body = JSON.parse(raw) as { model?: string; messages?: { role?: string; content?: unknown }[] };
-        model = body.model;
-        messages = body.messages ?? [];
-      } catch {
-        // Leave the parsed values empty: an unparsable body still answers.
-      }
-      const systemMessage = messages.find((message) => message.role === "system");
-      const entry: FixtureRequest = {
-        model,
-        system: typeof systemMessage?.content === "string" ? systemMessage.content : "",
-        prompt: JSON.stringify(messages),
-      };
-      requests.push(entry);
-      const answer = decide(entry);
-      if (answer.gate === undefined) writeAnswer(response, model, answer);
-      else void answer.gate.then(() => writeAnswer(response, model, answer));
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("fixture failed to bind");
-  return {
-    baseUrl: `http://127.0.0.1:${address.port}/v1`,
-    requests,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
-  };
-}
 
 const cleanups: Array<() => Promise<void> | void> = [];
 
@@ -149,34 +60,13 @@ afterEach(async () => {
   }
 }, 30_000);
 
-const providerConfig = (baseUrl: string) => ({
-  id: "fake",
-  name: "Fake Provider",
-  baseUrl,
-  api: "openai-completions" as const,
-  apiKeyEnv: FAKE_KEY_ENV,
-  models: [
-    { id: "fake-chat", name: "Fake Chat", contextWindow: 32768, maxTokens: 4096, reasoning: false, input: ["text" as const] },
-    { id: "fake-reviewer", name: "Fake Reviewer", contextWindow: 32768, maxTokens: 4096, reasoning: false, input: ["text" as const] },
-  ],
-});
-
-/** Open one runtime over `dir`, install the mail extension, and return its resume. */
-async function openRuntime(dir: string, baseUrl: string): Promise<{ runtime: EmitRuntime; resume: Resume }> {
-  const runtime = await EmitRuntime.open({ dataDir: dir });
-  const resume: Resume = { runtime, mcp: new McpManager(runtime), mail: undefined as unknown as MailTasks };
-  resume.mail = buildMailTasks(() => resume);
-  runtime.registry.install(buildMailExtension(resume.mail));
-  return { runtime, resume };
-}
-
 /** Open a runtime with the workspace, employees, and a mail room ready to run. */
 async function openWorkspaceForRun(
   dir: string,
   baseUrl: string,
   names: string[],
 ): Promise<{ runtime: EmitRuntime; resume: Resume; room: RoomRecord }> {
-  const { runtime, resume } = await openRuntime(dir, baseUrl);
+  const { runtime, resume } = await openRuntime(dir);
   await runtime.storeCustomProviders([providerConfig(baseUrl)]);
   await setupWorkspace(runtime, {
     workspaceName: "邮件测试",
@@ -192,7 +82,8 @@ async function openWorkspaceForRun(
     } satisfies EmployeeDraftDTO);
   }
   for (const employee of await listEmployees(runtime)) await installEmployeeExtension(resume, employee);
-  const room = await createRoom(runtime, { kind: "mail", name: "邮件测试" });
+  const workContext = await createWorkContextFixture(runtime, "邮件测试");
+  const room = await createRoom(runtime, { kind: "mail", name: "邮件测试", workContextId: workContext.id });
   return { runtime, resume, room };
 }
 
@@ -228,10 +119,10 @@ describe("durable mail delivery", () => {
   it("persists entry, works, and dispatch tasks before any model call, then finishes them after a restart", async () => {
     const fixture = await startFixture();
     cleanups.push(() => fixture.close());
-    const dir = mkdtempSync(join(tmpdir(), "emit-mail-restart-"));
+    const dir = mkdtempDataDir("emit-mail-restart-");
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
-    const first = await openRuntime(dir, fixture.baseUrl);
+    const first = await openRuntime(dir);
     cleanups.push(async () => {
       await first.runtime.close();
     });
@@ -250,7 +141,8 @@ describe("durable mail delivery", () => {
       } satisfies EmployeeDraftDTO);
     }
     for (const employee of await listEmployees(first.runtime)) await installEmployeeExtension(first.resume, employee);
-    const room = await createRoom(first.runtime, { kind: "mail", name: "邮件测试" });
+    const workContext = await createWorkContextFixture(first.runtime, "邮件测试");
+    const room = await createRoom(first.runtime, { kind: "mail", name: "邮件测试", workContextId: workContext.id });
     const employees = await listEmployees(first.runtime);
     const a = employeeNamed(employees, "甲");
     const b = employeeNamed(employees, "乙");
@@ -266,9 +158,9 @@ describe("durable mail delivery", () => {
     const queued = await listWorks(first.runtime);
     expect(queued.map((work) => work.employeeId).sort()).toEqual([a.id, b.id].sort());
     expect(queued.every((work) => work.status === "queued")).toBe(true);
-    expect(queued.every((work) => work.mailDispatchTaskId.length > 0)).toBe(true);
+    expect(queued.every((work) => work.dispatchTaskId.length > 0)).toBe(true);
     for (const work of queued) {
-      const task = await first.runtime.harness.getTask(Number(work.mailDispatchTaskId) as TaskId, first.runtime.ctx);
+      const task = await first.runtime.harness.getTask(Number(work.dispatchTaskId) as TaskId, first.runtime.ctx);
       expect(task?.state.status).not.toBe("terminal");
     }
     expect((await roomMessages(first.runtime, room)).length).toBe(1);
@@ -277,7 +169,7 @@ describe("durable mail delivery", () => {
 
     // Restart the same data directory, install the extensions a resumed run
     // resolves, then enable scheduling — the order `main.ts` uses.
-    const reopened = await openRuntime(dir, fixture.baseUrl);
+    const reopened = await openRuntime(dir);
     cleanups.push(async () => {
       await reopened.runtime.close();
     });
@@ -342,10 +234,10 @@ describe("durable mail delivery", () => {
       };
     });
     cleanups.push(() => fixture.close());
-    const dir = mkdtempSync(join(tmpdir(), "emit-mail-draft-"));
+    const dir = mkdtempDataDir("emit-mail-draft-");
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
-    const { runtime, resume } = await openRuntime(dir, fixture.baseUrl);
+    const { runtime, resume } = await openRuntime(dir);
     cleanups.push(async () => {
       await runtime.close();
     });
@@ -364,7 +256,8 @@ describe("durable mail delivery", () => {
       } satisfies EmployeeDraftDTO);
     }
     for (const employee of await listEmployees(runtime)) await installEmployeeExtension(resume, employee);
-    const room = await createRoom(runtime, { kind: "mail", name: "邮件测试" });
+    const workContext = await createWorkContextFixture(runtime, "邮件测试");
+    const room = await createRoom(runtime, { kind: "mail", name: "邮件测试", workContextId: workContext.id });
     const employees = await listEmployees(runtime);
     const a = employeeNamed(employees, "甲");
     const b = employeeNamed(employees, "乙");
@@ -437,7 +330,7 @@ describe("durable mail delivery", () => {
       };
     });
     cleanups.push(() => fixture.close());
-    const dir = mkdtempSync(join(tmpdir(), "emit-mail-await-"));
+    const dir = mkdtempDataDir("emit-mail-await-");
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
     const { runtime, resume, room } = await openWorkspaceForRun(dir, fixture.baseUrl, ["甲", "乙", "丙"]);
@@ -482,7 +375,7 @@ describe("durable mail delivery", () => {
       };
     });
     cleanups.push(() => fixture.close());
-    const dir = mkdtempSync(join(tmpdir(), "emit-mail-failchild-"));
+    const dir = mkdtempDataDir("emit-mail-failchild-");
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
     const { runtime, resume, room } = await openWorkspaceForRun(dir, fixture.baseUrl, ["甲", "乙"]);
@@ -532,7 +425,7 @@ describe("durable mail delivery", () => {
       };
     });
     cleanups.push(() => fixture.close());
-    const dir = mkdtempSync(join(tmpdir(), "emit-mail-stopchild-"));
+    const dir = mkdtempDataDir("emit-mail-stopchild-");
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
     const { runtime, resume, room } = await openWorkspaceForRun(dir, fixture.baseUrl, ["甲", "乙"]);
@@ -580,7 +473,7 @@ describe("durable mail delivery", () => {
       };
     });
     cleanups.push(() => fixture.close());
-    const dir = mkdtempSync(join(tmpdir(), "emit-mail-stopwait-"));
+    const dir = mkdtempDataDir("emit-mail-stopwait-");
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
     const { runtime, resume, room } = await openWorkspaceForRun(dir, fixture.baseUrl, ["甲", "乙"]);
@@ -615,7 +508,7 @@ describe("durable mail delivery", () => {
   }, 60_000);
 
   it("records a real tool call and its failure, keeps the record across a restart, and never leaks the system prompt", async () => {
-    const workDir = mkdtempSync(join(tmpdir(), "emit-work-"));
+    const workDir = mkdtempDataDir("emit-work-");
     cleanups.push(() => rmSync(workDir, { recursive: true, force: true }));
     const SECRET = "sk-live-secret-value";
     const fixture = await startFixture((request) => {
@@ -641,10 +534,10 @@ describe("durable mail delivery", () => {
       };
     });
     cleanups.push(() => fixture.close());
-    const dir = mkdtempSync(join(tmpdir(), "emit-mail-exec-"));
+    const dir = mkdtempDataDir("emit-mail-exec-");
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
-    const { runtime, resume } = await openRuntime(dir, fixture.baseUrl);
+    const { runtime, resume } = await openRuntime(dir);
     cleanups.push(async () => {
       await runtime.close();
     });
@@ -662,11 +555,8 @@ describe("durable mail delivery", () => {
     } satisfies EmployeeDraftDTO);
     const a = employeeNamed(await listEmployees(runtime), "甲");
     for (const employee of await listEmployees(runtime)) await installEmployeeExtension(resume, employee);
-    const room = await createRoom(runtime, {
-      kind: "mail",
-      name: "邮件测试",
-      directories: { paths: [workDir], defaultPath: workDir },
-    });
+    const workContext = await createWorkContextFixture(runtime, "邮件测试", { paths: [workDir], defaultPath: workDir });
+    const room = await createRoom(runtime, { kind: "mail", name: "邮件测试", workContextId: workContext.id });
     runtime.resume();
 
     const sent = await sendQueuedMail(resume, mailInput(room, [a]));
@@ -705,7 +595,7 @@ describe("durable mail delivery", () => {
 
     // The record is durable: a restart reads the same steps, not a live buffer.
     await runtime.close();
-    const reopened = await openRuntime(dir, fixture.baseUrl);
+    const reopened = await openRuntime(dir);
     cleanups.push(async () => {
       await reopened.runtime.close();
     });
@@ -716,10 +606,10 @@ describe("durable mail delivery", () => {
   it("sends a draft once under concurrent sends and replays a tool send from its receipt", async () => {
     const fixture = await startFixture();
     cleanups.push(() => fixture.close());
-    const dir = mkdtempSync(join(tmpdir(), "emit-mail-await-"));
+    const dir = mkdtempDataDir("emit-mail-await-");
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
-    const { runtime, resume } = await openRuntime(dir, fixture.baseUrl);
+    const { runtime, resume } = await openRuntime(dir);
     cleanups.push(async () => {
       await runtime.close();
     });
@@ -736,7 +626,8 @@ describe("durable mail delivery", () => {
       executionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
     } satisfies EmployeeDraftDTO);
     const a = employeeNamed(await listEmployees(runtime), "甲");
-    const room = await createRoom(runtime, { kind: "mail", name: "邮件测试" });
+    const workContext = await createWorkContextFixture(runtime, "邮件测试");
+    const room = await createRoom(runtime, { kind: "mail", name: "邮件测试", workContextId: workContext.id });
 
     const draft = await appendRoomMessage(
       runtime,
@@ -790,12 +681,11 @@ describe("durable mail delivery", () => {
   it("localized failure text survives a restart while model and user originals do not change", async () => {
     const fixture = await startFixture();
     cleanups.push(() => fixture.close());
-    const dir = mkdtempSync(join(tmpdir(), "emit-mail-localized-failure-"));
+    const dir = mkdtempDataDir("emit-mail-localized-failure-");
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
     const workDir = join(dir, "work");
-    mkdirSync(workDir);
 
-    const first = await openRuntime(dir, fixture.baseUrl);
+    const first = await openRuntime(dir);
     cleanups.push(async () => {
       await first.runtime.close();
     });
@@ -816,11 +706,8 @@ describe("durable mail delivery", () => {
     const employees = await listEmployees(first.runtime);
     employee = employeeNamed(employees, "乙");
     for (const current of employees) await installEmployeeExtension(first.resume, current);
-    const room = await createRoom(first.runtime, {
-      kind: "mail",
-      name: "邮件测试",
-      directories: { paths: [workDir], defaultPath: workDir },
-    });
+    const workContext = await createWorkContextFixture(first.runtime, "邮件测试", { paths: [workDir], defaultPath: workDir });
+    const room = await createRoom(first.runtime, { kind: "mail", name: "邮件测试", workContextId: workContext.id });
 
     first.runtime.resume();
     const queuedMail = mailInput(room, [employee]);
@@ -882,7 +769,7 @@ describe("durable mail delivery", () => {
     expect(oldMessage).not.toHaveProperty("bodyLocalized");
 
     await first.runtime.close();
-    const reopened = await openRuntime(dir, fixture.baseUrl);
+    const reopened = await openRuntime(dir);
     cleanups.push(async () => {
       await reopened.runtime.close();
     });

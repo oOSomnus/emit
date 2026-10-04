@@ -8,6 +8,7 @@ import { ApprovalsView } from "./views/ApprovalsView.tsx";
 import { EmployeesView } from "./views/EmployeesView.tsx";
 import { WorkView } from "./views/WorkView.tsx";
 import { SettingsView } from "./views/SettingsView.tsx";
+import { WorkContextsView } from "./views/WorkContextsView.tsx";
 import { Onboarding } from "./views/Onboarding.tsx";
 import { Icon, IconButton } from "./views/ui.tsx";
 
@@ -94,6 +95,7 @@ export function App(): ReactNode {
         {state.view === "approvals" ? <ApprovalsView /> : null}
         {state.view === "employees" ? <EmployeesView /> : null}
         {state.view === "work" ? <WorkView /> : null}
+        {state.view === "work-contexts" ? <WorkContextsView /> : null}
         {state.view === "settings" ? <SettingsView /> : null}
       </section>
       {state.notice !== undefined && text(state.notice.text).length > 0 ? (

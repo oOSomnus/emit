@@ -45,11 +45,18 @@ export const mailMessages = {
     }),
   awaitReplyEmployeeOnly: (): AppText =>
     appText({ en: "Only mail between employees can wait for a reply", "zh-CN": "只有员工之间的邮件才能等待回信" }),
-  wakeLimit: (max: number): AppText =>
-    appText({
-      en: `Collaboration has reached the cross-employee wake limit (${max} wakes)`,
-      "zh-CN": `本次协作已达到跨员工唤醒上限（${max} 次）`,
-    }),
+
+  /** Reply-resume refusals, raised inside `emit.mail-resume`. */
+  parentWorkMissing: (): AppText =>
+    appText({ en: "The original task no longer exists; the reply cannot resume it", "zh-CN": "原任务不存在，无法续接回信" }),
+  parentConversationMissing: (): AppText =>
+    appText({ en: "The original task has no execution conversation", "zh-CN": "原任务执行会话不存在" }),
+  resumeRoomMissing: (): AppText =>
+    appText({ en: "The mail conversation no longer exists", "zh-CN": "邮件会话不存在" }),
+  resumeSourceMissing: (): AppText =>
+    appText({ en: "The reply's source text cannot be found; the task cannot resume", "zh-CN": "找不到回信原文，无法续接" }),
+  resumeStopped: (): AppText =>
+    appText({ en: "Resuming from the reply was stopped", "zh-CN": "回信续接已被停止" }),
 
   /** Internal invariants on the send and replay path. */
   sentMailInvariant: (): AppText =>

@@ -6,6 +6,48 @@ import type { CheckResultDTO, ModelInfoDTO, WorkStatusDTO } from "../../shared/c
 import { errorDisplay, type DisplayText, type Locale } from "../../shared/i18n.ts";
 import { useI18n } from "../i18n.tsx";
 import { chineseMessages, englishMessages } from "../messages.ts";
+import { generateEmployeeAvatar } from "../avatar.ts";
+import { useTheme } from "../theme.tsx";
+
+const EMPLOYEE_AVATAR_PALETTES = [
+  { light: ["#efe8f5", "#795397", "#aa86bc"], dark: ["#33263e", "#c1a3da", "#9573af"] },
+  { light: ["#e7edf7", "#4e6995", "#91a8c7"], dark: ["#253144", "#a4bddb", "#7798bf"] },
+  { light: ["#e3f0ef", "#477d78", "#83aaa4"], dark: ["#223936", "#9acac0", "#6fa598"] },
+  { light: ["#f6e8ec", "#9a6075", "#c394a5"], dark: ["#3d2932", "#ddb0c0", "#b98198"] },
+  { light: ["#f5edde", "#967545", "#bfa776"], dark: ["#3d3325", "#d7c091", "#b29a64"] },
+  { light: ["#e8efdf", "#647c50", "#9bad83"], dark: ["#2e3727", "#bdcea0", "#8fa777"] },
+] as const;
+
+/** A local, stable employee image; user and system authors keep the initials avatar. */
+export function EmployeeAvatar({ employeeId, size = 32 }: { employeeId: string; size?: number }): ReactNode {
+  const avatar = useMemo(() => generateEmployeeAvatar(employeeId), [employeeId]);
+  const { resolved } = useTheme();
+  const colors = EMPLOYEE_AVATAR_PALETTES[avatar.palette]![resolved];
+  return (
+    <svg
+      className="employee-avatar"
+      viewBox="0 0 96 96"
+      width={size}
+      height={size}
+      style={{ display: "block", flex: "none" }}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect width="96" height="96" rx="22" fill={colors[0]} />
+      {avatar.cells.map((cell) => (
+        <rect
+          key={`${cell.x}-${cell.y}`}
+          x={14 + cell.x * 14}
+          y={14 + cell.y * 14}
+          width="12"
+          height="12"
+          rx="3"
+          fill={cell.tone === 0 ? colors[1] : colors[2]}
+        />
+      ))}
+    </svg>
+  );
+}
 
 export type IconName =
   | "mail"

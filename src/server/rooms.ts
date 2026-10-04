@@ -5,22 +5,28 @@
  * not model context. Every room — channel, direct message, and mail thread —
  * uses the same shape, so one message list, one unread model, and one
  * subscription drive all three views. Mail is only an envelope on a message.
+ *
+ * Every room is fixed to exactly one work context. Directories live on that
+ * work, never on a room, so two rooms of one work share one authorization and
+ * rooms of different works never leak into each other.
  */
 
-import { realpath, stat } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { randomUUID } from "node:crypto";
+
 import {
   AppDoc,
+  EmployeeDoc,
   MailFlagDoc,
   RoomDoc,
   RoomMessageEntry,
+  WorkContextDoc,
   type MailEnvelope,
-  type RoomDirectoriesRecord,
   type RoomMessageData,
+  type RoomMessageAddressing,
   type RoomRecord,
 } from "./documents.ts";
 import { configure } from "@earendil-works/pi-durable";
-import type { ConversationId, EntryRecord, EntryId, Tx } from "@earendil-works/pi-durable";
+import type { ConversationId, Cursor, EntryId, EntryRecord, Tx } from "@earendil-works/pi-durable";
 import type { EmitRuntime } from "./runtime.ts";
 import { AppError, type AppText } from "./messages.ts";
 import { roomMessages } from "./messages/rooms.ts";
@@ -28,8 +34,6 @@ import type {
   MailMetaDTO,
   MessageAuthorDTO,
   MessageDTO,
-  RoomDirectoryDraftDTO,
-  RoomDirectoryPatchDTO,
   RoomDTO,
 } from "../shared/contracts.ts";
 import type { LocalizedText } from "../shared/i18n.ts";
@@ -75,7 +79,11 @@ export function mailAddresses(envelope: MailEnvelope, address: string): boolean 
 }
 export const ROOM_PAGE_SIZE = 200;
 
-export class RoomDirectoryError extends AppError {
+/** How many visible messages one history window returns, at most. */
+export const ROOM_WINDOW_LIMIT = 40;
+
+/** A mail-send or room-operation failure with an HTTP status. */
+export class RoomError extends AppError {
   constructor(
     readonly status: 400 | 404 | 409,
     message: AppText,
@@ -84,59 +92,8 @@ export class RoomDirectoryError extends AppError {
   }
 }
 
-async function canonicalDirectoryPath(path: string): Promise<string> {
-  const trimmed = path.trim();
-  if (trimmed.length === 0 || !isAbsolute(trimmed)) {
-    throw new RoomDirectoryError(400, roomMessages.directoryNotAbsolutePath(trimmed));
-  }
-  try {
-    const canonical = await realpath(trimmed);
-    const info = await stat(canonical);
-    if (!info.isDirectory()) throw new RoomDirectoryError(400, roomMessages.directoryNotADirectory(trimmed));
-    return canonical;
-  } catch (error) {
-    if (error instanceof RoomDirectoryError) throw error;
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new RoomDirectoryError(400, roomMessages.directoryUnreadable(trimmed, reason));
-  }
-}
-
-async function canonicalizeRoomDirectories(draft: unknown): Promise<RoomDirectoriesRecord> {
-  if (typeof draft !== "object" || draft === null || Array.isArray(draft)) {
-    throw new RoomDirectoryError(400, roomMessages.directoriesNotAnObject);
-  }
-  const value = draft as Record<string, unknown>;
-  if (!Array.isArray(value.paths)) throw new RoomDirectoryError(400, roomMessages.directoryPathsNotAnArray);
-  if (typeof value.defaultPath !== "string") {
-    throw new RoomDirectoryError(400, roomMessages.defaultDirectoryNotAString);
-  }
-
-  const paths: string[] = [];
-  const seen = new Set<string>();
-  for (const item of value.paths) {
-    if (typeof item !== "string") throw new RoomDirectoryError(400, roomMessages.directoryPathNotAString);
-    const path = await canonicalDirectoryPath(item);
-    if (seen.has(path)) continue;
-    seen.add(path);
-    paths.push(path);
-  }
-
-  const defaultInput = value.defaultPath.trim();
-  if (paths.length === 0) {
-    if (defaultInput.length > 0) {
-      throw new RoomDirectoryError(400, roomMessages.defaultDirectoryNotAuthorized(defaultInput));
-    }
-    return { paths, defaultPath: "", version: 1 };
-  }
-  if (defaultInput.length === 0) {
-    throw new RoomDirectoryError(400, roomMessages.chooseDefaultDirectory);
-  }
-  const defaultPath = await canonicalDirectoryPath(defaultInput);
-  if (!seen.has(defaultPath)) {
-    throw new RoomDirectoryError(400, roomMessages.defaultDirectoryNotAuthorized(defaultPath));
-  }
-  return { paths, defaultPath, version: 1 };
-}
+/** Kept for the mail wake-budget refusals that predate this class. */
+export class RoomDirectoryError extends RoomError {}
 
 /**
  * Detach a room record from a transaction overlay.
@@ -152,13 +109,11 @@ export function plainRoom(record: RoomRecord): RoomRecord {
     kind: record.kind,
     name: record.name,
     topic: record.topic,
+    workContextId: record.workContextId,
     memberIds: [...record.memberIds],
+    membershipVersion: record.membershipVersion,
+    dmParticipantIds: [...record.dmParticipantIds],
     employeeId: record.employeeId,
-    directories: {
-      paths: [...record.directories.paths],
-      defaultPath: record.directories.defaultPath,
-      version: record.directories.version,
-    },
     createdAt: record.createdAt,
     lastMessageAt: record.lastMessageAt,
     messageCount: record.messageCount,
@@ -167,18 +122,15 @@ export function plainRoom(record: RoomRecord): RoomRecord {
 }
 
 export function toRoomDTO(record: RoomRecord, unread = 0): RoomDTO {
-  const directories = record.directories;
   return {
     id: record.id,
     kind: record.kind,
     name: record.name,
     topic: record.topic,
+    workContextId: record.workContextId,
     memberIds: [...record.memberIds],
-    directories: {
-      paths: Array.isArray(directories?.paths) ? [...directories.paths] : [],
-      defaultPath: typeof directories?.defaultPath === "string" ? directories.defaultPath : "",
-      version: typeof directories?.version === "number" ? directories.version : 0,
-    },
+    membershipVersion: Number.isInteger(record.membershipVersion) ? record.membershipVersion : 1,
+    dmParticipantIds: Array.isArray(record.dmParticipantIds) ? [...record.dmParticipantIds] : [],
     ...(record.kind === "dm" && record.employeeId.length > 0 ? { employeeId: record.employeeId } : {}),
     createdAt: record.createdAt,
     lastMessageAt: record.lastMessageAt,
@@ -191,6 +143,8 @@ export function messageData(input: {
   author: MessageAuthorDTO;
   body: string;
   workId?: string;
+  /** The resolved wake set of a routed group message. */
+  addressing?: RoomMessageAddressing;
   notice?: boolean;
   mail?: MailEnvelope;
   /** Display pair for application-authored notice bodies; raw bodies carry none. */
@@ -204,6 +158,7 @@ export function messageData(input: {
     body: input.body,
     createdAt: Date.now(),
     workId: input.workId ?? "",
+    addressing: input.addressing === undefined ? null : { ...input.addressing, recipientIds: [...input.addressing.recipientIds] },
     notice: input.notice === true,
     mail: input.mail ?? null,
     ...(input.bodyLocalized === undefined ? {} : { bodyLocalized: input.bodyLocalized }),
@@ -247,6 +202,9 @@ export function toMessageDTO(
     createdAt: data.createdAt,
   };
   if (data.workId.length > 0) dto.workId = data.workId;
+  if (data.addressing !== null && data.addressing !== undefined) {
+    dto.addressing = { recipientIds: [...data.addressing.recipientIds], mentionAll: data.addressing.mentionAll };
+  }
   if (data.notice) dto.notice = true;
   if (data.mail !== null) {
     const meta = toMailMeta(data.mail);
@@ -360,12 +318,6 @@ export async function listRooms(runtime: EmitRuntime): Promise<RoomRecord[]> {
 }
 
 /**
- * Rooms with their unread mail count.
- *
- * Only mail threads can be unread: a channel or direct message is read by
- * looking at it, while a mail carries a per-message flag the user controls.
- */
-/**
  * The unread mail count of one thread, as the inbox defines it.
  *
  * A message counts only when it is mail (not a channel post), was not written
@@ -435,37 +387,96 @@ export async function isSentMailEntry(runtime: EmitRuntime, room: RoomRecord, en
   );
 }
 
-/** The direct-message conversation addressed to one employee. */
-export async function findEmployeeDm(runtime: EmitRuntime, employeeId: string): Promise<RoomRecord | undefined> {
-  const rooms = await listRooms(runtime);
-  return rooms.find((room) => room.employeeId === employeeId && room.kind === "dm");
+function sameParticipants(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
-let roomCounter = 0;
+/** The two sorted participants of a direct-message room. */
+export function sortedParticipants(first: string, second: string): string[] {
+  return [first, second].sort();
+}
+
+/** The direct-message conversation of one participant pair inside one work. */
+export async function findEmployeeDm(
+  runtime: EmitRuntime,
+  workContextId: string,
+  participantIds: readonly [string, string],
+): Promise<RoomRecord | undefined> {
+  const expected = sortedParticipants(participantIds[0], participantIds[1]);
+  const rooms = await listRooms(runtime);
+  return rooms.find(
+    (room) =>
+      room.kind === "dm" &&
+      room.workContextId === workContextId &&
+      sameParticipants(room.dmParticipantIds, expected),
+  );
+}
+
+/** Whether one employee family member is a live, enabled employee. */
+async function readEmployeeIn(
+  tx: Tx,
+  id: string,
+): Promise<{ exists: boolean; enabled: boolean; name: string }> {
+  const doc = await tx.doc(EmployeeDoc, id, { id });
+  return { exists: doc.name.length > 0, enabled: doc.enabled, name: doc.name };
+}
+
+/** Whether one work-context family member exists (creation always stamps `createdAt`). */
+async function workContextExistsIn(tx: Tx, id: string): Promise<boolean> {
+  if (id.length === 0) return false;
+  const doc = await tx.doc(WorkContextDoc, id, { id });
+  return doc.createdAt !== 0;
+}
 
 /** Room creation input: the record's identity fields the caller chooses. */
 export type RoomCreateInput = {
   kind: RoomRecord["kind"];
   name: string;
   topic?: string;
+  /** The work this conversation is fixed to; required and never rebound. */
+  workContextId: string;
+  /** Employee id used to identify a user DM. */
   employeeId?: string;
+  /** Channel members; every id must be a live enabled employee. */
   memberIds?: string[];
-  directories?: RoomDirectoryDraftDTO;
+  /** For DMs: exactly two participant ids ("user" or an employee id). */
+  dmParticipantIds?: string[];
 };
 
 /**
  * Create a room, its transcript conversation, and the room document inside one
  * caller-owned transaction.
  *
- * The caller validates directories before opening the transaction: this helper
- * does no filesystem or network work, so it is safe to compose with message
- * appends, work creation, and task creation in a single commit.
+ * The caller validates what it can before opening the transaction, but the work
+ * context and every member are re-checked here so a room can never point at a
+ * work that does not exist or at an employee who is disabled.
  */
-export async function createRoomIn(
-  tx: Tx,
-  init: RoomCreateInput & { directories: RoomDirectoriesRecord },
-): Promise<RoomRecord> {
-  const id = `room_${Date.now().toString(36)}${(roomCounter++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+export async function createRoomIn(tx: Tx, init: RoomCreateInput): Promise<RoomRecord> {
+  if (init.workContextId.length === 0 || !(await workContextExistsIn(tx, init.workContextId))) {
+    throw new RoomError(404, roomMessages.workContextMissing(init.workContextId));
+  }
+  const memberIds: string[] = [];
+  for (const id of init.memberIds ?? []) {
+    if (typeof id !== "string" || id.length === 0) continue;
+    if (memberIds.includes(id)) continue;
+    const employee = await readEmployeeIn(tx, id);
+    if (!employee.exists) throw new RoomError(404, roomMessages.memberNotFound(id));
+    if (!employee.enabled) throw new RoomError(400, roomMessages.memberDisabled(employee.name));
+    memberIds.push(id);
+  }
+  let dmParticipantIds: string[] = [];
+  if (init.kind === "dm") {
+    const participants = [...new Set(init.dmParticipantIds ?? [])].sort();
+    if (participants.length !== 2) throw new RoomError(400, roomMessages.dmParticipantsInvalid);
+    for (const id of participants) {
+      if (id === "user") continue;
+      const employee = await readEmployeeIn(tx, id);
+      if (!employee.exists) throw new RoomError(404, roomMessages.memberNotFound(id));
+      if (!employee.enabled) throw new RoomError(400, roomMessages.memberDisabled(employee.name));
+    }
+    dmParticipantIds = participants;
+  }
+  const id = `room_${randomUUID().replace(/-/g, "").slice(0, 20)}`;
   const now = Date.now();
   const conversation = await tx.createConversation({ ownership: { kind: "ownerless" } });
   // A transcript conversation runs no agent; employee extensions are selected
@@ -476,9 +487,11 @@ export async function createRoomIn(
     kind: init.kind,
     name: init.name,
     topic: init.topic ?? "",
-    memberIds: init.memberIds ?? [],
+    workContextId: init.workContextId,
+    memberIds,
+    membershipVersion: 1,
+    dmParticipantIds,
     employeeId: init.employeeId ?? "",
-    directories: { ...init.directories, paths: [...init.directories.paths] },
     createdAt: now,
     lastMessageAt: now,
     messageCount: 0,
@@ -491,63 +504,164 @@ export async function createRoomIn(
 
 /** Create a room and its transcript conversation in one commit. */
 export async function createRoom(runtime: EmitRuntime, init: RoomCreateInput): Promise<RoomRecord> {
-  const directories =
-    init.directories === undefined
-      ? { paths: [], defaultPath: "", version: 1 }
-      : await canonicalizeRoomDirectories(init.directories);
-  const record = await runtime.harness.commit((tx) => createRoomIn(tx, { ...init, directories }), runtime.ctx);
+  const record = await runtime.harness.commit((tx) => createRoomIn(tx, init), runtime.ctx);
   const saved = await runtime.readFamily(RoomDoc, record.id, { id: record.id });
   runtime.emit({ type: "room", room: toRoomDTO(saved ?? record) });
   return saved ?? record;
 }
 
-export async function updateRoomDirectories(
+/**
+ * Find or create the direct-message room of one participant pair in one work.
+ *
+ * The deduplication re-reads every candidate inside the creation transaction,
+ * so two callers racing the same pair converge on one room instead of leaving
+ * two private threads for the same two people.
+ */
+export async function ensureEmployeeDm(
+  runtime: EmitRuntime,
+  input: {
+    workContextId: string;
+    participantIds: readonly [string, string];
+    name: string;
+    topic: string;
+    employeeId?: string;
+  },
+): Promise<{ room: RoomRecord; created: boolean }> {
+  const expected = sortedParticipants(input.participantIds[0], input.participantIds[1]);
+  const candidates = (await listRooms(runtime)).filter(
+    (room) =>
+      room.kind === "dm" &&
+      room.workContextId === input.workContextId &&
+      sameParticipants(room.dmParticipantIds, expected),
+  );
+  const result = await runtime.harness.commit(async (tx) => {
+    for (const candidate of candidates) {
+      const doc = await tx.doc(RoomDoc, candidate.id, { id: candidate.id });
+      if (
+        doc.kind === "dm" &&
+        doc.workContextId === input.workContextId &&
+        sameParticipants(doc.dmParticipantIds, expected)
+      ) {
+        return { record: plainRoom(doc), created: false };
+      }
+    }
+    const record = await createRoomIn(tx, {
+      kind: "dm",
+      name: input.name,
+      topic: input.topic,
+      workContextId: input.workContextId,
+      employeeId: input.employeeId ?? "",
+      memberIds: [input.participantIds[0], input.participantIds[1]].filter((id) => id !== "user"),
+      dmParticipantIds: [...expected],
+    });
+    return { record, created: true };
+  }, runtime.ctx);
+  if (result.created) runtime.emit({ type: "room", room: toRoomDTO(result.record) });
+  return { room: result.record, created: result.created };
+}
+
+export type RoomMembersResult = {
+  room: RoomRecord;
+  added: string[];
+  removed: string[];
+};
+
+/**
+ * Replace a channel's member set.
+ *
+ * Members are employees only; adding or removing takes effect immediately.
+ * One localized system notice records who changed the set, and only a real
+ * change bumps `membershipVersion` — a draft that matches the stored set is a
+ * no-op, not a conflict.
+ */
+export async function updateRoomMembers(
   runtime: EmitRuntime,
   roomId: string,
-  draft: RoomDirectoryPatchDTO,
-): Promise<RoomRecord> {
-  if (typeof draft !== "object" || draft === null || !Number.isInteger(draft.expectedVersion)) {
-    throw new RoomDirectoryError(400, roomMessages.expectedVersionNotAnInteger);
+  memberIds: readonly string[],
+  expectedVersion: unknown,
+): Promise<RoomMembersResult> {
+  if (!Number.isInteger(expectedVersion)) {
+    throw new RoomError(400, roomMessages.expectedVersionNotAnInteger);
   }
   const current = await findRoom(runtime, roomId);
-  if (current === undefined) throw new RoomDirectoryError(404, roomMessages.roomNotFoundWithId(roomId));
-  if (
-    current.directories === undefined ||
-    !Number.isInteger(current.directories.version) ||
-    current.directories.version < 1 ||
-    !Array.isArray(current.directories.paths) ||
-    typeof current.directories.defaultPath !== "string"
-  ) {
-    throw new RoomDirectoryError(400, roomMessages.directoriesMissingRecreate);
+  if (current === undefined) throw new RoomError(404, roomMessages.roomNotFoundWithId(roomId));
+  if (current.kind !== "channel") throw new RoomError(400, roomMessages.membersChannelOnly);
+  if (!Array.isArray(memberIds)) throw new RoomError(400, roomMessages.membersNotAnArray);
+  if (current.membershipVersion !== expectedVersion) {
+    throw new RoomError(409, roomMessages.membersChangedReload(current.membershipVersion));
   }
-  if (current.directories.version !== draft.expectedVersion) {
-    throw new RoomDirectoryError(409, roomMessages.directoriesChangedReload);
+  const requested: string[] = [];
+  for (const id of memberIds) {
+    if (typeof id !== "string" || id.length === 0) throw new RoomError(400, roomMessages.memberNotFound(String(id)));
+    if (requested.includes(id)) continue;
+    requested.push(id);
   }
-  const normalized = await canonicalizeRoomDirectories(draft);
-  return runtime.updateFamily(RoomDoc, roomId, { id: roomId }, (doc) => {
-    const directories = doc.directories;
-    if (
-      directories === undefined ||
-      !Number.isInteger(directories.version) ||
-      directories.version < 1 ||
-      !Array.isArray(directories.paths) ||
-      typeof directories.defaultPath !== "string"
-    ) {
-      throw new RoomDirectoryError(400, roomMessages.directoriesMissingRecreate);
+  const app = await runtime.readSession(AppDoc);
+  const actor = app.userName.length > 0 ? app.userName : roomMessages.userFallbackAuthorName["zh-CN"];
+  const expected = expectedVersion;
+  const committed = await runtime.harness.commit(async (tx) => {
+    const doc = await tx.doc(RoomDoc, roomId, { id: roomId });
+    if (doc.kind !== "channel") throw new RoomError(400, roomMessages.membersChannelOnly);
+    if (doc.membershipVersion !== expected) {
+      throw new RoomError(409, roomMessages.membersChangedReload(doc.membershipVersion));
     }
-    if (directories.version !== draft.expectedVersion) {
-      throw new RoomDirectoryError(409, roomMessages.directoriesChangedReload);
+    for (const id of requested) {
+      const employee = await readEmployeeIn(tx, id);
+      if (!employee.exists) throw new RoomError(404, roomMessages.memberNotFound(id));
+      if (!employee.enabled) throw new RoomError(400, roomMessages.memberDisabled(employee.name));
     }
-    const changed =
-      directories.defaultPath !== normalized.defaultPath ||
-      directories.paths.length !== normalized.paths.length ||
-      directories.paths.some((path, index) => path !== normalized.paths[index]);
-    doc.directories = {
-      paths: [...normalized.paths],
-      defaultPath: normalized.defaultPath,
-      version: changed ? directories.version + 1 : directories.version,
+    const added = requested.filter((id) => !doc.memberIds.includes(id));
+    const removed = doc.memberIds.filter((id) => !requested.includes(id));
+    if (added.length === 0 && removed.length === 0) {
+      return { room: plainRoom(doc), added, removed, changed: false, entry: undefined };
+    }
+    const names = new Map<string, string>();
+    for (const id of [...added, ...removed]) {
+      const employee = await readEmployeeIn(tx, id);
+      names.set(id, employee.name);
+    }
+    doc.memberIds = [...requested];
+    doc.membershipVersion += 1;
+    const sentences: { text: string; localized: LocalizedText }[] = [];
+    if (added.length > 0) {
+      const sentence = roomMessages.membersInvited(actor, added.map((id) => names.get(id) ?? id));
+      sentences.push({ text: sentence.text, localized: sentence.localized ?? { en: sentence.text, "zh-CN": sentence.text } });
+    }
+    if (removed.length > 0) {
+      const sentence = roomMessages.membersRemoved(actor, removed.map((id) => names.get(id) ?? id));
+      sentences.push({ text: sentence.text, localized: sentence.localized ?? { en: sentence.text, "zh-CN": sentence.text } });
+    }
+    const body = sentences.map((sentence) => sentence.text).join("；");
+    const bodyLocalized: LocalizedText = {
+      en: sentences.map((sentence) => sentence.localized.en).join("; "),
+      "zh-CN": sentences.map((sentence) => sentence.localized["zh-CN"]).join("；"),
     };
-  });
+    const entry = await appendRoomMessageIn(
+      tx,
+      plainRoom(doc),
+      messageData({
+        author: { type: "system", id: "system", name: "系统" },
+        body,
+        bodyLocalized,
+        notice: true,
+      }),
+    );
+    return { room: { ...plainRoom(doc), messageCount: doc.messageCount, lastMessageAt: doc.lastMessageAt }, added, removed, changed: true, entry };
+  }, runtime.ctx);
+  if (committed.changed) {
+    const saved = await findRoom(runtime, roomId);
+    const room = saved ?? committed.room;
+    runtime.emit({ type: "room", room: await roomDTOWithUnread(runtime, room) });
+    if (committed.entry !== undefined) {
+      const dto = toMessageDTO(committed.entry);
+      if (dto !== undefined) {
+        dto.roomId = roomId;
+        runtime.emit({ type: "message", roomId, message: dto });
+      }
+    }
+    return { room, added: committed.added, removed: committed.removed };
+  }
+  return { room: committed.room, added: [], removed: [] };
 }
 
 export async function setMailFlag(
@@ -563,4 +677,118 @@ export async function setMailFlag(
     if (change.archived !== undefined) doc.archived = change.archived;
     if (change.active !== undefined) doc.active = change.active;
   });
+}
+
+// ------------------------------------------------------------ history window
+
+/** One visible history window of a room, centred on a source entry. */
+export type RoomMessageWindow = {
+  /** Visible messages up to and including the trigger, oldest first. */
+  messages: MessageDTO[];
+  /** The source message itself, when it is visible in this room. */
+  trigger?: MessageDTO;
+  /** Visible messages of this room that fell before the returned window. */
+  omittedBeforeTrigger: number;
+};
+
+/**
+ * Whether one message is visible to a specific employee.
+ *
+ * A channel's public transcript is visible to every member, including a member
+ * added later — membership gates being addressed now, not reading history. A
+ * direct message is visible only to its two participants. A mail is visible to
+ * its author and to the employees actually addressed in To or CC; a draft or a
+ * mail addressed to somebody else is not this employee's business.
+ */
+export function messageVisibleTo(room: RoomRecord, data: RoomMessageData, employeeId: string | undefined): boolean {
+  if (employeeId === undefined) return true;
+  if (room.kind === "channel") return true;
+  if (room.kind === "dm") return room.dmParticipantIds.includes(employeeId);
+  if (data.authorId === employeeId) return true;
+  const mail = data.mail;
+  if (mail === null || mail.draft || !mail.sent) return false;
+  return mail.recipients.includes(employeeId) || mail.copies.includes(employeeId);
+}
+
+/**
+ * Read the visible history before (and including) one source entry.
+ *
+ * Pages walk backward until the window is full or the room begins, so a page
+ * of drafts cannot hide older visible messages. The trigger is returned
+ * separately as well, because a caller that asked for "history before X" must
+ * never treat X as history.
+ */
+export async function readRoomMessageWindow(
+  runtime: EmitRuntime,
+  room: RoomRecord,
+  sourceEntryId: string,
+  employeeId?: string,
+): Promise<RoomMessageWindow> {
+  const conversation = await runtime.harness.conversation(room.conversationId as ConversationId, runtime.ctx);
+  if (conversation === undefined) return { messages: [], omittedBeforeTrigger: 0 };
+  const sourceId =
+    sourceEntryId.length > 0 && Number.isSafeInteger(Number(sourceEntryId)) && Number(sourceEntryId) > 0
+      ? (Number(sourceEntryId) as EntryId)
+      : undefined;
+
+  const newestFirst: MessageDTO[] = [];
+  let trigger: MessageDTO | undefined;
+  let visibleBeforeWindow = 0;
+  let cursor: Cursor | undefined;
+  let scanned = 0;
+  for (;;) {
+    const page = await conversation.entries(
+      sourceId !== undefined ? { maxEntryId: sourceId } : {},
+      ROOM_PAGE_SIZE,
+      cursor,
+      runtime.ctx,
+    );
+    if (page.items.length === 0) break;
+    scanned += page.items.length;
+    for (const entry of page.items) {
+      if (!RoomMessageEntry.is(entry)) continue;
+      const data = entry.data;
+      const id = String(entry.id);
+      const flagKey = `${room.id}|${id}`;
+      const flags = await runtime.readFamily(MailFlagDoc, flagKey, { key: flagKey });
+      if (data.mail?.draft === true && flags?.active === false) continue;
+      if (!messageVisibleTo(room, data, employeeId)) continue;
+      if (sourceId !== undefined && id === sourceEntryId) {
+        const message = toMessageDTO(entry, flags);
+        if (message === undefined) continue;
+        message.roomId = room.id;
+        trigger = message;
+        continue;
+      }
+      if (newestFirst.length >= ROOM_WINDOW_LIMIT) {
+        visibleBeforeWindow += 1;
+        continue;
+      }
+      const message = toMessageDTO(entry, flags);
+      if (message === undefined) continue;
+      message.roomId = room.id;
+      newestFirst.push(message);
+    }
+    if (page.next === undefined) break;
+    cursor = page.next;
+    if (cursor === undefined) break;
+    // A defensive bound: the window never needs more than a few thousand
+    // entries, and a pathological transcript must not pin the request.
+    if (scanned >= ROOM_PAGE_SIZE * 50) break;
+  }
+
+  const window = newestFirst.reverse();
+  if (sourceId === undefined) {
+    return { messages: window, omittedBeforeTrigger: visibleBeforeWindow };
+  }
+  if (trigger === undefined) {
+    // The source itself is invisible (a retired draft, another employee's
+    // mail): the window still reports the visible history before it.
+    return { messages: window, omittedBeforeTrigger: visibleBeforeWindow };
+  }
+  return {
+    messages: [...window, trigger],
+    trigger,
+    omittedBeforeTrigger: visibleBeforeWindow,
+  };
 }

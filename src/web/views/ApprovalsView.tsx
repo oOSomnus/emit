@@ -44,6 +44,7 @@ export function ApprovalsView(): ReactNode {
   const { state, dispatch, setError } = useApp();
   const { messages, locale, text } = useI18n();
   const [comments, setComments] = useState<Record<string, string>>({});
+  const [workContextFilter, setWorkContextFilter] = useState("");
 
   const decide = async (approval: ApprovalDTO, decision: "approved" | "rejected") => {
     try {
@@ -54,8 +55,12 @@ export function ApprovalsView(): ReactNode {
     }
   };
 
-  const pending = state.approvals.filter((approval) => approval.status === "pending-human");
-  const settled = state.approvals.filter((approval) => approval.status !== "pending-human");
+  const filteredApprovals =
+    workContextFilter.length === 0
+      ? state.approvals
+      : state.approvals.filter((approval) => approval.directoryWorkContextId === workContextFilter);
+  const pending = filteredApprovals.filter((approval) => approval.status === "pending-human");
+  const settled = filteredApprovals.filter((approval) => approval.status !== "pending-human");
 
   const renderCard = (approval: ApprovalDTO) => (
     <article key={approval.id} className={`approval ${approval.status}`}>
@@ -82,8 +87,9 @@ export function ApprovalsView(): ReactNode {
           )}
         </p>
         <p className="hint">
-          {messages.approvals.sessionDirectories(
-            approval.directoryRoomId || messages.approvals.notBoundToSession,
+          {messages.approvals.directoryWorkContext(
+            state.workContexts.find((workContext) => workContext.id === approval.directoryWorkContextId)?.name ??
+              (approval.directoryWorkContextId || messages.approvals.notBoundToWork),
             approval.directoryVersion,
           )}
         </p>
@@ -270,6 +276,18 @@ export function ApprovalsView(): ReactNode {
             {messages.approvals.pendingCount(pending.length)} ·{" "}
             {messages.approvals.policyVersion(state.app?.policyVersion ?? 0)}
           </p>
+        </div>
+        <div className="pane-header-actions">
+          <select
+            value={workContextFilter}
+            aria-label={messages.approvals.workFilter}
+            onChange={(event) => setWorkContextFilter(event.target.value)}
+          >
+            <option value="">{messages.approvals.allWorkContexts}</option>
+            {state.workContexts.map((workContext) => (
+              <option key={workContext.id} value={workContext.id}>{workContext.name}</option>
+            ))}
+          </select>
         </div>
       </header>
       <div className="scroll">

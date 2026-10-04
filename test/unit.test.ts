@@ -56,6 +56,7 @@ function request(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
     toolKind: "file-write",
     arguments: { path: "a.txt", content: "hello" },
     cwd: "/tmp",
+    directoryWorkContextId: "ctx-1",
     directoryRoomId: "room1",
     directoryVersion: 1,
     directoryPaths: ["/tmp"],
@@ -97,7 +98,7 @@ describe("approval identity", () => {
     const base = approvalId(request(), 1, 1);
     expect(approvalId(request({ arguments: { path: "a.txt", content: "other" } }), 1, 1)).not.toBe(base);
     expect(approvalId(request({ cwd: "/tmp/other" }), 1, 1)).not.toBe(base);
-    expect(approvalId(request({ directoryRoomId: "room2" }), 1, 1)).not.toBe(base);
+    expect(approvalId(request({ directoryWorkContextId: "ctx-2" }), 1, 1)).not.toBe(base);
     expect(approvalId(request({ directoryVersion: 2 }), 1, 1)).not.toBe(base);
     expect(approvalId(request({ directoryPaths: ["/tmp", "/var/tmp"] }), 1, 1)).not.toBe(base);
     expect(approvalId(request({ targetPaths: ["/tmp/other.txt"] }), 1, 1)).not.toBe(base);

@@ -88,6 +88,23 @@ export type EmployeeContextInput = {
         paths: readonly string[];
         defaultPath: string;
       };
+  workContext: {
+    id: string;
+    name: string;
+    goal: string;
+    instructions: string;
+    resources: readonly { id: string; kind: "file" | "url"; name: string; location: string }[];
+    remainingResources: number;
+    notes: readonly {
+      id: string;
+      title: string;
+      authorId: string;
+      sourceRoomId: string;
+      sourceEntryId: string;
+      sourceWorkId: string;
+    }[];
+    remainingNotes: number;
+  } | null;
   work: { kind: "delegation" } | { kind: "room" } | { kind: "none" };
 };
 
@@ -102,6 +119,28 @@ export function renderEmployeeContext(input: EmployeeContextInput): string {
       filled("context.md", "collaboration", {
         maxDepth: input.app.maxDepth,
         maxCrossEmployeeWakes: input.app.maxCrossEmployeeWakes,
+      }),
+    );
+  }
+  if (input.workContext !== null) {
+    const resources = JSON.stringify(input.workContext.resources) ?? "[]";
+    const notes = JSON.stringify(input.workContext.notes) ?? "[]";
+    parts.push(
+      filled("context.md", "work-context", {
+        id: input.workContext.id,
+        name: input.workContext.name,
+        goal: input.workContext.goal,
+        instructions: input.workContext.instructions,
+      }),
+      filled("context.md", "work-context-resources", {
+        indexes: resources,
+        total: input.workContext.resources.length + input.workContext.remainingResources,
+        remaining: input.workContext.remainingResources,
+      }),
+      filled("context.md", "work-context-notes", {
+        indexes: notes,
+        total: input.workContext.notes.length + input.workContext.remainingNotes,
+        remaining: input.workContext.remainingNotes,
       }),
     );
   }
@@ -262,6 +301,12 @@ export const TOOL_RESULT_FRAGMENTS = [
   "skill-truncated",
   "skill-missing",
   "send-message-ok",
+  "send-channel-ok",
+  "send-channel-nobody",
+  "invite-ok",
+  "invite-replay",
+  "note-list",
+  "note-saved",
   "send-mail-ok",
   "delegate-ok",
 ] as const;
@@ -282,6 +327,10 @@ export type BuiltinToolName =
   | "run_shell"
   | "load_skill"
   | "send_message"
+  | "invite_to_channel"
+  | "list_work_notes"
+  | "read_work_note"
+  | "save_work_note"
   | "send_mail"
   | "delegate_task";
 
@@ -292,6 +341,10 @@ const BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = [
   "run_shell",
   "load_skill",
   "send_message",
+  "invite_to_channel",
+  "list_work_notes",
+  "read_work_note",
+  "save_work_note",
   "send_mail",
   "delegate_task",
 ];

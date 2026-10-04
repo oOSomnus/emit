@@ -20,6 +20,7 @@ import type {
   RoomDTO,
   ServerEvent,
   SkillDTO,
+  WorkContextDTO,
   WorkDTO,
 } from "../shared/contracts.ts";
 import type { BootstrapDTO } from "../shared/contracts.ts";
@@ -27,7 +28,7 @@ import { errorDisplay, type DisplayText } from "../shared/i18n.ts";
 import { api, subscribeEvents } from "./api.ts";
 import { uiText } from "./messages.ts";
 
-export type View = "chat" | "mail" | "approvals" | "employees" | "work" | "settings";
+export type View = "chat" | "mail" | "approvals" | "employees" | "work" | "work-contexts" | "settings";
 
 export type State = {
   ready: boolean;
@@ -36,6 +37,7 @@ export type State = {
   app: AppConfigDTO | undefined;
   employees: EmployeeDTO[];
   rooms: RoomDTO[];
+  workContexts: WorkContextDTO[];
   work: WorkDTO[];
   approvals: ApprovalDTO[];
   skills: SkillDTO[];
@@ -44,6 +46,7 @@ export type State = {
   customProviders: CustomProviderConfigDTO[];
   mcpServers: BootstrapDTO["mcpServers"];
   activeRoomId: string | undefined;
+  activeWorkContextId: string | undefined;
   messages: MessageDTO[];
   view: View;
   notice: { id: number; text: DisplayText } | undefined;
@@ -62,6 +65,7 @@ const initialState: State = {
   app: undefined,
   employees: [],
   rooms: [],
+  workContexts: [],
   work: [],
   approvals: [],
   skills: [],
@@ -70,6 +74,7 @@ const initialState: State = {
   customProviders: [],
   mcpServers: [],
   activeRoomId: undefined,
+  activeWorkContextId: undefined,
   messages: [],
   view: "chat",
   notice: undefined,
@@ -86,6 +91,9 @@ type Action =
   | { type: "employees"; employees: EmployeeDTO[] }
   | { type: "rooms"; rooms: RoomDTO[] }
   | { type: "room"; room: RoomDTO }
+  | { type: "workContexts"; workContexts: WorkContextDTO[] }
+  | { type: "workContext"; workContext: WorkContextDTO }
+  | { type: "activeWorkContext"; workContextId: string | undefined }
   | { type: "work"; work: WorkDTO[] }
   | { type: "workOne"; work: WorkDTO }
   | { type: "workProgress"; workId: string; progressText: string; tools: WorkDTO["tools"] }
@@ -113,15 +121,48 @@ function upsert<T extends { id: string }>(list: readonly T[], item: T): T[] {
   return copy;
 }
 
+function bootstrapWorkContextId(
+  state: State,
+  workContexts: readonly WorkContextDTO[],
+  rooms: readonly RoomDTO[],
+  activeRoomId: string | undefined,
+): string | undefined {
+  const currentRoom = rooms.find((room) => room.id === activeRoomId);
+  if (currentRoom !== undefined && workContexts.some((workContext) => workContext.id === currentRoom.workContextId)) {
+    return currentRoom.workContextId;
+  }
+  if (state.activeWorkContextId !== undefined && workContexts.some((workContext) => workContext.id === state.activeWorkContextId)) {
+    return state.activeWorkContextId;
+  }
+  return workContexts[0]?.id;
+}
+
+function retainedWorkContextId(state: State, workContexts: readonly WorkContextDTO[]): string | undefined {
+  if (state.activeWorkContextId !== undefined && workContexts.some((workContext) => workContext.id === state.activeWorkContextId)) {
+    return state.activeWorkContextId;
+  }
+  const currentRoom = state.rooms.find((room) => room.id === state.activeRoomId);
+  if (currentRoom !== undefined && workContexts.some((workContext) => workContext.id === currentRoom.workContextId)) {
+    return currentRoom.workContextId;
+  }
+  return workContexts[0]?.id;
+}
+
+
+
 function reducer(state: State, action: Action): State {
   switch (action.type) {
-    case "bootstrap":
+    case "bootstrap": {
+      const workContexts = [...action.payload.workContexts].sort((left, right) => right.updatedAt - left.updatedAt);
+      const activeRoomId = state.activeRoomId ?? action.payload.rooms[0]?.id;
       return {
         ...state,
         ready: true,
         app: action.payload.app,
         employees: action.payload.employees,
         rooms: action.payload.rooms,
+        workContexts,
+        activeWorkContextId: bootstrapWorkContextId(state, workContexts, action.payload.rooms, activeRoomId),
         work: action.payload.work,
         approvals: action.payload.approvals,
         skills: action.payload.skills,
@@ -130,8 +171,29 @@ function reducer(state: State, action: Action): State {
         customProviders: action.payload.customProviders,
         storagePath: action.payload.storagePath,
         models: action.models,
-        activeRoomId: state.activeRoomId ?? action.payload.rooms[0]?.id,
+        activeRoomId,
       };
+    }
+    case "workContexts": {
+      const workContexts = [...action.workContexts].sort((left, right) => right.updatedAt - left.updatedAt);
+      return {
+        ...state,
+        workContexts,
+        activeWorkContextId: retainedWorkContextId(state, workContexts),
+      };
+    }
+    case "workContext": {
+      const workContexts = [...upsert(state.workContexts, action.workContext)].sort(
+        (left, right) => right.updatedAt - left.updatedAt,
+      );
+      return {
+        ...state,
+        workContexts,
+        activeWorkContextId: retainedWorkContextId(state, workContexts),
+      };
+    }
+    case "activeWorkContext":
+      return { ...state, activeWorkContextId: action.workContextId };
     case "connected":
       return { ...state, connected: action.value };
     case "error":
@@ -183,8 +245,15 @@ function reducer(state: State, action: Action): State {
         providers: action.providers,
         customProviders: action.customProviders,
       };
-    case "activeRoom":
-      return { ...state, activeRoomId: action.roomId, messages: action.roomId === state.activeRoomId ? state.messages : [] };
+    case "activeRoom": {
+      const room = state.rooms.find((entry) => entry.id === action.roomId);
+      return {
+        ...state,
+        activeRoomId: action.roomId,
+        activeWorkContextId: room?.workContextId ?? state.activeWorkContextId,
+        messages: action.roomId === state.activeRoomId ? state.messages : [],
+      };
+    }
     case "messages":
       return { ...state, messages: action.messages };
     case "message":
@@ -311,6 +380,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         case "room":
           dispatch({ type: "room", room: event.room });
           dispatch({ type: "mailChanged" });
+          break;
+        case "work-context":
+          dispatch({ type: "workContext", workContext: event.workContext });
           break;
         case "work":
           dispatch({ type: "workOne", work: event.work });

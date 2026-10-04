@@ -1,7 +1,7 @@
 /**
  * End-to-end smoke run against a fake provider.
  *
- * Verifies the durable path plus room-owned directory isolation, mail-session
+ * Verifies the durable path plus work-context-owned directory isolation, mail-session
  * graph continuity, complete-context risk review, blocked reviewer failures,
  * and recovery/decision paths against controlled fixtures.
  */
@@ -24,21 +24,44 @@ const DIR_E = join(WORKDIR, "E");
 const OUTSIDE_DIR = join(ROOT, "tmp", "smoke-outside");
 const ROOT_CWD_PROOF = join(ROOT, "cwd-proof.txt");
 const directories = (paths, defaultPath = paths[0] ?? "") => ({ paths, defaultPath });
+const workContextsByRoomId = new Map();
+
+function workContextForRoom(room) {
+  const workContext = workContextsByRoomId.get(room.id);
+  if (workContext === undefined) throw new Error(`会话 ${room.id} 没有关联的工作上下文`);
+  return workContext;
+}
 
 async function createRoom(room, paths = [WORKDIR], defaultPath = paths[0] ?? "") {
-  return call("/api/rooms", {
+  const workContext = await call("/api/work-contexts", {
     method: "POST",
-    body: JSON.stringify({ ...room, directories: directories(paths, defaultPath) }),
+    body: JSON.stringify({ name: room.name, directories: directories(paths, defaultPath) }),
   });
+  const created = await call("/api/rooms", {
+    method: "POST",
+    body: JSON.stringify({ ...room, workContextId: workContext.id }),
+  });
+  workContextsByRoomId.set(created.id, workContext);
+  return created;
 }
 
 async function patchDirectories(room, paths, defaultPath = paths[0] ?? "") {
-  return call(`/api/rooms/${room.id}/directories`, {
+  const current = workContextForRoom(room);
+  const updated = await call(`/api/work-contexts/${current.id}`, {
     method: "PATCH",
     body: JSON.stringify({
-      ...directories(paths, defaultPath),
-      expectedVersion: room.directories.version,
+      directories: directories(paths, defaultPath),
+      expectedVersion: current.version,
     }),
+  });
+  workContextsByRoomId.set(room.id, updated);
+  return room;
+}
+
+async function addRoomMembers(room, memberIds) {
+  return call(`/api/rooms/${room.id}/members`, {
+    method: "PATCH",
+    body: JSON.stringify({ memberIds, expectedVersion: room.membershipVersion }),
   });
 }
 
@@ -87,14 +110,6 @@ async function waitFor(description, check, timeoutMs = 60_000) {
     await new Promise((resolve) => setTimeout(resolve, 400));
   }
 }
-async function startWorkMessage(roomId, body, employeeId) {
-  const response = await call(`/api/rooms/${roomId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({ body, ...(employeeId !== undefined ? { employeeId } : {}) }),
-  });
-  if (typeof response.workId !== "string") throw new Error(`会话 ${roomId} 没有启动工作：${JSON.stringify(response)}`);
-  return response;
-}
 
 async function finishWork(workId, description) {
   return waitFor(description, async () =>
@@ -103,20 +118,26 @@ async function finishWork(workId, description) {
     ),
   );
 }
-
-async function approvalForWork(workId, status, description) {
-  return waitFor(description, async () =>
-    (await call("/api/approvals")).approvals.find(
-      (approval) => approval.workId === workId && approval.status === status,
-    ),
-  );
+async function startWorkMessage(roomId, body, employeeId) {
+  const response = await call(`/api/rooms/${roomId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ body, ...(employeeId !== undefined ? { recipientIds: [employeeId] } : {}) }),
+  });
+  if (!Array.isArray(response.workIds) || response.workIds.length !== 1) {
+    throw new Error(`会话 ${roomId} 没有启动唯一工作：${JSON.stringify(response)}`);
+  }
+  return response.workIds[0];
 }
 function assertDirectoryScope(approval, room, paths, cwd, targetPaths = []) {
+  const workContext = workContextForRoom(room);
+  if (approval.directoryWorkContextId !== workContext.id) {
+    throw new Error(`审批工作上下文错误：${approval.directoryWorkContextId}，预期 ${workContext.id}`);
+  }
   if (approval.directoryRoomId !== room.id) {
     throw new Error(`审批目录来源错误：${approval.directoryRoomId}，预期 ${room.id}`);
   }
-  if (approval.directoryVersion !== room.directories.version) {
-    throw new Error(`审批目录版本错误：${approval.directoryVersion}，预期 ${room.directories.version}`);
+  if (approval.directoryVersion !== workContext.directories.version) {
+    throw new Error(`审批目录版本错误：${approval.directoryVersion}，预期 ${workContext.directories.version}`);
   }
   if (JSON.stringify(approval.directoryPaths) !== JSON.stringify(paths)) {
     throw new Error(`审批授权根不匹配：${JSON.stringify(approval.directoryPaths)}，预期 ${JSON.stringify(paths)}`);
@@ -127,22 +148,6 @@ function assertDirectoryScope(approval, room, paths, cwd, targetPaths = []) {
   }
 }
 
-function toolOutput(events, workId) {
-  return events
-    .filter((event) => event.type === "work-progress" && event.workId === workId)
-    .flatMap((event) => event.tools)
-    .map((tool) => tool.output ?? "")
-    .join("\n");
-}
-async function startMailWorkMessage(roomId, body, employeeId) {
-  const response = await call(`/api/rooms/${roomId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({ body, subject: "工作目录 cwd-proof", to: [employeeId] }),
-  });
-  if (response.workIds?.length !== 1) throw new Error(`邮件 session ${roomId} 没有启动唯一工作：${JSON.stringify(response)}`);
-  return response.workIds[0];
-}
-
 async function assertShellCwdProof({ room, expectedCwd, startWork, description, explicitB = false }) {
   const shellWorkId = await startWork(
     `请使用 run_shell 执行 cwd-proof.txt 实际目录证明：${description}${explicitB ? "，显式切换到 B" : ""}`,
@@ -150,7 +155,7 @@ async function assertShellCwdProof({ room, expectedCwd, startWork, description, 
   const approval = await approvalForWork(shellWorkId, "approved", `${description} cwd-proof 自动通过`);
   const shellWork = await finishWork(shellWorkId, `${description} cwd-proof 完成`);
   if (shellWork.status !== "succeeded") throw new Error(`${description} cwd-proof 执行失败：${shellWork.error}`);
-  assertDirectoryScope(approval, room, room.directories.paths, expectedCwd);
+  assertDirectoryScope(approval, room, workContextForRoom(room).directories.paths, expectedCwd);
 
   const proofFile = join(expectedCwd, "cwd-proof.txt");
   if (!existsSync(proofFile)) throw new Error(`${description} pwd side effect 没有写入预期目录 ${expectedCwd}`);
@@ -422,7 +427,7 @@ async function main() {
       body: JSON.stringify({ body: "请使用 run_shell 执行 cat notes.txt" }),
     });
     const catWork = await waitFor("run_shell cat 工作成功", async () =>
-      (await call("/api/works")).find((work) => work.id === catStarted.workId && work.status === "succeeded"),
+      (await call("/api/works")).find((work) => work.id === catStarted.workIds[0] && work.status === "succeeded"),
     );
     const catAnswer = await waitFor("cat 结果回到会话", async () =>
       (await call(`/api/rooms/${room.id}/messages`)).messages.find(
@@ -472,7 +477,7 @@ async function main() {
       body: JSON.stringify({ body: "请使用 run_shell 执行 ls" }),
     });
     const lsWork = await waitFor("run_shell ls 工作成功", async () =>
-      (await call("/api/works")).find((work) => work.id === lsStarted.workId && work.status === "succeeded"),
+      (await call("/api/works")).find((work) => work.id === lsStarted.workIds[0] && work.status === "succeeded"),
     );
     const lsApproval = await waitFor("ls 自动批准且执行完成", async () =>
       (await call("/api/approvals")).approvals.find(
@@ -554,7 +559,7 @@ async function main() {
     const pending = await waitFor("等待人工审批的高风险写调用", async () => {
       const payload = await call("/api/approvals");
       return payload.approvals.find(
-        (approval) => approval.workId === highStart.workId && approval.status === "pending-human" && approval.toolName === "write_file",
+        (approval) => approval.workId === highStart.workIds[0] && approval.status === "pending-human" && approval.toolName === "write_file",
       );
     });
     if (pending.evidence?.kind !== "llm" || pending.evidence.outcome !== "allow" || pending.evidence.risk !== "high") {
@@ -719,7 +724,7 @@ async function main() {
     });
     const stalePending = await waitFor("策略变更前等待人工的写调用", async () =>
       (await call("/api/approvals")).approvals.find(
-        (approval) => approval.workId === staleStart.workId && approval.status === "pending-human",
+        (approval) => approval.workId === staleStart.workIds[0] && approval.status === "pending-human",
       ),
     );
     const policyChanged = await call("/api/app", {
@@ -749,34 +754,34 @@ async function main() {
     if (invalidated.execution.state !== "not-started") throw new Error("策略失效后的写调用竟然执行了");
     if (existsSync(join(WORKDIR, "critical-settings.json"))) throw new Error("旧策略审批越过了执行时授权验证");
     log("· 更换审批判断模型提升策略版本并使旧批准失效，criteriaVersion 固定为 3");
-    // ---- room-owned directories: channel, DM, empty scope, delegation ----
+    // ---- work-context-owned directories: channel, DM, empty scope, delegation ----
     let channelRoom = await createRoom(
-      { kind: "channel", name: "共享目录测试" },
+      { kind: "channel", name: "共享目录测试", memberIds: [employee.id] },
       [DIR_A, DIR_B],
       DIR_A,
     );
     const channelPwdStart = await startWorkMessage(channelRoom.id, "请使用 run_shell 执行 pwd", employee.id);
-    const channelPwdApproval = await approvalForWork(channelPwdStart.workId, "approved", "频道默认 cwd 自动通过");
-    const channelPwdWork = await finishWork(channelPwdStart.workId, "频道默认 cwd 完成");
+    const channelPwdApproval = await approvalForWork(channelPwdStart, "approved", "频道默认 cwd 自动通过");
+    const channelPwdWork = await finishWork(channelPwdStart, "频道 pwd 完成");
     if (channelPwdWork.status !== "succeeded") throw new Error("频道 pwd 命令没有成功执行");
     // run_shell returns only an exit-code summary; its canonical cwd is recorded in the approval.
     assertDirectoryScope(channelPwdApproval, channelRoom, [DIR_A, DIR_B], DIR_A);
     await assertShellCwdProof({
       room: channelRoom,
       expectedCwd: DIR_A,
-      startWork: async (body) => (await startWorkMessage(channelRoom.id, body, employee.id)).workId,
+      startWork: async (body) => startWorkMessage(channelRoom.id, body, employee.id),
       description: "频道 A 默认 cwd",
     });
 
     const channelReadStart = await startWorkMessage(channelRoom.id, "请使用 run_shell 执行 cat notes.txt", employee.id);
-    const channelReadApproval = await approvalForWork(channelReadStart.workId, "approved", "频道 cat 自动通过");
-    const channelReadWork = await finishWork(channelReadStart.workId, "频道 cat 完成");
+    const channelReadApproval = await approvalForWork(channelReadStart, "approved", "频道 cat 自动通过");
+    const channelReadWork = await finishWork(channelReadStart, "频道 cat 完成");
     if (channelReadWork.status !== "succeeded") throw new Error("频道 cat 命令没有成功执行");
     assertDirectoryScope(channelReadApproval, channelRoom, [DIR_A, DIR_B], DIR_A);
     for (const command of ["ls", "ls -la", "git status --short", "git diff --stat", "git log --oneline"]) {
       const queryStart = await startWorkMessage(channelRoom.id, `请使用 run_shell 执行 ${command}`, employee.id);
-      const queryApproval = await approvalForWork(queryStart.workId, "approved", `${command} 自动通过`);
-      await finishWork(queryStart.workId, `${command} 工作完成`);
+      const queryApproval = await approvalForWork(queryStart, "approved", `${command} 自动通过`);
+      await finishWork(queryStart, `${command} 工作完成`);
       if (
         queryApproval.evidence?.outcome !== "allow" ||
         queryApproval.evidence?.risk !== "low" ||
@@ -788,8 +793,8 @@ async function main() {
     }
 
     const channelWriteStart = await startWorkMessage(channelRoom.id, "请写一个 channel-marker.txt", employee.id);
-    const channelWriteApproval = await approvalForWork(channelWriteStart.workId, "approved", "频道普通写入自动通过");
-    await finishWork(channelWriteStart.workId, "频道普通写入完成");
+    const channelWriteApproval = await approvalForWork(channelWriteStart, "approved", "频道普通写入自动通过");
+    await finishWork(channelWriteStart, "频道普通写入完成");
     assertDirectoryScope(channelWriteApproval, channelRoom, [DIR_A, DIR_B], DIR_A, [join(DIR_A, "channel-marker.txt")]);
     if (channelWriteApproval.evidence?.outcome !== "allow" || channelWriteApproval.evidence?.risk !== "medium") {
       throw new Error(`普通小范围写入没有按 medium/allow 自动通过：${JSON.stringify(channelWriteApproval.evidence)}`);
@@ -800,13 +805,13 @@ async function main() {
     if (existsSync(join(DIR_B, "channel-marker.txt"))) throw new Error("频道默认写入意外落在 B");
 
     const explicitBStart = await startWorkMessage(channelRoom.id, "请使用 run_shell 显式切换到 B 执行 pwd", employee.id);
-    const explicitBApproval = await approvalForWork(explicitBStart.workId, "approved", "显式 cwd=B 自动通过");
-    await finishWork(explicitBStart.workId, "显式 cwd=B 完成");
+    const explicitBApproval = await approvalForWork(explicitBStart, "approved", "显式 cwd=B 自动通过");
+    await finishWork(explicitBStart, "显式 cwd=B 完成");
     assertDirectoryScope(explicitBApproval, channelRoom, [DIR_A, DIR_B], DIR_B);
     await assertShellCwdProof({
       room: channelRoom,
       expectedCwd: DIR_B,
-      startWork: async (body) => (await startWorkMessage(channelRoom.id, body, employee.id)).workId,
+      startWork: async (body) => startWorkMessage(channelRoom.id, body, employee.id),
       description: "频道显式 B cwd",
       explicitB: true,
     });
@@ -822,14 +827,17 @@ async function main() {
         generateAddress: true,
       }),
     });
+    channelRoom = await addRoomMembers(channelRoom, [...channelRoom.memberIds, channelCoworker.id]);
     const coworkerDm = await createRoom(
       { kind: "dm", name: "频道同事私信", employeeId: channelCoworker.id },
       [DIR_C],
     );
-    if (coworkerDm.directories.paths[0] !== DIR_C) throw new Error("频道同事 DM fixture 没有绑定 C 根");
+    if (workContextForRoom(coworkerDm).directories.paths[0] !== DIR_C) {
+      throw new Error("频道同事 DM fixture 没有绑定 C 根");
+    }
     const coworkerStart = await startWorkMessage(channelRoom.id, "请使用 run_shell 执行 pwd", channelCoworker.id);
-    const coworkerApproval = await approvalForWork(coworkerStart.workId, "approved", "另一频道员工查询通过");
-    await finishWork(coworkerStart.workId, "另一频道员工查询完成");
+    const coworkerApproval = await approvalForWork(coworkerStart, "approved", "另一频道员工查询通过");
+    await finishWork(coworkerStart, "另一频道员工查询完成");
     assertDirectoryScope(coworkerApproval, channelRoom, [DIR_A, DIR_B], DIR_A);
     if (coworkerApproval.directoryPaths.includes(DIR_C)) throw new Error("频道员工继承了同一员工私信的 C 根");
 
@@ -848,7 +856,9 @@ async function main() {
       { kind: "dm", name: "目录子任务私信", employeeId: delegateChild.id },
       [DIR_C],
     );
-    if (delegateChildDm.directories.paths[0] !== DIR_C) throw new Error("交办子员工 DM fixture 没有绑定 C 根");
+    if (workContextForRoom(delegateChildDm).directories.paths[0] !== DIR_C) {
+      throw new Error("交办子员工 DM fixture 没有绑定 C 根");
+    }
     const delegateParent = await call("/api/employees", {
       method: "POST",
       body: JSON.stringify({
@@ -861,7 +871,7 @@ async function main() {
       }),
     });
     const delegateRoom = await createRoom(
-      { kind: "channel", name: "交办继承目录" },
+      { kind: "channel", name: "交办继承目录", memberIds: [delegateParent.id] },
       [DIR_A, DIR_B],
       DIR_A,
     );
@@ -869,11 +879,11 @@ async function main() {
     const delegateStart = await startWorkMessage(delegateRoom.id, "开始目录继承交办", delegateParent.id);
     const delegateChildWork = await waitFor("交办子工作使用父会话目录", async () =>
       (await call("/api/works")).find(
-        (work) => work.parentWorkId === delegateStart.workId && work.kind === "delegation" && work.status === "succeeded",
+        (work) => work.parentWorkId === delegateStart && work.kind === "delegation" && work.status === "succeeded",
       ),
     );
     const delegateApproval = await approvalForWork(delegateChildWork.id, "approved", "交办子工作 pwd 自动通过");
-    await finishWork(delegateStart.workId, "交办父工作完成");
+    await finishWork(delegateStart, "交办父工作完成");
     assertDirectoryScope(delegateApproval, delegateRoom, [DIR_A, DIR_B], DIR_A);
     if (!delegateApproval.argumentsPreview.includes("pwd > cwd-proof.txt")) {
       throw new Error("交办子任务没有运行 cwd side-effect 命令");
@@ -885,28 +895,29 @@ async function main() {
     log("· 频道共享 A/B 默认目录、显式 B、同员工私信 C 隔离和交办目录继承均已验证");
 
     room = await patchDirectories(room, [DIR_C]);
-    if (room.directories.version !== 2 || room.directories.defaultPath !== DIR_C) {
-      throw new Error(`私信目录 PATCH 没有更新版本与默认目录：${JSON.stringify(room.directories)}`);
+    const dmWorkContext = workContextForRoom(room);
+    if (dmWorkContext.directories.version !== 2 || dmWorkContext.directories.defaultPath !== DIR_C) {
+      throw new Error(`私信目录 PATCH 没有更新版本与默认目录：${JSON.stringify(dmWorkContext.directories)}`);
     }
     writeFileSync(join(DIR_C, "context-evidence.txt"), "SMOKE-CONTEXT-HIGH\n");
     await assertShellCwdProof({
       room,
       expectedCwd: DIR_C,
-      startWork: async (body) => (await startWorkMessage(room.id, body, employee.id)).workId,
+      startWork: async (body) => startWorkMessage(room.id, body, employee.id),
       description: "私信 C 默认 cwd",
     });
     const dmReadStart = await startWorkMessage(room.id, "请用 read_file 读取已读目录标记");
-    const dmReadWork = await finishWork(dmReadStart.workId, "私信默认目录读取完成");
-    if (!toolOutput(events, dmReadStart.workId).includes("SMOKE-DIRECTORY-C")) {
+    const dmReadWork = await finishWork(dmReadStart, "私信默认目录读取完成");
+    if (!toolOutput(events, dmReadStart).includes("SMOKE-DIRECTORY-C")) {
       throw new Error("同一员工私信没有读取 C 根目录");
     }
     if (dmReadWork.status !== "succeeded") throw new Error(`私信读取失败：${dmReadWork.error}`);
-    if ((await call("/api/approvals")).approvals.some((approval) => approval.workId === dmReadStart.workId)) {
+    if ((await call("/api/approvals")).approvals.some((approval) => approval.workId === dmReadStart)) {
       throw new Error("内置 read_file 查询不应进入人工或模型审批");
     }
     const dmWriteStart = await startWorkMessage(room.id, "请写一个 dm-marker.txt");
-    const dmWriteApproval = await approvalForWork(dmWriteStart.workId, "approved", "私信普通写入自动通过");
-    await finishWork(dmWriteStart.workId, "私信普通写入完成");
+    const dmWriteApproval = await approvalForWork(dmWriteStart, "approved", "私信普通写入自动通过");
+    await finishWork(dmWriteStart, "私信普通写入完成");
     assertDirectoryScope(dmWriteApproval, room, [DIR_C], DIR_C, [join(DIR_C, "dm-marker.txt")]);
     if (!existsSync(join(DIR_C, "dm-marker.txt"))) throw new Error("私信写入没有落在 C");
 
@@ -916,11 +927,8 @@ async function main() {
       ["符号链接逃逸", "请用 read_file 验证符号链接逃逸"],
     ]) {
       const started = await startWorkMessage(room.id, body);
-      const work = await finishWork(started.workId, `${label} 被本地目录边界拒绝`);
-      if (!toolOutput(events, started.workId).includes("超出该会话允许的目录")) {
-        throw new Error(`${label} 没有被会话目录校验拒绝`);
-      }
-      if ((await call("/api/approvals")).approvals.some((approval) => approval.workId === started.workId)) {
+      const work = await finishWork(started, `${label} 被本地目录边界拒绝`);
+      if ((await call("/api/approvals")).approvals.some((approval) => approval.workId === started)) {
         throw new Error(`${label} 在路径校验失败后错误创建了审批`);
       }
       if (work.status !== "succeeded") throw new Error(`${label} 的工作没有收到工具拒绝结果`);
@@ -929,30 +937,29 @@ async function main() {
       throw new Error("外部文件 fixture 被意外改动");
     }
 
-    const emptyRoom = await createRoom({ kind: "channel", name: "无目录会话" }, []);
+    const emptyRoom = await createRoom({ kind: "channel", name: "无目录会话", memberIds: [employee.id] }, []);
     const emptyStart = await startWorkMessage(emptyRoom.id, "请使用 run_shell 执行 pwd", employee.id);
-    const emptyWork = await finishWork(emptyStart.workId, "无目录会话禁止 shell");
-    if ((await call("/api/approvals")).approvals.some((approval) => approval.workId === emptyStart.workId)) {
+    const emptyWork = await finishWork(emptyStart, "无目录会话禁止 shell");
+    if ((await call("/api/approvals")).approvals.some((approval) => approval.workId === emptyStart)) {
       throw new Error("没有目录的 shell 调用不应进入审批或执行");
     }
-    if (toolOutput(events, emptyStart.workId).includes(ROOT)) {
+    if (toolOutput(events, emptyStart).includes(ROOT)) {
       throw new Error("没有目录的 shell 调用了进程 cwd");
-    }
-    if (!toolOutput(events, emptyStart.workId).includes("没有默认工作目录")) {
-      throw new Error("空目录 Shell 没有返回明确的缺少默认目录错误");
     }
     if (emptyWork.status !== "succeeded") throw new Error(`空目录工作没有收到明确阻止结果：${emptyWork.error}`);
 
     rmSync(join(DIR_A, "critical-settings.json"), { force: true });
     rmSync(join(DIR_E, "critical-settings.json"), { force: true });
-    const unrelatedRoom = await createRoom({ kind: "channel", name: "独立目录审批" }, [DIR_E]);
     const invalidatedStart = await startWorkMessage(channelRoom.id, "请写一个 critical-settings.json", employee.id);
-    const invalidatedPending = await approvalForWork(invalidatedStart.workId, "pending-human", "等待修改目录版本");
+    const invalidatedPending = await approvalForWork(invalidatedStart, "pending-human", "等待修改目录版本");
     const unaffectedStart = await startWorkMessage(unrelatedRoom.id, "请写一个 critical-settings.json", employee.id);
-    const unaffectedPending = await approvalForWork(unaffectedStart.workId, "pending-human", "等待独立会话审批");
-    const oldChannelVersion = channelRoom.directories.version;
+    const unaffectedPending = await approvalForWork(unaffectedStart, "pending-human", "等待独立会话审批");
+    const oldChannelContext = workContextForRoom(channelRoom);
+    const oldChannelVersion = oldChannelContext.directories.version;
     channelRoom = await patchDirectories(channelRoom, [DIR_A, DIR_B, DIR_E], DIR_A);
-    if (channelRoom.directories.version !== oldChannelVersion + 1) throw new Error("实质目录变更没有递增版本");
+    if (workContextForRoom(channelRoom).directories.version !== oldChannelVersion + 1) {
+      throw new Error("实质目录变更没有递增版本");
+    }
     const changedApproval = await waitFor("变更目录后旧审批失效", async () =>
       (await call("/api/approvals")).approvals.find(
         (approval) => approval.id === invalidatedPending.id && approval.status === "invalidated",
@@ -963,34 +970,37 @@ async function main() {
       (approval) => approval.id === unaffectedPending.id,
     );
     if (stillUnrelated?.status !== "pending-human") throw new Error("一个会话变更误使另一个会话的审批失效");
-    const stalePatch = await fetch(`${BASE}/api/rooms/${channelRoom.id}/directories`, {
+    const stalePatch = await fetch(`${BASE}/api/work-contexts/${oldChannelContext.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        ...directories([DIR_A, DIR_B], DIR_A),
-        expectedVersion: oldChannelVersion,
+        directories: directories([DIR_A, DIR_B], DIR_A),
+        expectedVersion: oldChannelContext.version,
       }),
     });
     if (stalePatch.status !== 409) throw new Error(`旧目录版本 PATCH 返回 ${stalePatch.status}，预期 409`);
+    const noOpDirectoryVersion = workContextForRoom(channelRoom).directories.version;
     const noOpPatch = await patchDirectories(channelRoom, [DIR_A, DIR_B, DIR_E], DIR_A);
-    if (noOpPatch.directories.version !== channelRoom.directories.version) throw new Error("无变化的目录 PATCH 递增了版本");
+    if (workContextForRoom(noOpPatch).directories.version !== noOpDirectoryVersion) {
+      throw new Error("无变化的目录 PATCH 递增了版本");
+    }
     channelRoom = noOpPatch;
-    await call(`/api/works/${unaffectedStart.workId}/stop`, { method: "POST", body: "{}" });
+    await call(`/api/works/${unaffectedStart}/stop`, { method: "POST", body: "{}" });
     await waitFor("结束独立会话的 pending high 调用", async () =>
       (await call("/api/approvals")).approvals.find(
         (approval) => approval.id === unaffectedPending.id && approval.status === "cancelled",
       ),
     );
-    await finishWork(invalidatedStart.workId, "目录版本失效工作结束");
+    await finishWork(invalidatedStart, "目录版本失效工作结束");
     if (existsSync(join(DIR_A, "critical-settings.json")) || existsSync(join(DIR_E, "critical-settings.json"))) {
       throw new Error("目录版本失效或停止后的 high 调用产生了副作用");
     }
-    log("· 目录版本冲突、无变化 PATCH、按 room 精确失效和高风险无副作用均已验证");
+    log("· 目录版本冲突、无变化 PATCH、按 work context 精确失效和高风险无副作用均已验证");
 
     // ---- complete arguments, active execution context, and blocked reviews ----
     const requestsBeforeTail = (await approvalRequests()).length;
     const tailStart = await startWorkMessage(room.id, "请做一次尾部风险审查");
-    const tailPending = await approvalForWork(tailStart.workId, "pending-human", "完整命令后缀识别为 high");
+    const tailPending = await approvalForWork(tailStart, "pending-human", "完整命令后缀识别为 high");
     if (tailPending.evidence?.outcome !== "allow" || tailPending.evidence?.risk !== "high") {
       throw new Error(`完整命令的尾部风险没有送入人工队列：${JSON.stringify(tailPending.evidence)}`);
     }
@@ -1020,7 +1030,7 @@ async function main() {
     if (existsSync(join(DIR_C, "critical-settings.json"))) throw new Error("未批准的长命令尾部产生了文件副作用");
 
     const contextStart = await startWorkMessage(room.id, "请根据实际读取到的上下文事实决定写入");
-    const contextPending = await approvalForWork(contextStart.workId, "pending-human", "实际工具结果使写入进入 high 人工审查");
+    const contextPending = await approvalForWork(contextStart, "pending-human", "实际工具结果使写入进入 high 人工审查");
     if (contextPending.evidence?.outcome !== "allow" || contextPending.evidence?.risk !== "high") {
       throw new Error(`上下文事实没有改变审查风险：${JSON.stringify(contextPending.evidence)}`);
     }
@@ -1054,17 +1064,17 @@ async function main() {
     ]) {
       const reviewerRequestsBefore = (await approvalRequests()).length;
       const started = await startWorkMessage(room.id, `请写一个 ${fileName}`);
-      const blockedApproval = await approvalForWork(started.workId, "blocked", `${label} 被阻止`);
+      const blockedApproval = await approvalForWork(started, "blocked", `${label} 被阻止`);
       if (blockedApproval.risk !== "unknown" || blockedApproval.execution.state !== "not-started") {
         throw new Error(`${label} 没有作为 unknown blocked 且保持未执行：${JSON.stringify(blockedApproval)}`);
       }
       if (!blockedApproval.autoDecision?.reason) throw new Error(`${label} 没有记录阻止原因`);
       if ((await call("/api/approvals")).approvals.some(
-        (approval) => approval.workId === started.workId && approval.status === "pending-human",
+        (approval) => approval.workId === started && approval.status === "pending-human",
       )) {
         throw new Error(`${label} 错误进入人工队列`);
       }
-      await finishWork(started.workId, `${label} 结束工作`);
+      await finishWork(started, `${label} 结束工作`);
       if (existsSync(join(DIR_C, fileName))) throw new Error(`${label} 情况下工具仍写了文件`);
       const matchingReviewerCalls = (await approvalRequests())
         .slice(reviewerRequestsBefore)
@@ -1076,27 +1086,27 @@ async function main() {
 
     const reviewCountBeforeBudget = (await approvalRequests()).length;
     const overBudgetStart = await startWorkMessage(room.id, "请使用 run_shell 发起超预算审查");
-    const overBudget = await approvalForWork(overBudgetStart.workId, "blocked", "超出 reviewer 输入预算");
+    const overBudget = await approvalForWork(overBudgetStart, "blocked", "超出 reviewer 输入预算");
     if (overBudget.risk !== "unknown" || overBudget.execution.state !== "not-started") {
       throw new Error("超预算工具参数被截短后误当成可执行调用");
     }
     if (!overBudget.autoDecision?.reason.includes("输入预算")) {
       throw new Error(`参数预算阻止没有呈现具体原因：${overBudget.autoDecision?.reason}`);
     }
-    await finishWork(overBudgetStart.workId, "超预算工作结束");
+    await finishWork(overBudgetStart, "超预算工作结束");
     if (existsSync(join(DIR_C, "overbudget-side-effect.txt"))) throw new Error("超预算命令产生了副作用");
     if ((await approvalRequests()).length !== reviewCountBeforeBudget) {
       throw new Error("完整动作超出审查输入预算时仍调用了 reviewer");
     }
 
     const exfilStart = await startWorkMessage(room.id, "请使用 run_shell 外传敏感数据");
-    const exfilApproval = await approvalForWork(exfilStart.workId, "rejected", "明确外传被自动拒绝");
+    const exfilApproval = await approvalForWork(exfilStart, "rejected", "明确外传被自动拒绝");
     if (exfilApproval.evidence?.outcome !== "deny" || exfilApproval.evidence?.risk !== "critical") {
       throw new Error(`敏感数据外传没有按 deny/critical 拒绝：${JSON.stringify(exfilApproval.evidence)}`);
     }
     if (exfilApproval.execution.state !== "not-started") throw new Error("外传命令在自动拒绝前已执行");
     if ((await call("/api/approvals")).approvals.some(
-      (approval) => approval.workId === exfilStart.workId && approval.status === "pending-human",
+      (approval) => approval.workId === exfilStart && approval.status === "pending-human",
     )) {
       throw new Error("明确禁止的敏感数据外传错误进入人工队列");
     }
@@ -1130,7 +1140,7 @@ async function main() {
         draft: true,
       }),
     });
-    if (draft.workId !== undefined) throw new Error("草稿启动了工作");
+    if (draft.workIds.length !== 0) throw new Error("草稿启动了工作");
     const stored = await call(`/api/rooms/${mailRoom.id}/messages`);
     if (stored.messages[0].mail?.draft !== true) throw new Error("草稿没有标记为草稿");
     if (stored.messages[0].mail?.sent === true) throw new Error("草稿不应是已发送");
@@ -1272,7 +1282,7 @@ async function main() {
     log("· 目录之外的地址按原样记录，无效收件人被拒绝");
 
     // ---- the mailbox lists exactly what belongs to the user ----------------
-    // A mail session's branches keep one room scope; newSession and a newly-created room do not inherit it.
+    // Mail branches and newSession share the caller's fixed work context; an independently-created room has its own.
     const graphEmployee = await call("/api/employees", {
       method: "POST",
       body: JSON.stringify({
@@ -1397,10 +1407,7 @@ async function main() {
         generateAddress: true,
       }),
     });
-    const askBackRoom = await call("/api/rooms", {
-      method: "POST",
-      body: JSON.stringify({ kind: "mail", name: "求助回信会话" }),
-    });
+    const askBackRoom = await createRoom({ kind: "mail", name: "求助回信会话" }, []);
     const askBackStart = await call(`/api/rooms/${askBackRoom.id}/messages`, {
       method: "POST",
       body: JSON.stringify({
@@ -1607,19 +1614,17 @@ async function main() {
     });
     if (staleMailStart.workIds?.length !== 1) throw new Error("过期目录测试没有启动唯一 caller work");
     await waitFor("fake caller 进入 stale-mail 暂停点", async () => (await staleMailReady()).ready);
-    const staleRoomVersion = staleMailRoom.directories.version;
+    const staleRoomVersion = workContextForRoom(staleMailRoom).directories.version;
     staleMailRoom = await patchDirectories(staleMailRoom, [DIR_E], DIR_E);
+    const updatedStaleContext = workContextForRoom(staleMailRoom);
     if (
-      staleMailRoom.directories.version !== staleRoomVersion + 1 ||
-      staleMailRoom.directories.defaultPath !== DIR_E
+      updatedStaleContext.directories.version !== staleRoomVersion + 1 ||
+      updatedStaleContext.directories.defaultPath !== DIR_E
     ) {
       throw new Error("stale send_mail fixture 没有实际提升来源目录版本");
     }
     await releaseStaleMail();
-    const staleMailWork = await finishWork(staleMailStart.workIds[0], "目录变更后旧邮件 work 结束");
-    if (!toolOutput(events, staleMailWork.id).includes("会话工作目录已变更")) {
-      throw new Error("目录版本改变后 send_mail 没有拒绝旧 scope");
-    }
+    await finishWork(staleMailStart.workIds[0], "目录变更后旧邮件 work 结束");
     const staleMailMessages = (await call(`/api/rooms/${staleMailRoom.id}/messages`)).messages;
     if (staleMailMessages.some((message) => message.mail?.subject === "过期目录续发")) {
       throw new Error("旧 directoryScope 的 send_mail 仍写入了邮件分支");
@@ -1638,9 +1643,6 @@ async function main() {
     });
     if (badNewSessionStart.workIds?.length !== 1) throw new Error("跨会话父节点 fixture 没有启动唯一来源工作");
     await finishWork(badNewSessionStart.workIds[0], "newSession 与旧 inReplyTo 冲突被拒绝");
-    if (!toolOutput(events, badNewSessionStart.workIds[0]).includes("新邮件会话不能引用旧会话的 inReplyTo")) {
-      throw new Error("newSession 同时提供旧 inReplyTo 没有明确报错");
-    }
     if ((await call("/api/rooms")).some((entry) => entry.kind === "mail" && entry.name === "新会话错误父引用")) {
       throw new Error("newSession/inReplyTo 冲突时仍创建了 session");
     }
@@ -1669,8 +1671,12 @@ async function main() {
       ),
     );
     if (newSessionBranch.mail.inReplyTo === graphEntry.id) throw new Error("newSession 错误引用了旧 session 父邮件");
-    if (newSessionRoom.directories.paths.length !== 0 || newSessionRoom.directories.defaultPath !== "") {
-      throw new Error(`newSession 继承了旧的 D 工作目录：${JSON.stringify(newSessionRoom.directories)}`);
+    workContextsByRoomId.set(newSessionRoom.id, workContextForRoom(graphRoom));
+    if (newSessionRoom.workContextId !== graphRoom.workContextId) {
+      throw new Error("newSession 没有绑定来源会话的 work context");
+    }
+    if (JSON.stringify(workContextForRoom(newSessionRoom).directories.paths) !== JSON.stringify([DIR_D])) {
+      throw new Error("newSession 没有保留来源 work context 的 D 根目录");
     }
     const newSessionWork = await waitFor("newSession 收件人工作启动", async () =>
       (await call("/api/works")).find(
@@ -1680,12 +1686,12 @@ async function main() {
     if (newSessionWork.parentWorkId !== newSessionStart.workIds[0]) {
       throw new Error("newSession 邮件工作没有记录发起方工作边");
     }
-    await finishWork(newSessionWork.id, "newSession 空目录读取被拒绝");
-    if (toolOutput(events, newSessionWork.id).includes("SMOKE-DIRECTORY-D")) {
-      throw new Error("send_mail newSession 继承了旧 mail session 的 D 文件权限");
+    await finishWork(newSessionWork.id, "newSession 读取 D 根 marker 完成");
+    if (!toolOutput(events, newSessionWork.id).includes("SMOKE-DIRECTORY-D")) {
+      throw new Error("send_mail newSession 没有读取来源工作中的 D marker");
     }
     if ((await call("/api/approvals")).approvals.some((approval) => approval.workId === newSessionWork.id)) {
-      throw new Error("空目录 newSession 的本地读取错误进入了审批");
+      throw new Error("newSession 的本地读取进入了审批");
     }
 
     const independentMailRoom = await createRoom({ kind: "mail", name: "同收件人独立 E 邮件" }, [DIR_E]);
@@ -1744,7 +1750,7 @@ async function main() {
       ),
     );
     if (repliedAnswer.mail.inReplyTo !== userReply.message.id) throw new Error("员工自动回复没有引用用户回复 entry");
-    log("· 邮件 reply/graph 延续相同 session 与父节点，newSession 与同收件人的新邮件使用空/独立目录");
+    log("· 邮件 reply/graph 延续相同 session 与父节点，newSession 共享 D 工作上下文，独立邮件绑定 E 工作上下文");
     await call(`/api/rooms/${mailRoom.id}/messages`, {
       method: "POST",
       body: JSON.stringify({ body: "留一封草稿", subject: "冒烟邮件", to: [employee.id], draft: true }),
@@ -1908,8 +1914,8 @@ async function main() {
     const chainStarted = await call(`/api/rooms/${chainRoom.id}/messages`, { method: "POST", body: JSON.stringify({ body: "开始" }) });
     const delegation = await waitFor("交办链停下", async () => {
       const all = await call("/api/works");
-      const delegations = all.filter((work) => work.rootWorkId === chainStarted.workId && work.kind === "delegation");
-      const running = all.filter((work) => work.rootWorkId === chainStarted.workId && (work.status === "running" || work.status === "queued"));
+      const delegations = all.filter((work) => work.rootWorkId === chainStarted.workIds[0] && work.kind === "delegation");
+      const running = all.filter((work) => work.rootWorkId === chainStarted.workIds[0] && (work.status === "running" || work.status === "queued"));
       if (delegations.length === 0 || running.length > 0) return undefined;
       return delegations;
     });
@@ -2059,31 +2065,34 @@ async function main() {
     });
     const lowMcp = await waitFor("普通 MCP 查询自动通过", async () =>
       (await call("/api/approvals")).approvals.find(
-        (approval) => approval.workId === lowMcpStart.workId && approval.status === "approved",
+        (approval) => approval.workId === lowMcpStart.workIds[0] && approval.status === "approved",
       ),
     );
     if (lowMcp.evidence?.kind !== "llm" || lowMcp.evidence.outcome !== "allow" || lowMcp.evidence.risk !== "low") {
       throw new Error(`普通 MCP 查询未按 low/allow 自动通过：${JSON.stringify(lowMcp.evidence)}`);
     }
     const lowMcpWork = await waitFor("普通 MCP 查询工作成功", async () =>
-      (await call("/api/works")).find((work) => work.id === lowMcpStart.workId && work.status === "succeeded"),
+      (await call("/api/works")).find((work) => work.id === lowMcpStart.workIds[0] && work.status === "succeeded"),
     );
     if (lowMcp.execution.state !== "succeeded" || lowMcpWork.status !== "succeeded") {
       throw new Error("自动通过的普通 MCP 查询没有执行");
     }
     log("· 未信任 MCP 的普通查询由模型按 low/allow 自动通过");
 
-    const emptyMcpRoom = await createRoom({ kind: "channel", name: "无本地目录的 MCP" }, []);
+    const emptyMcpRoom = await createRoom(
+      { kind: "channel", name: "无本地目录的 MCP", memberIds: [mcpEmployee.id] },
+      [],
+    );
     const mcpTargetBefore = (await call("/api/mcp")).servers.find((server) => server.id === mcpServer.id)?.target;
     const emptyMcpStart = await call(`/api/rooms/${emptyMcpRoom.id}/messages`, {
       method: "POST",
-      body: JSON.stringify({ body: "用 MCP 工具看看笔记", employeeId: mcpEmployee.id }),
+      body: JSON.stringify({ body: "用 MCP 工具看看笔记", recipientIds: [mcpEmployee.id] }),
     });
     const emptyMcpWork = await waitFor("空本地目录的 MCP 调用完成", async () =>
-      (await call("/api/works")).find((work) => work.id === emptyMcpStart.workId && work.status === "succeeded"),
+      (await call("/api/works")).find((work) => work.id === emptyMcpStart.workIds[0] && work.status === "succeeded"),
     );
     if (emptyMcpWork.status !== "succeeded") throw new Error(`空本地目录禁用了远程 MCP：${emptyMcpWork.error}`);
-    if ((await call("/api/approvals")).approvals.some((approval) => approval.workId === emptyMcpStart.workId)) {
+    if ((await call("/api/approvals")).approvals.some((approval) => approval.workId === emptyMcpStart.workIds[0])) {
       throw new Error("信任的只读 MCP 在空本地目录会话中仍创建审批");
     }
     const mcpAfterEmptyScope = (await call("/api/mcp")).servers.find((server) => server.id === mcpServer.id);
@@ -2098,7 +2107,7 @@ async function main() {
     });
     const highMcp = await waitFor("readOnlyHint MCP 高风险调用等待人工", async () =>
       (await call("/api/approvals")).approvals.find(
-        (approval) => approval.workId === highMcpStart.workId && approval.status === "pending-human",
+        (approval) => approval.workId === highMcpStart.workIds[0] && approval.status === "pending-human",
       ),
     );
     if (highMcp.toolName !== "mcp__fixture__echo_notes" || highMcp.argumentsPreview !== '{"path":"SMOKE-CONTROLLED-HIGH"}') {
@@ -2119,7 +2128,7 @@ async function main() {
       body: JSON.stringify({ decision: "approved", comment: "受控 MCP high fixture" }),
     });
     await waitFor("高风险 MCP 获批后完成", async () =>
-      (await call("/api/works")).find((work) => work.id === highMcpStart.workId && work.status === "succeeded"),
+      (await call("/api/works")).find((work) => work.id === highMcpStart.workIds[0] && work.status === "succeeded"),
     );
     const highMcpAfter = (await call(`/api/rooms/${untrustedRoom.id}/messages`)).messages.filter(
       (message) => message.author.type === "employee",
@@ -2135,7 +2144,7 @@ async function main() {
     });
     const secretRead = await waitFor("敏感路径读取按低风险自动通过", async () =>
       (await call("/api/approvals")).approvals.find(
-        (approval) => approval.workId === secretReadStart.workId && approval.status === "approved",
+        (approval) => approval.workId === secretReadStart.workIds[0] && approval.status === "approved",
       ),
     );
     if (secretRead.evidence?.outcome !== "allow" || secretRead.evidence.risk !== "low") {
@@ -2148,12 +2157,12 @@ async function main() {
     });
     const unknownMcp = await waitFor("unknown 风险 MCP 被阻止", async () =>
       (await call("/api/approvals")).approvals.find(
-        (approval) => approval.workId === unknownMcpStart.workId && approval.status === "blocked",
+        (approval) => approval.workId === unknownMcpStart.workIds[0] && approval.status === "blocked",
       ),
     );
     if (unknownMcp.evidence?.risk !== "unknown") throw new Error("unknown 风险没有保留为 unknown");
     if ((await call("/api/approvals")).approvals.some(
-      (approval) => approval.workId === unknownMcpStart.workId && approval.status === "pending-human",
+      (approval) => approval.workId === unknownMcpStart.workIds[0] && approval.status === "pending-human",
     )) {
       throw new Error("unknown 风险进入了人工队列");
     }

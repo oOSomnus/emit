@@ -16,6 +16,7 @@ export function toWorkDTO(record: WorkRecord, employeeName: string, roomName: st
     employeeName,
     roomId: record.roomId,
     roomName,
+    workContextId: record.workContextId,
     kind: record.kind,
     status: record.status,
     rootWorkId: record.rootWorkId,
@@ -32,7 +33,7 @@ export function toWorkDTO(record: WorkRecord, employeeName: string, roomName: st
   }
   if (record.answer.length > 0) dto.answer = record.answer;
   dto.usage = { input: record.inputTokens, output: record.outputTokens, cost: record.cost };
-  if (record.mailDispatchTaskId.length > 0) dto.mailDispatchTaskId = record.mailDispatchTaskId;
+  if (record.dispatchTaskId.length > 0) dto.dispatchTaskId = record.dispatchTaskId;
   if (record.mailResumeTaskId.length > 0) dto.mailResumeTaskId = record.mailResumeTaskId;
   return dto;
 }

@@ -15,10 +15,9 @@ import { useI18n } from "../i18n.tsx";
 import { chineseMail, englishMail } from "../messages/mail.ts";
 import { uiText } from "../messages.ts";
 import { useApp } from "../state.tsx";
-import { Chip, Icon, IconButton, WorkStatus, timeAgo } from "./ui.tsx";
+import { Chip, EmployeeAvatar, Icon, IconButton, WorkStatus, timeAgo } from "./ui.tsx";
 import { WorkExecution } from "./WorkExecution.tsx";
-import { DirectoryFields, RoomDirectoryEditor } from "./RoomDirectories.tsx";
-import type { MailboxItemDTO, MessageDTO, RoomDirectoryDraftDTO, WorkDTO } from "../../shared/contracts.ts";
+import type { MailboxItemDTO, MessageDTO, WorkDTO } from "../../shared/contracts.ts";
 
 /** The user is an address on the envelope but never a recipient who works. */
 const USER_ID = "user";
@@ -100,8 +99,9 @@ type Compose = {
   roomId: string;
   /** The draft entry being edited, when editing. */
   draftId: string;
-  /** The sent mail this compose answers; empty when it starts a new thread. */
+  /** The source mail and its fixed work context. */
   inReplyTo: string;
+  workContextId: string;
   to: string[];
   cc: string[];
   extraTo: string;
@@ -109,8 +109,6 @@ type Compose = {
   subject: string;
   body: string;
   showCc: boolean;
-  directories: RoomDirectoryDraftDTO;
-  directoryVersion: number;
 };
 
 function snapshot(compose: Compose): string {
@@ -121,7 +119,7 @@ function snapshot(compose: Compose): string {
     compose.extraCc,
     compose.subject,
     compose.body,
-    compose.directories,
+    compose.workContextId,
     compose.inReplyTo,
   ]);
 }
@@ -136,7 +134,6 @@ export function MailView(): ReactNode {
   const [query, setQuery] = useState("");
   const [mailbox, setMailbox] = useState<MailboxItemDTO[]>([]);
   const [reading, setReading] = useState(false);
-  const [editingRoomDirectories, setEditingRoomDirectories] = useState(false);
   const [executionWorkId, setExecutionWorkId] = useState<string | undefined>(undefined);
   /** A reply the user asked for while a dirty compose was still open. */
   const [pendingReply, setPendingReply] = useState<{ message: MessageDTO; all: boolean } | undefined>(undefined);
@@ -332,19 +329,23 @@ export function MailView(): ReactNode {
   };
 
   const startCompose = () => {
+    if (state.activeWorkContextId === undefined) {
+      setError(uiText((m) => m.mail.selectWorkFirst));
+      return;
+    }
+    const firstEmployee = state.employees.find((employee) => employee.enabled);
     const next: Compose = {
       roomId: "",
       draftId: "",
       inReplyTo: "",
-      to: state.employees[0] !== undefined ? [state.employees[0].id] : [],
+      workContextId: state.activeWorkContextId,
+      to: firstEmployee !== undefined ? [firstEmployee.id] : [],
       cc: [],
       extraTo: "",
       extraCc: "",
       subject: "",
       body: "",
       showCc: false,
-      directories: { paths: [], defaultPath: "" },
-      directoryVersion: 1,
     };
     setCompose(next);
     setComposeBase(snapshot(next));
@@ -368,6 +369,7 @@ export function MailView(): ReactNode {
         roomId: item.roomId,
         draftId: item.message.id,
         inReplyTo: mail?.inReplyTo ?? "",
+        workContextId: draftRoom.workContextId,
         to: [...(mail?.recipients ?? [])],
         cc: [...(mail?.copies ?? [])],
         extraTo: typed(mail?.to),
@@ -375,11 +377,6 @@ export function MailView(): ReactNode {
         subject: mail?.subject ?? "",
         body: item.message.body,
         showCc: (mail?.copies.length ?? 0) > 0 || (mail?.cc.length ?? 0) > 0,
-        directories: {
-          paths: [...draftRoom.directories.paths],
-          defaultPath: draftRoom.directories.defaultPath,
-        },
-        directoryVersion: draftRoom.directories.version,
       };
       setCompose(next);
       setComposeBase(snapshot(next));
@@ -389,35 +386,25 @@ export function MailView(): ReactNode {
     }
   };
 
-  /** Persist the draft's exact session directories before appending or sending mail. */
+  /** Create a mail thread under its captured work context, then keep that binding. */
   const threadForCompose = async (draft: Compose): Promise<string> => {
-    if (draft.roomId.length === 0) {
-      const name = draft.subject.trim();
-      const created = await api.createRoom({
-        kind: "mail",
-        name: name.length > 0 ? name : noSubjectRoomName,
-        directories: draft.directories,
-      });
-      dispatch({ type: "room", room: created });
-      setCompose((current) =>
-        current !== undefined && snapshot(current) === snapshot(draft) && current.roomId === draft.roomId
-          ? { ...current, roomId: created.id, directoryVersion: created.directories.version }
-          : current,
-      );
-      return created.id;
-    }
-
-    const updated = await api.updateRoomDirectories(draft.roomId, {
-      ...draft.directories,
-      expectedVersion: draft.directoryVersion,
+    if (draft.roomId.length > 0) return draft.roomId;
+    const name = draft.subject.trim();
+    const created = await api.createRoom({
+      kind: "mail",
+      name: name.length > 0 ? name : noSubjectRoomName,
+      workContextId: draft.workContextId,
+      memberIds: [...new Set([...draft.to, ...draft.cc].filter(
+        (id) => id !== USER_ID && state.employees.some((employee) => employee.id === id),
+      ))],
     });
-    dispatch({ type: "room", room: updated });
+    dispatch({ type: "room", room: created });
     setCompose((current) =>
       current !== undefined && snapshot(current) === snapshot(draft) && current.roomId === draft.roomId
-        ? { ...current, directoryVersion: updated.directories.version }
+        ? { ...current, roomId: created.id }
         : current,
     );
-    return draft.roomId;
+    return created.id;
   };
 
   const saveDraft = async (): Promise<boolean> => {
@@ -429,7 +416,7 @@ export function MailView(): ReactNode {
     setBusy(true);
     try {
       const roomId = await threadForCompose(compose);
-      const result = await api.sendMessage(roomId, {
+      await api.sendMail(roomId, {
         body: compose.body.trim(),
         subject: compose.subject.trim(),
         to: [...compose.to, ...splitAddresses(compose.extraTo)],
@@ -437,10 +424,6 @@ export function MailView(): ReactNode {
         draft: true,
         ...(compose.inReplyTo.length > 0 ? { inReplyTo: compose.inReplyTo } : {}),
       });
-      if (result.error !== undefined) {
-        setError(result.errorLocalized ?? result.error);
-        return false;
-      }
       // An edited draft is retired, never rewritten: entries are immutable, so
       // the saved draft is a new entry and the old one stops being active.
       if (compose.draftId.length > 0) await api.mailFlag(roomId, compose.draftId, { active: false });
@@ -468,17 +451,13 @@ export function MailView(): ReactNode {
     setBusy(true);
     try {
       const roomId = await threadForCompose(compose);
-      const result = await api.sendMessage(roomId, {
+      await api.sendMail(roomId, {
         body: compose.body.trim(),
         subject: compose.subject.trim(),
         to: [...compose.to, ...splitAddresses(compose.extraTo)],
         cc: [...compose.cc, ...splitAddresses(compose.extraCc)],
         ...(compose.inReplyTo.length > 0 ? { inReplyTo: compose.inReplyTo } : {}),
       });
-      if (result.error !== undefined) {
-        setError(result.errorLocalized ?? result.error);
-        return;
-      }
       if (compose.draftId.length > 0) await api.mailFlag(roomId, compose.draftId, { active: false });
       setCompose(undefined);
       setAskClose(false);
@@ -506,10 +485,8 @@ export function MailView(): ReactNode {
 
   const sendDraftNow = async (item: MailboxItemDTO) => {
     try {
-      const result = await api.sendDraft(item.roomId, item.message.id);
-      if (result.error !== undefined) {
-        setError(result.errorLocalized ?? result.error);
-      } else if (result.workIds.length === 0) {
+      const result = await api.sendDraft(item.roomId, { entryId: item.message.id });
+      if (result.workIds.length === 0) {
         dispatch({ type: "notice", text: uiText((m) => m.mail.sentNoWorkNotice) });
       }
       await refreshMailbox();
@@ -527,7 +504,7 @@ export function MailView(): ReactNode {
    * the message the user clicked.
    */
   const startReply = (message: MessageDTO, all: boolean): void => {
-    if (room === undefined || message.mail === undefined) return;
+    if (room?.kind !== "mail" || message.mail === undefined) return;
     const mine = message.author.id === USER_ID;
     // Answering my own sent mail answers its recipients; answering someone
     // else answers that sender.
@@ -546,6 +523,7 @@ export function MailView(): ReactNode {
       roomId: room.id,
       draftId: "",
       inReplyTo: message.id,
+      workContextId: room.workContextId,
       to,
       cc: all ? others : [],
       extraTo: external(mine ? mail.to : undefined),
@@ -553,8 +531,6 @@ export function MailView(): ReactNode {
       subject: mail.subject.startsWith("Re: ") ? mail.subject : `Re: ${mail.subject.length > 0 ? mail.subject : room.name}`,
       body: "",
       showCc: all && others.length > 0,
-      directories: { paths: [...room.directories.paths], defaultPath: room.directories.defaultPath },
-      directoryVersion: room.directories.version,
     };
     if (compose !== undefined && snapshot(compose) !== composeBase) {
       // A dirty compose is never thrown away silently: the user decides.
@@ -581,6 +557,10 @@ export function MailView(): ReactNode {
   const draftItem = (row: Row): MailboxItemDTO | undefined =>
     mailbox.find((item) => item.roomId === row.roomId && item.message.id === row.entryId);
 
+  const workContextName = (workContextId: string | undefined): string =>
+    workContextId === undefined || workContextId.length === 0
+      ? ""
+      : state.workContexts.find((workContext) => workContext.id === workContextId)?.name ?? workContextId;
   return (
     <div className="pane">
       <header className="pane-header">
@@ -661,6 +641,8 @@ export function MailView(): ReactNode {
               ) : null}
               {rows.map((row) => {
                 const selected = reading && state.activeRoomId === row.roomId && !row.draft;
+                const rowRoom = state.rooms.find((entry) => entry.id === row.roomId);
+                const rowWorkName = workContextName(rowRoom?.workContextId);
                 const RowContent = row.draft ? "div" : "button";
                 return (
                 <div key={row.key} className={`mail-row${row.unread ? " unread" : ""}${selected ? " selected" : ""}`}>
@@ -679,6 +661,9 @@ export function MailView(): ReactNode {
                     <span className="summary">
                       <span className="subject">{row.subject}</span>
                       <span className="snippet">{row.snippet.replace(/\s+/g, " ").slice(0, 200)}</span>
+                      {rowWorkName.length > 0 ? (
+                        <span className="hint">{messages.workContexts.currentWorkLabel}: {rowWorkName}</span>
+                      ) : null}
                     </span>
                   </RowContent>
                   <span className="right">
@@ -736,7 +721,12 @@ export function MailView(): ReactNode {
             <section className="mail-reader">
               <div className="mail-reader-head">
                 <IconButton icon="back" label={messages.mail.backToList} className="mail-back" onClick={() => setReading(false)} />
-                <h2>{threadSubject.length > 0 ? threadSubject : messages.mail.noSubject}</h2>
+                <div style={{ gridColumn: 2, minWidth: 0 }}>
+                  <h2>{threadSubject.length > 0 ? threadSubject : messages.mail.noSubject}</h2>
+                  <p className="topic" style={{ margin: "4px 0 0" }}>
+                    {messages.workContexts.currentWorkLabel}: {workContextName(room.workContextId)}
+                  </p>
+                </div>
                 <select
                   className="mail-folder-select mail-reader-folder-select"
                   value={folder}
@@ -751,9 +741,6 @@ export function MailView(): ReactNode {
                   ))}
                 </select>
                 <div className="mail-reader-actions">
-                <button type="button" onClick={() => setEditingRoomDirectories(true)}>
-                  {messages.mail.sessionDirectoriesCount(room.directories.paths.length)}
-                </button>
                 <IconButton
                   icon="archive"
                   label={newest?.mail?.archived === true ? messages.mail.unarchive : messages.mail.archive}
@@ -769,7 +756,11 @@ export function MailView(): ReactNode {
                   const employee = message.author.type === "employee" ? state.employees.find((entry) => entry.id === message.author.id) : undefined;
                   return (
                   <article key={message.id} className={`mail-message identity author-${message.author.type}`}>
-                    <span className="avatar">{[...message.author.name.trim()][0] ?? "?"}</span>
+                    {message.author.type === "employee" ? (
+                      <EmployeeAvatar employeeId={message.author.id} />
+                    ) : (
+                      <span className="avatar">{[...message.author.name.trim()][0] ?? "?"}</span>
+                    )}
                     <div className="envelope">
                       <div className="line identity-meta">
                         <strong>{message.author.name}</strong>
@@ -882,6 +873,9 @@ export function MailView(): ReactNode {
             <IconButton icon="close" label={messages.common.close} disabled={busy} onClick={closeCompose} />
           </div>
           <div className="mail-compose-body">
+            <p className="hint">
+              {messages.workContexts.currentWorkLabel}: {workContextName(compose.workContextId)}
+            </p>
             <div className="row recipients">
               <span className="hint">{messages.mail.toHint}</span>
               {candidates.map((candidate) => (
@@ -953,15 +947,6 @@ export function MailView(): ReactNode {
               value={compose.subject}
               onChange={(event) => update({ subject: event.target.value })}
             />
-            <details className="compose-directories">
-              <summary>{messages.mail.sessionDirectoriesCount(compose.directories.paths.length)}</summary>
-              <p className="hint">{messages.mail.newMailDirectoriesHint}</p>
-              <DirectoryFields
-                value={compose.directories}
-                onChange={(directories) => update({ directories })}
-                disabled={busy}
-              />
-            </details>
             <textarea
               placeholder={messages.mail.bodyPlaceholder}
               aria-label={messages.mail.bodyAria}
@@ -1039,9 +1024,6 @@ export function MailView(): ReactNode {
             )}
           </div>
         </section>
-      ) : null}
-      {editingRoomDirectories && room?.kind === "mail" ? (
-        <RoomDirectoryEditor key={room.id} room={room} onClose={() => setEditingRoomDirectories(false)} />
       ) : null}
       {executionWorkId !== undefined ? (
         <WorkExecution workId={executionWorkId} onClose={() => setExecutionWorkId(undefined)} />

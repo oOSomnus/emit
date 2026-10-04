@@ -13,6 +13,7 @@ import { join, resolve } from "node:path";
 import { EmitRuntime } from "./runtime.ts";
 import { McpManager } from "./mcp.ts";
 import { buildMailExtension, buildMailTasks, type MailTasks } from "./mail.ts";
+import { buildWorkDispatchExtension, buildWorkDispatchTask, type WorkDispatchTask } from "./work-dispatch.ts";
 import { installAllExtensions, reconcileWorks, type Resume } from "./work.ts";
 import { buildServer } from "./api.ts";
 import { invalidateStaleGrants } from "./approval/state.ts";
@@ -85,10 +86,17 @@ async function main(): Promise<void> {
   await mcp.connectEnabled().catch((error: unknown) => {
     process.stdout.write(`MCP 连接失败: ${error instanceof Error ? error.message : String(error)}\n`);
   });
-  const resume: Resume = { runtime, mcp, mail: undefined as unknown as MailTasks };
+  const resume: Resume = {
+    runtime,
+    mcp,
+    dispatch: undefined as unknown as WorkDispatchTask,
+    mail: undefined as unknown as MailTasks,
+  };
+  resume.dispatch = buildWorkDispatchTask(() => resume);
   resume.mail = buildMailTasks(() => resume);
   const installed = await installAllExtensions(resume);
   process.stdout.write(`已加载 ${installed} 位数字员工。\n`);
+  runtime.registry.install(buildWorkDispatchExtension(resume.dispatch));
   runtime.registry.install(buildMailExtension(resume.mail));
 
   runtime.emit({
