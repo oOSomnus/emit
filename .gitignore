@@ -25,4 +25,9 @@ tmp/ui-*/
 *.sqlite-wal
 *.sqlite-shm
 emit.lock
+
+# Test, coverage, and browser artifacts are reproducible local outputs.
+coverage/
+test-results/
+playwright-report/
 credentials.json

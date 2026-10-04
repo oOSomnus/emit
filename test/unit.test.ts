@@ -94,21 +94,29 @@ describe("approval identity", () => {
     expect(left).toBe(right);
   });
 
-  it("changes when the arguments, directory, or either version changes", () => {
-    const base = approvalId(request(), 1, 1);
-    expect(approvalId(request({ arguments: { path: "a.txt", content: "other" } }), 1, 1)).not.toBe(base);
-    expect(approvalId(request({ cwd: "/tmp/other" }), 1, 1)).not.toBe(base);
-    expect(approvalId(request({ directoryWorkContextId: "ctx-2" }), 1, 1)).not.toBe(base);
-    expect(approvalId(request({ directoryVersion: 2 }), 1, 1)).not.toBe(base);
-    expect(approvalId(request({ directoryPaths: ["/tmp", "/var/tmp"] }), 1, 1)).not.toBe(base);
-    expect(approvalId(request({ targetPaths: ["/tmp/other.txt"] }), 1, 1)).not.toBe(base);
-    expect(approvalId(request(), 2, 1)).not.toBe(base);
-    expect(approvalId(request(), 1, 2)).not.toBe(base);
+  it.each([
+    ["task identity", request({ toolTaskId: "t2" }), 1, 1],
+    ["employee identity", request({ employeeId: "emp2" }), 1, 1],
+    ["tool identity", request({ toolName: "edit_file" }), 1, 1],
+    ["arguments", request({ arguments: { path: "a.txt", content: "other" } }), 1, 1],
+    ["working directory", request({ cwd: "/tmp/other" }), 1, 1],
+    ["work context", request({ directoryWorkContextId: "ctx-2" }), 1, 1],
+    ["room", request({ directoryRoomId: "room2" }), 1, 1],
+    ["directory version", request({ directoryVersion: 2 }), 1, 1],
+    ["directory snapshot", request({ directoryPaths: ["/tmp", "/var/tmp"] }), 1, 1],
+    ["target paths", request({ targetPaths: ["/tmp/other.txt"] }), 1, 1],
+    ["employee configuration version", request(), 2, 1],
+    ["approval policy version", request(), 1, 2],
+  ] as const)("changes when %s changes", (_field, changed, configVersion, policyVersion) => {
+    expect(approvalId(changed, configVersion, policyVersion)).not.toBe(approvalId(request(), 1, 1));
   });
 
-  it("separates two calls that differ only by task", () => {
-    expect(approvalId(request(), 1, 1)).not.toBe(approvalId(request({ toolTaskId: "t2" }), 1, 1));
+  it("preserves array order as part of an approval's action identity", () => {
+    const forward = approvalId(request({ arguments: { sequence: ["first", "second"] } }), 1, 1);
+    const reversed = approvalId(request({ arguments: { sequence: ["second", "first"] } }), 1, 1);
+    expect(reversed).not.toBe(forward);
   });
+
 
   it("encodes equal values equally whatever their origin", () => {
     expect(canonicalJson({ b: 1, a: [1, { d: 2, c: 3 }] })).toBe(canonicalJson({ a: [1, { c: 3, d: 2 }], b: 1 }));
@@ -141,12 +149,23 @@ describe("tool policy", () => {
 });
 
 describe("argument redaction", () => {
-  it("hides credential-looking fields and keeps the rest", () => {
-    const rendered = redactArguments({ path: "a.txt", apiKey: "sk-live-123", nested: { Authorization: "Bearer x" } });
-    expect(rendered).toContain("a.txt");
-    expect(rendered).not.toContain("sk-live-123");
-    expect(rendered).not.toContain("Bearer x");
-    expect(rendered).toContain("已隐去");
+  it("removes nested credential canaries while preserving ordinary arguments", () => {
+    const rendered = redactArguments({
+      path: "notes.txt",
+      apiKey: "fixture-api-key-canary",
+      nested: {
+        Authorization: "Bearer fixture-bearer-canary",
+        password: "fixture-password-canary",
+        details: "token: fixture-inline-canary",
+        note: "keep this explanatory text",
+      },
+    });
+    expect(rendered).toContain("notes.txt");
+    expect(rendered).toContain("keep this explanatory text");
+    expect(rendered).not.toContain("fixture-api-key-canary");
+    expect(rendered).not.toContain("fixture-bearer-canary");
+    expect(rendered).not.toContain("fixture-password-canary");
+    expect(rendered).not.toContain("fixture-inline-canary");
   });
 });
 
@@ -234,7 +253,9 @@ describe("path containment", () => {
       message: expect.stringContaining("超出该会话允许的目录"),
     });
     expect(relative.ok).toBe(false);
-    const absolute = await resolveWithin(env, context, "/etc/passwd", [root], root);
+    const outside = join(mkdtempSync(join(tmpdir(), "emit-outside-")), "sentinel.txt");
+    writeFileSync(outside, "private outside sentinel");
+    const absolute = await resolveWithin(env, context, outside, [root], root);
     expect(absolute.ok).toBe(false);
   });
 

@@ -13,7 +13,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -211,20 +211,20 @@ describe("credential store", () => {
     expect(reopened.deviceId.length).toBeGreaterThan(0);
   });
 
-  it.skipIf(typeof process.getuid === "function" && process.getuid() === 0)(
-    "does not publish an in-memory credential when the write fails",
-    async () => {
-      const store = await EmitCredentialStore.open(dir);
-      chmodSync(dir, 0o500);
-      try {
-        await expect(store.modify("p", async () => ({ type: "api_key", key: "x" }))).rejects.toThrow();
-      } finally {
-        chmodSync(dir, 0o700);
-      }
-      expect(await store.read("p")).toBeUndefined();
-      expect(JSON.parse(readFileSync(join(dir, "credentials.json"), "utf8")).auth).toEqual({});
-    },
-  );
+  it("does not publish an in-memory credential when its data directory becomes unavailable", async () => {
+    const store = await EmitCredentialStore.open(dir);
+    const saved = `${dir}-saved`;
+    renameSync(dir, saved);
+    writeFileSync(dir, "unavailable data directory");
+    try {
+      await expect(store.modify("p", async () => ({ type: "api_key", key: "x" }))).rejects.toThrow();
+    } finally {
+      rmSync(dir, { force: true });
+      renameSync(saved, dir);
+    }
+    expect(await store.read("p")).toBeUndefined();
+    expect((await EmitCredentialStore.open(dir)).configuration().auth).toEqual({});
+  });
 });
 
 describe("native provider status", () => {

@@ -9,20 +9,66 @@ Scripts, the dependency patch, prompt resources, and the technology stack. Setup
 ```bash
 make install         # install dependencies from the lockfile
 make dev             # build the web UI, then tsx watch src/server/main.ts
-make typecheck       # tsc for the server project and the web project
+make typecheck       # separate server, web, and browser-test TypeScript environments
 make build           # typecheck + vite build
-make test            # vitest run
+make test            # daily Vitest projects: core, integration, api, e2e
 make                 # native single-file build (dist/emit, Node SEA)
 make smoke           # rebuild and run the native-binary smoke suite
-make e2e             # end-to-end smoke test (runs node tmp/smoke.mjs)
+make e2e             # isolated real-process tests (npm run test:e2e)
 make mock            # throwaway workspace seeded from the real config, run with real models
 ```
 
 `make help` lists every target; runtime arguments go through `ARGS`, for example `make test ARGS='test/mock.test.ts'` or `make start ARGS='--port 8787'`. The npm scripts remain the internal implementation of these targets.
 
-`make e2e` (running `node tmp/smoke.mjs`) drives a fake provider through the real harness and covers approvals, manual decisions, denials, stopping, mail, and SIGKILL recovery; its fixtures create a work context before rooms and exercise channel membership and addressing. It clears and rebuilds `tmp/smoke-data`, `tmp/smoke-work`, and `tmp/smoke-outside`, and it uses ports 8898 (server) and 8899 (fake provider). It is not a normal quick-start command: run it only when those directories and ports are free. `tmp/fake-provider.mjs` is the OpenAI-compatible fake model it uses.
+`make e2e` builds the frontend and runs the isolated `e2e` project against real Emit processes and local protocol fixtures in `test/fixtures/`. Every scenario owns temporary data, HOME, work/outside roots, ephemeral loopback ports, and child process groups. It never clears repository scratch directories or reads real provider credentials. The test-only fetch preload rejects unregistered origins; OpenCode Go is redirected only to the explicitly registered local provider.
 
 `make mock` is the opposite trade-off: it reads the real data directory (default `~/.emit`, `EMIT_DATA_DIR`, or `--source-data-dir`) through a read-only SQLite backup — committed state including the WAL — copies the provider credentials (never saved OAuth logins, which could invalidate the real session), seeds `Alice`/`Bob`/`Carol` plus two channels and a work context in a fresh private temp directory, and starts the real server on it, so a breaking change never requires hand-rebuilding a test scenario. Seeding makes no model calls; sending messages in the started workspace does, with the configured real models, and may cost money. The temp root is removed when the service exits, and the source workspace is never opened as a runtime.
+
+Daily layers are independently runnable with `npm run test:unit`, `test:integration`, `test:api`, and `test:e2e`; `test:coverage` measures the server/shared code and pure web helpers. `npm run test:gate` executes build, daily coverage, two Chromium projects, native build, and native smoke, preserving every reachable layer's exit code. `npm run test:fault` and `npm run test:stress` are explicit manual commands, never implicit in `npm test` or watch. Stress defaults to 8 concurrent requests, 500 operations or 60 seconds, and at most 3 restarts; heavier loads require explicit `EMIT_TEST_*` settings.
+
+### Layered test matrix
+
+| Layer | Entry point | Behavioral boundaries |
+| --- | --- | --- |
+| L1: specifications/properties | `npm run test:unit` | Addressing, approval policy, normalized roots, execution records, localization, deterministic random inputs and boundary values |
+| L2: real runtime | `npm run test:integration` | SQLite persistence, approval transitions, races, history cursors, work limits, permissions after root replacement |
+| L3: HTTP/SSE | `npm run test:api` | Rejected writes leave no state, event/final-state convergence, mail delivery, execution redaction, native auth and refresh |
+| L4: processes/native | `npm run test:e2e` / `test:native` | SIGKILL recovery, ownership locks, unique answers, collaboration graphs, scope isolation, real shell/MCP, Go sessions, native startup without a checkout |
+| L5: browser | `npm run test:browser` | Real onboarding, chat, approvals, mailbox, settings, mobile navigation, preferences, reconnect |
+| L6: fault injection | `npm run test:fault` | Upstream errors, malformed/truncated streams, MCP faults, SSE lifecycle, safe convergence after process interruption |
+| L7: stress/state models | `npm run test:stress` | Concurrent load, history/event fanout, random commands, repeated restart; measured latency/errors/memory |
+
+The daily gate continues independently runnable layers after failure. Missing build prerequisites are explicitly blocked; any failed or blocked layer yields a nonzero exit. Node summaries: `test-results/<project>/summary.json`; aggregate: `test-results/gate/results.json`; coverage: `coverage/`; browser JUnit/failure screenshots/traces/videos and HTML: `test-results/browser/` and `playwright-report/`. Retain failing behavioral assertions; do not hide defects behind skips, retries, or expectations that bless the current error.
+
+Coverage reports are written even when contracts fail. Per-project summaries distinguish that project's `status` from the whole invocation's `runReason`; one red project must not label every other project failed.
+
+Native scenario outcomes are written to `test-results/native/summary.json`, including independently exercised startup faults and the number of unexercised scenarios when a prerequisite fails.
+
+Stress measurements are persisted in `test-results/stress/{public-runtime-load,execution-pagination,public-command-model,owned-process-recovery}.json`: settings/seed, real request and observation errors, latency percentiles, and sampled owned-server RSS. These are observations, not performance guarantees or continuous peak-memory measurements.
+
+### Explicit heavy load and replay
+
+Only these test knobs are accepted. Unknown `EMIT_TEST_*` keys, out-of-range values and partial/non-integer numbers fail immediately.
+
+| Variable | Default | Bounds/purpose |
+| --- | --- | --- |
+| `EMIT_TEST_SEED` | `20261004` | Signed 32-bit integer; deterministic randomness |
+| `EMIT_TEST_PROPERTY_RUNS` | `200` | `1..100000`; property runs |
+| `EMIT_TEST_CONCURRENCY` | `8` | `1..128`; clients/work concurrency |
+| `EMIT_TEST_OPERATIONS` | `500` | `1..100000`; operations |
+| `EMIT_TEST_DURATION_MS` | `60000` | `1000..3600000`; duration bound |
+| `EMIT_TEST_RESTARTS` | `3` | `0..100`; owned-process restarts |
+| `EMIT_TEST_PATH` | Unset | Shrunk path from the fast-check failure report |
+
+```bash
+EMIT_TEST_PROPERTY_RUNS=10000 npm run test:unit
+EMIT_TEST_CONCURRENCY=32 EMIT_TEST_OPERATIONS=1000 npm run test:stress
+EMIT_TEST_CONCURRENCY=128 EMIT_TEST_OPERATIONS=10000 EMIT_TEST_RESTARTS=20 npm run test:stress
+# Supply the original failing file/name and reported seed/path.
+EMIT_TEST_SEED=20261004 EMIT_TEST_PATH='0:1:2' npm run test:unit -- test/core/properties.test.ts
+```
+
+`EMIT_TEST_OAUTH_URL` is an orchestration setting for a registered loopback HTTP auth fixture, never a public load target. All test accounts, credentials and files are fictional/private. Fault/load cleanup kills only owned process groups, never deletes locks, scans unrelated processes, or removes user scratch data.
 
 ## Web interface
 
@@ -30,7 +76,7 @@ make mock            # throwaway workspace seeded from the real config, run with
 
 Chat and mail share employee identity metadata and reading typography, but retain their synchronous and asynchronous workflows. Mail thread-open buttons and their sibling read/archive/draft actions are separate keyboard and touch targets; an action must not also open a thread. Folder and thread layouts respond to the mail pane's available width. Coarse-pointer controls have a 44px minimum target; narrow screens retain the existing navigation drawer.
 
-For interface smoke checks, run the application and fake provider with an isolated temporary data directory and unused ports. Never reuse a real workspace or the destructive smoke script's directories for screenshots. Check both communication surfaces, supporting views, themes, languages, and touch/keyboard interaction; use real harness records when checking execution pagination.
+For interface checks, build the web UI and run `npm run test:browser` for Chromium desktop/mobile; `npm run test:browser:all` explicitly adds Firefox/WebKit. Install engines with `npx playwright install chromium firefox webkit`, and system libraries with `npx playwright install-deps chromium firefox webkit` when needed. Scenarios use private workspaces and real HTTP/SSE, not DOM or REST mocks. Missing browser prerequisites are failures, not skipped success.
 
 ## Dependency patch
 

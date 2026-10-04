@@ -11,6 +11,9 @@ import { createInterface } from "node:readline";
 
 /** The client's own version is echoed back, which the spec allows. */
 const PROTOCOL_VERSION = "2025-06-18";
+const mode = process.argv.find((argument) => argument.startsWith("--mode="))?.slice(7) ?? "normal";
+const modes = { normal: true, "fail-init": true, crash: true, hang: true, "invalid-json": true, "error-list": true, "error-call": true };
+if (modes[mode] !== true) throw new Error(`Unknown MCP fixture mode: ${mode}`);
 
 const TOOLS = [
   {
@@ -57,6 +60,25 @@ lines.on("line", (line) => {
   const { id, method, params } = message;
   // A notification carries no id and gets no answer.
   const notification = id === undefined || id === null;
+  if (notification) return;
+  if (mode === "hang") return;
+  if (mode === "crash") process.exit(23);
+  if (mode === "invalid-json") {
+    process.stdout.write("{invalid-json\n");
+    return;
+  }
+  if (method === "initialize" && mode === "fail-init") {
+    error(id, -32603, "Fixture initialization refused");
+    return;
+  }
+  if (method === "tools/list" && mode === "error-list") {
+    error(id, -32603, "Fixture discovery refused");
+    return;
+  }
+  if (method === "tools/call" && mode === "error-call") {
+    result(id, { content: [{ type: "text", text: "Fixture tool failed" }], isError: true });
+    return;
+  }
   switch (method) {
     case "initialize":
       result(id, {

@@ -1,0 +1,306 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ApprovalDTO, EmployeeDTO, McpServerDTO, SkillDTO, WorkDTO, WorkExecutionDTO, WorkStatusDTO } from "../../src/shared/contracts.ts";
+import {
+  FAKE_KEY_ENV,
+  startFixture,
+  startHttpRuntime,
+  waitForFixture,
+  type FixtureAnswer,
+  type FixtureRequest,
+  type HttpRuntimeFixture,
+} from "../helpers/emit-fixture.ts";
+import { seedTestWorkspace } from "../helpers/workspace-fixture.ts";
+
+const cleanup: Array<() => Promise<void> | void> = [];
+let previousApiKey: string | undefined;
+
+beforeEach(() => {
+  previousApiKey = process.env[FAKE_KEY_ENV];
+  process.env[FAKE_KEY_ENV] = "api-skills-mcp-fixture-key";
+});
+
+afterEach(async () => {
+  for (const close of cleanup.splice(0).reverse()) {
+    try {
+      await close();
+    } catch {
+      // Preserve the assertion result while still releasing this test's resources.
+    }
+  }
+  if (previousApiKey === undefined) delete process.env[FAKE_KEY_ENV];
+  else process.env[FAKE_KEY_ENV] = previousApiKey;
+});
+
+type ApiWorkspace = { workContextId: string; employeeIds: readonly string[]; channelId: string; mailRoomId: string };
+type ApiResponse<T> = { status: number; body: T };
+type TestApi = { root: string; http: HttpRuntimeFixture; workspace: ApiWorkspace };
+
+async function request<T>(url: string, path: string, init?: RequestInit): Promise<ApiResponse<T>> {
+  const response = await fetch(new URL(path, url), { ...init, signal: init?.signal ?? AbortSignal.timeout(10_000) });
+  const text = await response.text();
+  let body: T;
+  try {
+    body = JSON.parse(text) as T;
+  } catch {
+    body = text as T;
+  }
+  return { status: response.status, body };
+}
+
+function json(method: string, body?: unknown): RequestInit {
+  return {
+    method,
+    ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+  };
+}
+
+async function openApi(prefix: string, decide: (request: FixtureRequest) => FixtureAnswer): Promise<TestApi> {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  const fixture = await startFixture(decide);
+  cleanup.push(() => fixture.close());
+  const http = await startHttpRuntime(join(root, "data"));
+  cleanup.push(() => http.close());
+  const workspace = await seedTestWorkspace({ url: http.url, providerBaseUrl: fixture.baseUrl, root });
+  http.runtime.resume();
+  return { root, http, workspace };
+}
+
+function lowRiskReview(): FixtureAnswer {
+  return {
+    content: JSON.stringify({
+      outcome: "allow",
+      risk: "low",
+      rationale: "Local MCP fixture",
+      readOnly: true,
+      userAuthorization: "unknown",
+    }),
+  };
+}
+
+function highRiskReview(): FixtureAnswer {
+  return {
+    content: JSON.stringify({
+      outcome: "allow",
+      risk: "high",
+      rationale: "Untrusted MCP calls need human approval in this test.",
+      readOnly: false,
+      userAuthorization: "unknown",
+    }),
+  };
+}
+
+async function sendWork(api: TestApi, body: string): Promise<string> {
+  const response = await request<{ workIds: string[] }>(api.http.url, `/api/rooms/${api.workspace.channelId}/messages`, {
+    ...json("POST", { body, recipientIds: [api.workspace.employeeIds[0]] }),
+  });
+  expect(response.status).toBe(200);
+  const id = response.body.workIds[0];
+  if (id === undefined) throw new Error(`${body} did not create a work`);
+  return id;
+}
+
+async function waitForWorkStatus(api: TestApi, id: string, status: WorkStatusDTO): Promise<void> {
+  await waitForFixture(async () => {
+    const response = await request<WorkDTO[]>(api.http.url, "/api/works");
+    return response.body.some((work) => work.id === id && work.status === status);
+  }, `work ${id} to become ${status}`, 45_000);
+}
+
+async function waitForTerminalWork(api: TestApi, id: string): Promise<void> {
+  await waitForFixture(async () => {
+    const response = await request<WorkDTO[]>(api.http.url, "/api/works");
+    const work = response.body.find((item) => item.id === id);
+    return work !== undefined && ["succeeded", "failed", "stopped"].includes(work.status);
+  }, `work ${id} to finish`, 45_000);
+}
+
+async function waitForPendingApproval(api: TestApi, workId: string): Promise<ApprovalDTO> {
+  let found: ApprovalDTO | undefined;
+  await waitForFixture(async () => {
+    const response = await request<{ approvals: ApprovalDTO[] }>(api.http.url, "/api/approvals");
+    found = response.body.approvals.find((item) => item.workId === workId && item.status === "pending-human");
+    return found !== undefined;
+  }, `pending approval for ${workId}`, 45_000);
+  if (found === undefined) throw new Error(`No pending approval for work ${workId}`);
+  return found;
+}
+
+async function patchEmployee(
+  api: TestApi,
+  patch: { mcpServerIds: string[]; toolPolicy: { allowedTools: string[]; trustedReadOnlyTools: string[] } },
+): Promise<EmployeeDTO> {
+  const response = await request<EmployeeDTO>(api.http.url, `/api/employees/${api.workspace.employeeIds[0]}`, json("PATCH", patch));
+  expect(response.status).toBe(200);
+  return response.body;
+}
+
+/** Required checked-in local stdio dependency; a missing or broken fixture is a failure, never a skip. */
+const MCP_FIXTURE = resolve(process.cwd(), "test/fixtures/fake-mcp.mjs");
+
+describe("skills and stdio MCP API contract", () => {
+  it("imports valid skills with diagnostics, deduplicates repeated imports, and deletes the skill", async () => {
+    const api = await openApi("emit-api-skills-", (request) => request.model === "fake-reviewer" ? lowRiskReview() : { content: "ready" });
+    const skillRoot = join(api.root, "skills");
+    const validDirectory = join(skillRoot, "fixture-guide");
+    const invalidDirectory = join(skillRoot, "malformed");
+    mkdirSync(validDirectory, { recursive: true });
+    mkdirSync(invalidDirectory, { recursive: true });
+    writeFileSync(
+      join(validDirectory, "SKILL.md"),
+      ["---", "name: fixture-guide", "description: A local skill used by the API test.", "---", "", "Only the fixture uses this skill."].join("\n"),
+      "utf8",
+    );
+    writeFileSync(join(invalidDirectory, "SKILL.md"), ["---", "name: malformed", "---", "", "Missing a required description."].join("\n"), "utf8");
+
+    const imported = await request<{ imported: SkillDTO[]; diagnostics: Array<{ severity: string; message: string; path: string }> }>(
+      api.http.url,
+      "/api/skills/import",
+      json("POST", { directory: skillRoot }),
+    );
+    expect(imported.status).toBe(200);
+    expect(imported.body.imported).toHaveLength(1);
+    expect(imported.body.imported[0]).toMatchObject({ name: "fixture-guide", filePath: join(validDirectory, "SKILL.md") });
+    expect(imported.body.diagnostics.length).toBeGreaterThan(0);
+    const importedId = imported.body.imported[0]?.id;
+    if (importedId === undefined) throw new Error("The valid skill did not receive an id");
+
+    const repeated = await request<{ imported: SkillDTO[]; diagnostics: Array<{ severity: string; message: string; path: string }> }>(
+      api.http.url,
+      "/api/skills/import",
+      json("POST", { directory: skillRoot }),
+    );
+    expect(repeated.body.imported.map((skill) => skill.id)).toEqual([importedId]);
+    const listed = await request<{ skills: SkillDTO[] }>(api.http.url, "/api/skills");
+    expect(listed.body.skills.map((skill) => skill.id)).toEqual([importedId]);
+
+    const deleted = await request<{ ok: boolean }>(api.http.url, `/api/skills/${importedId}`, json("DELETE"));
+    expect(deleted.status).toBe(200);
+    expect(deleted.body).toEqual({ ok: true });
+    const afterDelete = await request<{ skills: SkillDTO[] }>(api.http.url, "/api/skills");
+    expect(afterDelete.body.skills).toEqual([]);
+  }, 30_000);
+
+  it("discovers both stdio tools, gates hinted read-only tools until trusted, and exposes connection/call failures", async () => {
+    const api = await openApi("emit-api-mcp-", (request) => {
+      if (request.model === "fake-reviewer") return highRiskReview();
+      const markers = [...request.prompt.matchAll(/MCP_TOOL_(?:UNTRUSTED_ECHO|TRUSTED_ECHO|SHOUT|ERROR_CALL)/g)];
+      const marker = markers.at(-1)?.[0];
+      if (marker === undefined || request.prompt.includes('"role":"tool"')) return { content: "MCP result handled." };
+      if (marker === "MCP_TOOL_SHOUT") return { toolCall: { name: "mcp__fixture__shout", args: { message: "be loud" } } };
+      if (marker === "MCP_TOOL_ERROR_CALL") return { toolCall: { name: "mcp__mcpfailure__echo_notes", args: { path: "error.txt" } } };
+      return { toolCall: { name: "mcp__fixture__echo_notes", args: { path: marker } } };
+    });
+    const normal = await request<McpServerDTO>(api.http.url, "/api/mcp", json("POST", {
+      name: "fixture",
+      transport: "stdio",
+      command: process.execPath,
+      args: [MCP_FIXTURE],
+      cwd: process.cwd(),
+      enabled: true,
+    }));
+    expect(normal.status).toBe(200);
+    const serverId = normal.body.id;
+    const connected = await request<{ ok: boolean; message: string; tools: string[] }>(api.http.url, `/api/mcp/${serverId}/connect`, json("POST", {}));
+    expect(connected.status).toBe(200);
+    expect(connected.body.ok).toBe(true);
+    expect(connected.body.tools.sort()).toEqual(["echo_notes", "shout"]);
+    const discovered = await request<{ servers: McpServerDTO[] }>(api.http.url, "/api/mcp");
+    const saved = discovered.body.servers.find((server) => server.id === serverId);
+    expect(saved).toMatchObject({ connection: { state: "connected" } });
+    expect(saved?.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "echo_notes", readOnly: true }),
+      expect.objectContaining({ name: "shout", readOnly: false }),
+    ]));
+
+    const broken = await request<McpServerDTO>(api.http.url, "/api/mcp", json("POST", {
+      name: "broken",
+      transport: "stdio",
+      command: process.execPath,
+      args: [MCP_FIXTURE, "--mode=fail-init"],
+      cwd: process.cwd(),
+      enabled: true,
+    }));
+    expect(broken.status).toBe(200);
+    const failedConnect = await request<{ ok: boolean; message: string; tools: string[] }>(
+      api.http.url,
+      `/api/mcp/${broken.body.id}/connect`,
+      json("POST", {}),
+    );
+    expect(failedConnect.status).toBe(200);
+    expect(failedConnect.body.ok).toBe(false);
+    expect(failedConnect.body.message.length).toBeGreaterThan(0);
+    const failedState = await request<{ servers: McpServerDTO[] }>(api.http.url, "/api/mcp");
+    expect(failedState.body.servers.find((server) => server.id === broken.body.id)?.connection.state).toBe("error");
+    await request(api.http.url, `/api/mcp/${broken.body.id}`, json("DELETE"));
+    const missingConnect = await request<{ ok: boolean; tools: string[] }>(api.http.url, "/api/mcp/no-such-server/connect", json("POST", {}));
+    expect(missingConnect.status).toBe(200);
+    expect(missingConnect.body).toMatchObject({ ok: false, tools: [] });
+
+    const employeeId = api.workspace.employeeIds[0]!;
+    const mappedEcho = `mcp__${serverId}__echo_notes`;
+    const mappedShout = `mcp__${serverId}__shout`;
+    await patchEmployee(api, {
+      mcpServerIds: [serverId],
+      toolPolicy: { allowedTools: [mappedEcho, mappedShout], trustedReadOnlyTools: [] },
+    });
+
+    const untrustedWork = await sendWork(api, "MCP_TOOL_UNTRUSTED_ECHO");
+    const untrustedApproval = await waitForPendingApproval(api, untrustedWork);
+    const beforeTrust = await request<WorkExecutionDTO>(api.http.url, `/api/works/${untrustedWork}/execution`);
+    expect(beforeTrust.body.steps.some((step) => step.kind === "tool-result" && step.text?.includes("来自 MCP fixture"))).toBe(false);
+    const denied = await request<ApprovalDTO>(api.http.url, `/api/approvals/${untrustedApproval.id}/decision`, json("POST", { decision: "rejected" }));
+    expect(denied.body.status).toBe("rejected");
+    await waitForTerminalWork(api, untrustedWork);
+
+    await patchEmployee(api, {
+      mcpServerIds: [serverId],
+      toolPolicy: { allowedTools: [mappedEcho, mappedShout], trustedReadOnlyTools: [`${serverId}/echo_notes`] },
+    });
+    const trustedWork = await sendWork(api, "MCP_TOOL_TRUSTED_ECHO");
+    await waitForWorkStatus(api, trustedWork, "succeeded");
+    const trustedExecution = await request<WorkExecutionDTO>(api.http.url, `/api/works/${trustedWork}/execution`);
+    expect(trustedExecution.body.steps.some((step) => step.kind === "tool-result" && step.text?.includes("来自 MCP fixture 的笔记：MCP_TOOL_TRUSTED_ECHO"))).toBe(true);
+    const approvalsAfterTrust = await request<{ approvals: ApprovalDTO[] }>(api.http.url, "/api/approvals");
+    expect(approvalsAfterTrust.body.approvals.some((approval) => approval.workId === trustedWork)).toBe(false);
+
+    const shoutWork = await sendWork(api, "MCP_TOOL_SHOUT");
+    const shoutApproval = await waitForPendingApproval(api, shoutWork);
+    const shoutDecision = await request<ApprovalDTO>(api.http.url, `/api/approvals/${shoutApproval.id}/decision`, json("POST", { decision: "approved" }));
+    expect(shoutDecision.body.status).toBe("approved");
+    await waitForWorkStatus(api, shoutWork, "succeeded");
+    const shoutExecution = await request<WorkExecutionDTO>(api.http.url, `/api/works/${shoutWork}/execution`);
+    expect(shoutExecution.body.steps.some((step) => step.kind === "tool-result" && step.text === "BE LOUD")).toBe(true);
+
+    const errorServer = await request<McpServerDTO>(api.http.url, "/api/mcp", json("POST", {
+      name: "mcp-failure",
+      transport: "stdio",
+      command: process.execPath,
+      args: [MCP_FIXTURE, "--mode=error-call"],
+      cwd: process.cwd(),
+      enabled: true,
+    }));
+    expect(errorServer.status).toBe(200);
+    const errorConnected = await request<{ ok: boolean }>(api.http.url, `/api/mcp/${errorServer.body.id}/connect`, json("POST", {}));
+    expect(errorConnected.status).toBe(200);
+    const errorTool = `mcp__${errorServer.body.id}__echo_notes`;
+    await patchEmployee(api, {
+      mcpServerIds: [serverId, errorServer.body.id],
+      toolPolicy: { allowedTools: [mappedEcho, mappedShout, errorTool], trustedReadOnlyTools: [`${serverId}/echo_notes`] },
+    });
+    const errorWork = await sendWork(api, "MCP_TOOL_ERROR_CALL");
+    const errorApproval = await waitForPendingApproval(api, errorWork);
+    const errorDecision = await request<ApprovalDTO>(api.http.url, `/api/approvals/${errorApproval.id}/decision`, json("POST", { decision: "approved" }));
+    expect(errorDecision.body.status).toBe("approved");
+    await waitForWorkStatus(api, errorWork, "succeeded");
+    const errorExecution = await request<WorkExecutionDTO>(api.http.url, `/api/works/${errorWork}/execution`);
+    expect(errorExecution.body.steps.some((step) => step.kind === "tool-result" && step.isError === true)).toBe(true);
+    expect(errorExecution.body.steps.some((step) => step.kind === "tool-result" && step.text?.includes("MCP fixture"))).toBe(false);
+
+    const employees = await request<{ employees: EmployeeDTO[] }>(api.http.url, "/api/bootstrap");
+    expect(employees.body.employees.find((employee) => employee.id === employeeId)?.mcpServerIds).toEqual([serverId, errorServer.body.id]);
+  }, 120_000);
+});

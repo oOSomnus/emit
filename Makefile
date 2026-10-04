@@ -12,7 +12,8 @@
 
 .DEFAULT_GOAL := all
 .PHONY: all binary native smoke help install dev dev-web dev-server start \
-        build build-web typecheck test test-watch patch e2e mock
+        build build-web typecheck test test-watch test-api test-fault test-stress \
+        test-gate patch e2e e2e-web mock
 
 ARGS ?=
 
@@ -65,10 +66,25 @@ test-watch: node_modules/.emit-deps
 patch: node_modules/.emit-deps
 	node scripts/apply-pi-durable-patch.mjs
 
-# DANGEROUS: rebuilds the dedicated tmp/smoke-* directories, binds 8898/8899,
-# and needs Git. Do not run it concurrently with another e2e run.
+# Run the isolated Vitest end-to-end project.
 e2e: build-web
-	node tmp/smoke.mjs
+	npm run test:e2e -- $(ARGS)
+
+# Run browser end-to-end tests against the freshly built web assets.
+e2e-web: build-web
+	npm run test:browser -- $(ARGS)
+
+test-api: node_modules/.emit-deps
+	npm run test:api -- $(ARGS)
+
+test-fault: node_modules/.emit-deps
+	npm run test:fault -- $(ARGS)
+
+test-stress: node_modules/.emit-deps
+	npm run test:stress -- $(ARGS)
+
+test-gate: node_modules/.emit-deps
+	npm run test:gate -- $(ARGS)
 
 # Rebuild a private mock workspace from the real data directory's committed
 # configuration (models, credentials) and start the real server on it.
@@ -89,14 +105,18 @@ help:
 	@echo "  make start          构建前端并启动应用"
 	@echo "  make build          类型检查并构建前端"
 	@echo "  make build-web      仅构建前端"
-	@echo "  make typecheck      类型检查服务端与前端"
+	@echo "  make typecheck      类型检查服务端、前端与浏览器测试"
 	@echo "  make test           运行 vitest；ARGS 传入筛选参数"
 	@echo "  make test-watch     监听模式运行 vitest"
 	@echo "  make patch          重新应用 Pi Durable 补丁"
 	@echo "  make mock           用真实模型凭据启动隔离测试工作区并运行应用"
 	@echo "                      发送消息会调用真实模型并可能产生费用"
-	@echo "  make e2e            危险：重建 tmp/smoke-* 专用目录并在 8898/8899 跑端到端脚本"
-	@echo "  make help           显示本说明"
+	@echo "  make e2e            构建前端并运行 Vitest 端到端项目"
+	@echo "  make e2e-web        构建前端并运行桌面与移动 Chromium 浏览器测试"
+	@echo "  make test-api       运行 HTTP API 契约测试"
+	@echo "  make test-fault     运行显式手动故障测试"
+	@echo "  make test-stress    运行显式手动压力测试"
+	@echo "  make test-gate      顺序运行完整日常门禁"
 	@echo ""
 	@echo "参数示例："
 	@echo "  make test ARGS='test/mock.test.ts'"

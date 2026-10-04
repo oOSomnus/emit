@@ -45,6 +45,7 @@ function startEmit(label, { args = [], env = {}, dataDir } = {}) {
   const proc = spawn(binaryPath, [...(dataDir === undefined ? [] : ["--data-dir", dataDir]), ...args], {
     cwd: scratch,
     env: childEnv(env),
+    detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });
   liveProcesses.add(proc);
@@ -80,11 +81,48 @@ function startEmit(label, { args = [], env = {}, dataDir } = {}) {
 async function stopEmit(proc, timeoutMs = 10_000) {
   if (proc.exitCode !== null || proc.signalCode !== null) return proc.exitCode;
   const exited = new Promise((resolve) => proc.once("exit", (code) => resolve(code)));
-  proc.kill("SIGTERM");
-  const killer = setTimeout(() => proc.kill("SIGKILL"), timeoutMs);
+  signalOwned(proc, "SIGTERM");
+  const killer = setTimeout(() => signalOwned(proc, "SIGKILL"), timeoutMs);
   const code = await exited;
   clearTimeout(killer);
   return code;
+}
+
+function signalOwned(proc, signal) {
+  if (proc.pid === undefined || proc.exitCode !== null || proc.signalCode !== null) return;
+  try {
+    if (process.platform === "win32") proc.kill(signal);
+    else process.kill(-proc.pid, signal);
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+}
+
+async function withTimeout(promise, milliseconds, label) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label}: timeout after ${milliseconds}ms`)), milliseconds);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function expectStartupFailure(label, options) {
+  const instance = startEmit(label, options);
+  try {
+    const exit = new Promise((resolve) => {
+      if (instance.proc.exitCode !== null) resolve({ code: instance.proc.exitCode });
+      else instance.proc.once("exit", code => resolve({ code }));
+    });
+    const startup = instance.url.then(url => ({ url }), () => new Promise(() => {}));
+    const outcome = await withTimeout(Promise.race([exit, startup]), 45_000, label);
+    assert.ok(!("url" in outcome), `${label}: unexpectedly started at ${outcome.url}\n${instance.output()}`);
+    assert.ok(typeof outcome.code === "number" && outcome.code !== 0, `${label}: expected nonzero exit, got ${outcome.code}\n${instance.output()}`);
+  } finally {
+    await stopEmit(instance.proc, 5_000);
+  }
 }
 
 /** Occupy a loopback port (0 picks a free one) so a child cannot bind it. */
@@ -124,6 +162,12 @@ async function textRequest(url) {
   return { status: response.status, contentType: response.headers.get("content-type") ?? "", text: await response.text() };
 }
 
+const results = [];
+function reportPass(name, detail) {
+  results.push({ name, status: "passed" });
+  console.log(detail);
+}
+
 try {
   // 1. --help from an empty directory, with no source tree anywhere near it.
   {
@@ -134,7 +178,7 @@ try {
     assert.ok(!existsSync(path.join(scratch, "package.json")), "scratch 不应有 package.json");
     assert.ok(!existsSync(path.join(scratch, "node_modules")), "scratch 不应有 node_modules");
     assert.ok(!existsSync(path.join(scratch, "dist")), "scratch 不应有 dist");
-    console.log("1. 隔离目录中的 --help 正常");
+    reportPass("isolated help", "1. 隔离目录中的 --help 正常");
   }
 
   // 2. With 8787 taken, two default-port children pick distinct real ports.
@@ -154,7 +198,7 @@ try {
     assert.equal(childA.proc.exitCode, null);
     assert.equal(childB.proc.exitCode, null);
     for (const url of [urlA, urlB]) assert.equal((await jsonRequest(`${url}/api/app`)).status, 200);
-    console.log(`2. 默认端口自动分配：${String(portA)} / ${String(portB)}（8787 被占用）`);
+    reportPass("default port allocation", `2. 默认端口自动分配：${String(portA)} / ${String(portB)}（8787 被占用）`);
   }
 
   // 3. Port semantics: 0 means auto, an explicit busy port fails, CLI wins over env.
@@ -191,7 +235,7 @@ try {
     });
     assert.equal(Number(new URL(await precedence.url).port), cliPort);
     await stopEmit(precedence.proc);
-    console.log("3. 端口：0 自动、显式占用失败、CLI 优先于环境变量");
+    reportPass("port precedence and occupied port", "3. 端口：0 自动、显式占用失败、CLI 优先于环境变量");
   }
 
   // 4. The embedded frontend is served as real static assets with SPA fallback.
@@ -221,7 +265,7 @@ try {
     assert.equal(missing.status, 404);
     assert.match(missing.contentType, /application\/json/);
     assert.ok(!existsSync(path.join(scratch, "dist")), "运行期不应出现源码前端目录");
-    console.log("4. 内嵌前端：资源 200、SPA 回退、API 404 为 JSON");
+    reportPass("embedded frontend and SPA fallback", "4. 内嵌前端：资源 200、SPA 回退、API 404 为 JSON");
   }
 
   // 5. Persistence across restarts, plus cache repair after corruption.
@@ -248,7 +292,7 @@ try {
     const repairedIndex = await textRequest(`${repairedUrl}/`);
     assert.equal(repairedIndex.text, indexHtml);
     assert.ok(!repairedIndex.text.includes("corrupt"));
-    console.log("5. 持久化重启保持数据，损坏的前端缓存被重新恢复");
+    reportPass("persistence and cache repair", "5. 持久化重启保持数据，损坏的前端缓存被重新恢复");
     childA.proc = repaired.proc;
     childA.url = repaired.url;
   }
@@ -271,7 +315,7 @@ try {
     const skill = imported.body.imported.find((entry) => entry.name === "native-smoke");
     assert.ok(skill !== undefined, `导入结果缺少 native-smoke：${JSON.stringify(imported.body)}`);
     assert.equal(skill.description, "Native binary smoke fixture");
-    console.log("6. 打包的 Pi skill loader 可导入 SKILL.md");
+    reportPass("bundled skill loader", "6. 打包的 Pi skill loader 可导入 SKILL.md");
   }
 
   // 7. An open SSE stream closes and the process exits promptly on SIGTERM.
@@ -281,31 +325,35 @@ try {
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/);
     let streamClosed = false;
+    const connected = Promise.withResolvers();
+    let comment = "";
+    const decoder = new TextDecoder();
     const streamEnd = (async () => {
       try {
-        for await (const chunk of response.body) void chunk;
+        for await (const chunk of response.body) {
+          comment = (comment + decoder.decode(chunk, { stream: true })).slice(-1024);
+          if (comment.includes(": connected")) connected.resolve();
+        }
       } catch {
         // A connection reset by the exiting process still counts as closed.
       }
       streamClosed = true;
+      connected.reject(new Error("SSE closed before connected"));
     })();
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await withTimeout(connected.promise, 5_000, "SSE connected");
 
     const started = Date.now();
     const code = await stopEmit(childA.proc, 5_000);
     const elapsed = Date.now() - started;
     assert.equal(code, 0);
     assert.ok(elapsed < 5_000, `SIGTERM 后退出耗时 ${String(elapsed)}ms`);
-    await Promise.race([
-      streamEnd,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("SSE 流未关闭")), 5_000)),
-    ]);
+    await withTimeout(streamEnd, 5_000, "SSE shutdown");
     assert.ok(streamClosed);
 
     const afterSse = startEmit("A4", { dataDir: path.join(scratch, "data-a") });
     assert.equal((await jsonRequest(`${await afterSse.url}/api/app`)).status, 200);
     assert.equal(await stopEmit(afterSse.proc), 0);
-    console.log(`7. SSE 连接随关闭断开，进程 ${String(elapsed)}ms 内退出并可立即重启`);
+    reportPass("SSE shutdown and restart", `7. SSE 连接随关闭断开，进程 ${String(elapsed)}ms 内退出并可立即重启`);
   }
 
   // 8. An explicit --web-root overrides the embedded UI without being modified.
@@ -323,13 +371,81 @@ try {
     assert.deepEqual(readdirSync(overrideDir), ["index.html"]);
     assert.equal(readFileSync(path.join(overrideDir, "index.html"), "utf8"), overrideIndex);
     assert.equal(await stopEmit(override.proc), 0);
-    console.log("8. --web-root 覆盖内嵌前端且文件未被改动");
+    reportPass("explicit web root override", "8. --web-root 覆盖内嵌前端且文件未被改动");
   }
+
+  // Startup failures are independent regressions; exercise every reachable case.
+  const failures = [];
+  const checkFailure = async (label, action) => {
+    try {
+      await action();
+      reportPass(label, `9. ${label}: startup failure verified`);
+    } catch (error) {
+      failures.push(error);
+      results.push({ name: label, status: "failed", error: error instanceof Error ? error.message : String(error) });
+      console.error(`FAIL ${label}: ${error.message}`);
+    }
+  };
+  await checkFailure("data directory is a file", async () => {
+    const dataDir = path.join(scratch, "unavailable-data");
+    writeFileSync(dataDir, "private sentinel");
+    await expectStartupFailure("unavailable-data", { dataDir });
+    assert.equal(readFileSync(dataDir, "utf8"), "private sentinel");
+  });
+  await checkFailure("corrupt SQLite data", async () => {
+    const dataDir = path.join(scratch, "corrupt-sqlite");
+    mkdirSync(dataDir);
+    writeFileSync(path.join(dataDir, "emit.sqlite"), "not a SQLite database");
+    await expectStartupFailure("corrupt-sqlite", { dataDir });
+  });
+  await checkFailure("corrupt credential configuration", async () => {
+    const dataDir = path.join(scratch, "corrupt-credentials");
+    mkdirSync(dataDir);
+    writeFileSync(path.join(dataDir, "credentials.json"), "{invalid-json");
+    await expectStartupFailure("corrupt-credentials", { dataDir });
+  });
+  await checkFailure("missing explicit web root", async () => {
+    await expectStartupFailure("missing-web-root", { dataDir: path.join(scratch, "data-missing-web"), args: ["--web-root", path.join(scratch, "missing-web")] });
+  });
+  await checkFailure("explicit web root is a file", async () => {
+    const webRoot = path.join(scratch, "web-root-file");
+    writeFileSync(webRoot, "not a web directory");
+    await expectStartupFailure("web-root-file", { dataDir: path.join(scratch, "data-file-web"), args: ["--web-root", webRoot] });
+  });
+  await checkFailure("data owner excludes a second process and releases on shutdown", async () => {
+    await expectStartupFailure("competing-owner", { dataDir: path.join(scratch, "data-b") });
+    assert.equal((await jsonRequest(`${urlB}/api/app`)).status, 200);
+    const changed = await jsonRequest(`${urlB}/api/app`, {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceName: "surviving-owner" }),
+    });
+    assert.equal(changed.body.workspace.name, "surviving-owner");
+    await stopEmit(childB.proc);
+    const replacement = startEmit("replacement-owner", { dataDir: path.join(scratch, "data-b") });
+    assert.equal((await jsonRequest(`${await replacement.url}/api/app`)).body.workspace.name, "surviving-owner");
+    await stopEmit(replacement.proc);
+  });
+  if (failures.length > 0) throw new AggregateError(failures, `${failures.length} native startup regressions failed`);
 
   await occupied8787.close();
   console.log("native binary smoke 全部通过");
+} catch (error) {
+  if (!results.some((result) => result.status === "failed")) {
+    results.push({ name: "native smoke prerequisite or scenario", status: "failed", error: error instanceof Error ? error.message : String(error) });
+  }
+  throw error;
 } finally {
-  for (const proc of liveProcesses) proc.kill("SIGKILL");
-  for (const server of liveServers) server.close();
-  rmSync(scratch, { recursive: true, force: true });
+  try {
+    await Promise.all([...liveProcesses].map(proc => stopEmit(proc, 5_000)));
+    for (const server of liveServers) server.close();
+    rmSync(scratch, { recursive: true, force: true });
+  } finally {
+    const reportDirectory = path.join(repoRoot, "test-results", "native");
+    mkdirSync(reportDirectory, { recursive: true });
+    writeFileSync(path.join(reportDirectory, "summary.json"), `${JSON.stringify({
+      completedAt: new Date().toISOString(), expectedScenarios: 14,
+      passed: results.filter((result) => result.status === "passed").length,
+      failed: results.filter((result) => result.status === "failed").length,
+      unexercised: Math.max(0, 14 - results.length), scenarios: results,
+    }, null, 2)}\n`);
+  }
 }

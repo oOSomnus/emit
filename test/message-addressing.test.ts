@@ -68,7 +68,12 @@ describe("resolveMessageAddressing", () => {
     expect(result.mentionAll).toBe(false);
   });
 
-  it.each(["@all", "@全体"])("expands %s to enabled members only", (body) => {
+  it("keeps an empty body with no selected recipients empty", () => {
+    expect(resolve("").recipientIds).toEqual([]);
+  });
+
+
+  it.each(["@all", "@ALL", "@全体"])("expands %s to enabled members only", (body) => {
     const result = resolve(body);
 
     expectRecipientIds(result.recipientIds, ["ada", "bea"]);
@@ -87,6 +92,22 @@ describe("resolveMessageAddressing", () => {
 
     expectRecipientIds(result.recipientIds, ["ada", "bea"]);
   });
+  it("matches Chinese names containing spaces at Chinese punctuation boundaries", () => {
+    const chineseMembers: AddressableMember[] = [
+      { id: "lin-xiaohua", name: "林 小花", address: "lin@example.test", enabled: true },
+    ];
+    const result = resolve("你好，@林 小花！", [], false, chineseMembers);
+
+    expect(result.recipientIds).toEqual(["lin-xiaohua"]);
+  });
+  it("does not treat a name prefix without a boundary as a mention", () => {
+    expectAddressingError(
+      () => resolve("@Adalovelace"),
+      { code: "unknown-mention", token: "Adalovelace", employeeId: "" },
+    );
+  });
+
+
 
   it("chooses the longest matching name when one employee name prefixes another", () => {
     const candidates: AddressableMember[] = [
@@ -112,6 +133,9 @@ describe("resolveMessageAddressing", () => {
     ["semicolon", ";"],
     ["opening parenthesis", "("],
     ["closing parenthesis", ")"],
+    ["Chinese comma", "，"],
+    ["Chinese period", "。"],
+    ["Chinese ideographic comma", "、"],
   ])("recognizes mentions after a %s boundary", (_label, prefix) => {
     const result = resolve(`${prefix}@Ada)`);
 
@@ -130,6 +154,14 @@ describe("resolveMessageAddressing", () => {
 
     expect(result.recipientIds).toEqual(["ada"]);
   });
+  it("ignores mentions in an unterminated fenced code block", () => {
+    const result = resolve("Example:\n```text\n@Ada @all");
+
+    expect(result.recipientIds).toEqual([]);
+    expect(result.mentionAll).toBe(false);
+  });
+
+
 
   it("disambiguates duplicate names with a full address", () => {
     const samMembers: AddressableMember[] = [
@@ -179,6 +211,13 @@ describe("resolveMessageAddressing", () => {
     );
   });
 
+  it("rejects an empty explicit recipient ID", () => {
+    expectAddressingError(
+      () => resolve("", [""]),
+      { code: "not-member", token: "", employeeId: "" },
+    );
+  });
+
   it("reports a disabled recipient", () => {
     expectAddressingError(
       () => resolve("", ["cara"]),
@@ -199,11 +238,13 @@ describe("resolveMessageAddressing", () => {
 
   it.each([
     ["non-array recipient IDs", "", "not-an-array", false, members],
+    ["non-string recipient ID", "", ["ada", 7], false, members],
     ["non-boolean mentionAll", "", [], "false", members],
     ["non-array members", "", [], false, null],
     ["non-string body", 123, [], false, members],
-  ])("throws for %s", (_label, body, requestedIds, mentionAll, candidates) => {
-    expect(() => resolveUnknownInput(body, requestedIds, mentionAll, candidates)).toThrow();
+    ["null body", null, [], false, members],
+  ])("throws TypeError for %s", (_label, body, requestedIds, mentionAll, candidates) => {
+    expect(() => resolveUnknownInput(body, requestedIds, mentionAll, candidates)).toThrow(TypeError);
   });
 
   it.each([
@@ -212,7 +253,7 @@ describe("resolveMessageAddressing", () => {
     ["address", { id: "ada", name: "Ada", address: 7, enabled: true }],
     ["enabled flag", { id: "ada", name: "Ada", address: "ada@example.test", enabled: "yes" }],
     ["member entry", "ada"],
-  ])("throws for a non-conforming member %s", (_label, candidate) => {
-    expect(() => resolveUnknownInput("@Ada", [], false, [candidate])).toThrow();
+  ])("throws TypeError for a non-conforming member %s", (_label, candidate) => {
+    expect(() => resolveUnknownInput("@Ada", [], false, [candidate])).toThrow(TypeError);
   });
 });

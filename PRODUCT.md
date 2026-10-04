@@ -39,7 +39,7 @@ Durable execution and inspectable approvals support this promise; they are not s
 
 ### Existing capabilities
 
-- Channels wake employees through explicit assignment; body mentions alone do not wake them. Direct messages wake their employee by default.
+- Channels wake only addressed employees: explicit recipient chips, unambiguous `@name`/`@address` mentions, or `@all` for enabled members. Ordinary unaddressed text is recorded without starting work; direct messages wake their employee by default.
 - Mail is durable and asynchronous. To recipients that are employees start work; CC receives a copy without starting work. Employees' final answers are delivered as replies.
 - Drafts, reply/reply-all, read/archive flags, search, and execution inspection support the mailbox workflow.
 - Delegation is bounded by depth, cross-employee wake count, and model-turn budgets; delegation cycles back to a supervisor are rejected.
@@ -86,7 +86,7 @@ The user delegated constraint selection during initialization. The following cho
 - `docs/security.md` and `docs/security.zh-CN.md`: approval model and safety properties.
 - `docs/development.md`: runtime stack, development commands, prompt resources, and the existing end-to-end smoke harness.
 - `src/web/App.tsx` and `src/web/views/`: implemented setup and workspace surfaces. `src/web/styles.css` holds the incumbent interface tokens; this file does not establish a replacement design system.
-- `test/` and `tmp/smoke.mjs`: automated verification resources, not customer proof or independently audited guarantees.
+- `test/` and `test/fixtures/`: automated verification resources, not customer proof or independently audited guarantees.
 
 No testimonials, customer endorsements, performance benchmarks, or compliance certifications were supplied during initialization. Future work must not invent them.
 
