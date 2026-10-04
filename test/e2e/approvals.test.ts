@@ -63,6 +63,10 @@ describe("real-process approval risk boundaries", () => {
       const execution = await call<WorkExecutionDTO>(fixture, `/api/works/${workId}/execution`);
       const result = execution.steps.find((step) => step.kind === "tool-result" && step.toolName === "run_shell");
       expect(result).toMatchObject({ isError: false });
+      // The model-visible result carries the real stdout, not just an exit code.
+      for (const marker of command === "cat notes.txt" ? ["第一行", "第二行"] : ["notes.txt"]) {
+        expect(result?.text).toContain(marker);
+      }
       await stream.next((event) => event.type === "work-progress" && event.workId === workId && event.progressText.includes("已完成") && event.tools.some((tool) => tool.name === "run_shell" && tool.status === "done" && tool.output === result?.text));
       const messages = await call<{ messages: MessageDTO[] }>(fixture, `/api/rooms/${fixture.workspace.channelId}/messages`);
       const answers = messages.messages.filter((message) => message.workId === workId && message.author.type === "employee");

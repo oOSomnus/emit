@@ -23,6 +23,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { EmitRuntime } from "./runtime.ts";
 import { AppDoc, ConversationContextDoc, RoomDoc, type EmployeeRecord, type SkillRecord } from "./documents.ts";
 import { findWorkContext } from "./work-contexts.ts";
+import { listEmployees } from "./workspace.ts";
 import {
   renderEmployeeContext,
   renderEmployeeIdentity,
@@ -152,12 +153,25 @@ export function buildEmployeeExtension(input: EmployeeAgentInput): Extension {
             maxDepth: app.collaboration.maxDepth,
             maxCrossEmployeeWakes: app.collaboration.maxCrossEmployeeWakes,
           };
+    // The employee index is read per request so invitations, renames, and
+    // disabled employees are current on the next turn.
+    const employees = await listEmployees(runtime);
+    const directoryFor = (memberIds: ReadonlySet<string>): EmployeeContextInput["employeeDirectory"] =>
+      employees.map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        address: entry.address,
+        enabled: entry.enabled,
+        member: memberIds.has(entry.id),
+      }));
     if (!directory.ok) {
       return renderEmployeeContext({
         app: appInput,
         directory: { kind: "error", message: directory.message },
         work,
         workContext: null,
+        currentChannel: null,
+        employeeDirectory: [],
       });
     }
     const { scope } = directory;
@@ -191,6 +205,21 @@ export function buildEmployeeExtension(input: EmployeeAgentInput): Extension {
             remainingNotes: Math.max(0, workContextRecord.notes.length - 20),
           };
     const room = await promptInput.read.snapshot(RoomDoc, scope.roomId, ctx);
+    // The current channel comes from this conversation's own binding, never
+    // from the inherited directory scope: a delegation inherits its parent's
+    // scope room but does not itself run in that channel.
+    const boundRoom =
+      binding !== undefined && binding.roomId.length > 0
+        ? binding.roomId === scope.roomId
+          ? room
+          : await promptInput.read.snapshot(RoomDoc, binding.roomId, ctx)
+        : undefined;
+    const channelRoom =
+      boundRoom !== undefined && boundRoom.kind === "channel" && boundRoom.workContextId === scope.workContextId
+        ? boundRoom
+        : undefined;
+    const currentChannel =
+      channelRoom === undefined ? null : { id: channelRoom.id, name: channelRoom.name };
     return renderEmployeeContext({
       app: appInput,
       directory:
@@ -206,6 +235,8 @@ export function buildEmployeeExtension(input: EmployeeAgentInput): Extension {
             },
       work,
       workContext,
+      currentChannel,
+      employeeDirectory: directoryFor(new Set(channelRoom?.memberIds ?? [])),
     });
   });
 

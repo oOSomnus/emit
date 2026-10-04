@@ -64,17 +64,42 @@ type Recorded = {
   model: string | undefined;
   session: string | null;
   prompt: string;
+  /** The output budget the request actually carried, whichever wire field was used. */
+  maxTokens: number | null;
+};
+
+/** Deterministic completion shaping for the approval-response regressions. */
+type CompletionOptions = {
+  /** Reasoning delta sent before the final content; it is never final text. */
+  reasoning?: string;
+  /** Finish reason for the generated completion; default "stop". */
+  finishReason?: "stop" | "length";
+  /** completion_tokens reported in the usage chunk; default 8. */
+  outputTokens?: number;
+  /**
+   * Provider-side truncation: when the request's output budget is below this,
+   * only the reasoning delta is sent and finish_reason is "length".
+   */
+  minimumOutputBudget?: number;
 };
 
 type Fixture = {
   baseUrl: string;
   requests: Recorded[];
   setError: (message: string | null) => void;
-  setCompletion: (completion: string | null) => void;
+  setCompletion: (completion: string | null, options?: CompletionOptions) => void;
+  /** Reject any request whose output budget exceeds the declared model limit. */
+  setOutputCeiling: (value: number | null) => void;
   waitForRequest: (predicate: (request: Recorded) => boolean, timeoutMs?: number) => Promise<Recorded>;
   gateSummaries: () => void;
   releaseSummaries: () => void;
 };
+
+/** The output budget field an OpenAI-completions request carries, if any. */
+function requestMaxTokens(body: Record<string, unknown>): number | null {
+  const value = body.max_tokens ?? body.max_completion_tokens;
+  return typeof value === "number" ? value : null;
+}
 
 /** One completion line, phrased by the request itself so no fixture state is needed. */
 function decide(messages: unknown): string {
@@ -119,6 +144,8 @@ async function startFixture(): Promise<Fixture> {
   let gateSummaries = false;
   let forcedError: string | null = null;
   let forcedCompletion: string | null = null;
+  let forcedCompletionOptions: CompletionOptions | null = null;
+  let outputCeiling: number | null = null;
 
   const notify = (): void => {
     for (const waiter of [...waiters]) waiter();
@@ -135,7 +162,7 @@ async function startFixture(): Promise<Fixture> {
       const session = sessionHeader(request.headers);
       const model = typeof body.model === "string" ? body.model : undefined;
       const prompt = JSON.stringify(body.messages ?? []);
-      requests.push({ url: request.url, model, session, prompt });
+      requests.push({ url: request.url, model, session, prompt, maxTokens: requestMaxTokens(body) });
       notify();
 
       if (session === null) {
@@ -146,6 +173,16 @@ async function startFixture(): Promise<Fixture> {
       if (forcedError !== null) {
         response.writeHead(400, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: { message: forcedError } }));
+        return;
+      }
+      const budget = requestMaxTokens(body);
+      if (outputCeiling !== null && budget !== null && budget > outputCeiling) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            error: { message: `requested output budget ${budget} exceeds the model limit ${outputCeiling}` },
+          }),
+        );
         return;
       }
       if (gateSummaries && prompt.includes("context summarization assistant")) {
@@ -165,8 +202,30 @@ async function startFixture(): Promise<Fixture> {
         response.write(`data: ${JSON.stringify(payload)}\n\n`);
       };
       chunk({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] });
-      chunk({ ...base, choices: [{ index: 0, delta: { content }, finish_reason: null }] });
-      chunk({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage });
+      if (forcedCompletionOptions !== null) {
+        const options = forcedCompletionOptions;
+        const truncated =
+          options.minimumOutputBudget !== undefined &&
+          (budget === null || budget < options.minimumOutputBudget);
+        if (options.reasoning !== undefined) {
+          chunk({
+            ...base,
+            choices: [{ index: 0, delta: { reasoning_content: options.reasoning }, finish_reason: null }],
+          });
+        }
+        if (!truncated) {
+          chunk({ ...base, choices: [{ index: 0, delta: { content }, finish_reason: null }] });
+        }
+        const completionTokens = options.outputTokens ?? 8;
+        chunk({
+          ...base,
+          choices: [{ index: 0, delta: {}, finish_reason: truncated ? "length" : (options.finishReason ?? "stop") }],
+          usage: { prompt_tokens: 12, completion_tokens: completionTokens, total_tokens: 12 + completionTokens },
+        });
+      } else {
+        chunk({ ...base, choices: [{ index: 0, delta: { content }, finish_reason: null }] });
+        chunk({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage });
+      }
       response.write("data: [DONE]\n\n");
       response.end();
     })().catch(() => {
@@ -189,8 +248,12 @@ async function startFixture(): Promise<Fixture> {
     setError: (message) => {
       forcedError = message;
     },
-    setCompletion: (completion) => {
+    setCompletion: (completion, options) => {
       forcedCompletion = completion;
+      forcedCompletionOptions = options ?? null;
+    },
+    setOutputCeiling: (value) => {
+      outputCeiling = value;
     },
     waitForRequest: async (predicate, timeoutMs = 15_000) => {
       const deadline = Date.now() + timeoutMs;
@@ -219,22 +282,34 @@ async function startFixture(): Promise<Fixture> {
 }
 
 /** The native OpenCode provider, with only its model base URL pointed at the fixture. */
-function localProvider(fixture: Fixture): Provider {
+function localProvider(fixture: Fixture, maxTokens?: number): Provider {
   const native = opencodeGoProvider();
   return {
     ...native,
-    getModels: () => native.getModels().map((model) => ({ ...model, baseUrl: fixture.baseUrl })),
+    getModels: () =>
+      native.getModels().map((model) => ({
+        ...model,
+        baseUrl: fixture.baseUrl,
+        ...(maxTokens !== undefined ? { maxTokens } : {}),
+      })),
     ...(native.getAllModels !== undefined
-      ? { getAllModels: () => native.getAllModels!().map((model) => ({ ...model, baseUrl: fixture.baseUrl })) }
+      ? {
+          getAllModels: () =>
+            native.getAllModels!().map((model) => ({
+              ...model,
+              baseUrl: fixture.baseUrl,
+              ...(maxTokens !== undefined ? { maxTokens } : {}),
+            })),
+        }
       : {}),
   };
 }
 
-async function localCatalog(fixture: Fixture): Promise<ModelCatalog> {
+async function localCatalog(fixture: Fixture, maxTokens?: number): Promise<ModelCatalog> {
   const credentials = new InMemoryCredentialStore();
   await credentials.modify(PROVIDER_ID, async () => ({ type: "api_key", key: "local-fixture-key" }));
   const catalog = new ModelCatalog([], { credentials });
-  catalog.models.setProvider(localProvider(fixture));
+  catalog.models.setProvider(localProvider(fixture, maxTokens));
   return catalog;
 }
 
@@ -439,6 +514,133 @@ describe("approval evaluator", () => {
     expect(wrongType).toMatchObject({ status: "unavailable", reason: "invalid-output" });
   }, 20_000);
 
+  it("reports a truncated reasoning-only response as invalid output, not a configuration problem", async () => {
+    const fixture = await startFixture();
+    const catalog = await localCatalog(fixture);
+    const evaluator = createLlmEvaluator(catalog);
+
+    // The provider spends the whole budget on reasoning and ends with length;
+    // the thinking text must never be consumed as the final answer.
+    fixture.setCompletion(null, {
+      reasoning: "THINKING_CANARY",
+      outputTokens: 400,
+      minimumOutputBudget: 1_000_000,
+    });
+    const truncated = await evaluator.evaluate(
+      approvalCase("truncated"),
+      approvalConfig,
+      evaluationContext(catalog, "truncated"),
+    );
+    expect(truncated).toMatchObject({ status: "unavailable", reason: "invalid-output" });
+    if (truncated.status === "unavailable") {
+      expect(truncated.message).toContain("length");
+      expect(truncated.message).toContain(String(fixture.requests[0]?.maxTokens));
+      expect(truncated.message).toContain("400");
+      expect(truncated.message).not.toContain("THINKING_CANARY");
+    }
+
+    // A normal stop with no final text is its own diagnosis, not a truncation.
+    fixture.setCompletion("", { reasoning: "THINKING_CANARY", outputTokens: 50 });
+    const empty = await evaluator.evaluate(
+      approvalCase("empty"),
+      approvalConfig,
+      evaluationContext(catalog, "empty"),
+    );
+    expect(empty).toMatchObject({ status: "unavailable", reason: "invalid-output" });
+    if (empty.status === "unavailable") {
+      expect(empty.message).toContain("stop");
+      expect(empty.message).toContain("50");
+      expect(empty.message).not.toContain("THINKING_CANARY");
+    }
+  }, 20_000);
+
+  it("never accepts a parseable body from an incomplete stop, and keeps stop, provider, and configuration distinct", async () => {
+    const fixture = await startFixture();
+    const catalog = await localCatalog(fixture);
+    const evaluator = createLlmEvaluator(catalog);
+    const allowJson = JSON.stringify({
+      outcome: "allow",
+      risk: "low",
+      rationale: "truncated but parseable",
+      readOnly: true,
+      userAuthorization: "unknown",
+    });
+
+    fixture.setCompletion(allowJson, { finishReason: "length", outputTokens: 5000 });
+    const truncated = await evaluator.evaluate(
+      approvalCase("length"),
+      approvalConfig,
+      evaluationContext(catalog, "length"),
+    );
+    expect(truncated).toMatchObject({ status: "unavailable", reason: "invalid-output" });
+
+    fixture.setCompletion(allowJson);
+    const complete = await evaluator.evaluate(
+      approvalCase("stop"),
+      approvalConfig,
+      evaluationContext(catalog, "stop"),
+    );
+    expect(complete).toMatchObject({ status: "evaluated", outcome: "allow", risk: "low" });
+
+    fixture.setError("provider exploded");
+    const provider = await evaluator.evaluate(
+      approvalCase("error"),
+      approvalConfig,
+      evaluationContext(catalog, "error"),
+    );
+    expect(provider).toMatchObject({ status: "unavailable", reason: "provider" });
+    if (provider.status === "unavailable") expect(provider.message).toContain("provider exploded");
+
+    const missing = await evaluator.evaluate(
+      approvalCase("missing-model"),
+      { ...approvalConfig, model: { providerId: PROVIDER_ID, modelId: "does-not-exist" } },
+      evaluationContext(catalog, "missing-model"),
+    );
+    expect(missing).toMatchObject({ status: "unavailable", reason: "configuration" });
+  }, 20_000);
+
+  it("gives a reasoning model enough fixed budget for a final answer without exceeding a smaller model's limit", async () => {
+    const fixture = await startFixture();
+    const catalog = await localCatalog(fixture);
+    const evaluator = createLlmEvaluator(catalog);
+    const allowJson = JSON.stringify({
+      outcome: "allow",
+      risk: "low",
+      rationale: "reasoning then verdict",
+      readOnly: true,
+      userAuthorization: "unknown",
+    });
+
+    // The provider needs at least 1024 output tokens before it can finish its
+    // verdict; the request must carry that room.
+    fixture.setCompletion(allowJson, {
+      reasoning: "REASONING_CANARY",
+      outputTokens: 1000,
+      minimumOutputBudget: 1024,
+    });
+    const outcome = await evaluator.evaluate(
+      approvalCase("budget"),
+      approvalConfig,
+      evaluationContext(catalog, "budget"),
+    );
+    expect(outcome).toMatchObject({ status: "evaluated", outcome: "allow", risk: "low" });
+    expect(fixture.requests[0]?.maxTokens).toBeGreaterThanOrEqual(1024);
+
+    // A model whose own limit is smaller than the fixed review budget: the
+    // provider rejects anything above its declared limit, so the request must
+    // stay within it.
+    const smallFixture = await startFixture();
+    const smallCatalog = await localCatalog(smallFixture, 512);
+    smallFixture.setOutputCeiling(512);
+    smallFixture.setCompletion(allowJson);
+    const small = await createLlmEvaluator(smallCatalog).evaluate(
+      approvalCase("small"),
+      approvalConfig,
+      evaluationContext(smallCatalog, "small"),
+    );
+    expect(small).toMatchObject({ status: "evaluated", outcome: "allow", risk: "low" });
+    expect(smallFixture.requests[0]?.maxTokens).toBeLessThanOrEqual(512);
+  }, 20_000);
 });
 
 const HARNESS_SETTINGS = {

@@ -56,6 +56,24 @@ export const modelMessages = {
       "zh-CN": `请求结束于 ${stopReason}`,
     }),
 
+  /**
+   * A response that did not reach a complete final answer. `length` is named as
+   * the output limit; any other end is described by its stop reason. The token
+   * counts make a reasoning model's spent budget diagnosable.
+   */
+  requestIncomplete: (stopReason: string, maxTokens: number, outputTokens: number): AppText =>
+    appText({
+      en: `${stopReason === "length" ? "The model response reached its output limit" : "The model response did not finish completely"} (stop reason ${stopReason}; output limit ${maxTokens} tokens; output ${outputTokens} tokens); no complete final answer was obtained`,
+      "zh-CN": `${stopReason === "length" ? "模型响应达到输出上限" : "模型响应未完整结束"}（结束原因 ${stopReason}；输出上限 ${maxTokens} token；实际输出 ${outputTokens} token），未取得完整最终回答`,
+    }),
+
+  /** A clean stop with no final text: thinking never substitutes for an answer. */
+  requestEmptyOutput: (stopReason: string, effort: string, outputTokens: number): AppText =>
+    appText({
+      en: `The model returned no final text (stop reason ${stopReason}; reasoning effort ${effort}; output ${outputTokens} tokens)`,
+      "zh-CN": `模型未返回最终正文（结束原因 ${stopReason}；推理强度 ${effort}；实际输出 ${outputTokens} token）`,
+    }),
+
   classifierRequestEnded: (stopReason: string): AppText =>
     appText({
       en: `The classification request ended with "${stopReason}"`,

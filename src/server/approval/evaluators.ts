@@ -16,6 +16,7 @@ import {
 import { isLocalizedText, type LocalizedText } from "../../shared/i18n.ts";
 import { rawText, type AppText } from "../app-text.ts";
 import { appMessages } from "../messages.ts";
+import { modelMessages } from "../messages/models.ts";
 import type {
   ApprovalCase,
   ApprovalContextEntry,
@@ -37,6 +38,8 @@ const OUTCOMES = ["allow", "deny"] as const;
 const USER_AUTHORIZATIONS = ["high", "medium", "low", "unknown"] as const;
 const MAX_REVIEW_BYTES = 64_000;
 const RESERVED_CONTEXT_TOKENS = 4_096;
+/** Fixed output budget for one verdict: enough for reasoning plus the JSON. */
+const MAX_REVIEW_OUTPUT_TOKENS = 4_096;
 const MAX_HISTORY_ENTRY_BYTES = 8_000;
 
 function isRiskLevel(value: unknown): value is RiskLevel {
@@ -392,26 +395,38 @@ export function createLlmEvaluator(catalog: ModelCatalog): ApprovalEvaluator {
           ...(fitted.verbatim === true ? { verbatim: true } : {}),
         };
       }
+      // The model is resolved here so its own output limit can bound the fixed
+      // review budget; a model that no longer exists is a configuration issue,
+      // not a provider failure.
+      const model = catalog.chatModel(config.model);
+      if (model === undefined) {
+        return unavailable(
+          "configuration",
+          modelMessages.chatModelNotConfigured(config.model.providerId, config.model.modelId),
+        );
+      }
       const outcome = await completeText(
         catalog,
         { providerId: config.model.providerId, modelId: config.model.modelId, effort: config.effort },
         {
           system: renderApprovalSystem(),
           prompt: renderApprovalUser(approvalCaseJson(fitted.input)),
-          maxTokens: 400,
+          maxTokens: Math.min(MAX_REVIEW_OUTPUT_TOKENS, model.maxTokens),
           sessionId: `emit:approval:${context.evaluationId}`,
           ...(context.signal !== undefined ? { signal: context.signal } : {}),
         },
       );
       if (!outcome.ok) {
-        // The provider's own failure text is never translated; an app-authored
-        // wrapper from llm.ts may still carry a display pair, forwarded as-is.
+        // The failure reason comes from llm.ts: configuration, a provider
+        // request failure, or an unusable response. The provider's own failure
+        // text is never translated; an app-authored wrapper from llm.ts may
+        // still carry a display pair, forwarded as-is.
         const localized = isLocalizedText(outcome.messageLocalized) ? outcome.messageLocalized : undefined;
-        return unavailable("provider", { text: outcome.message, localized });
+        return unavailable(outcome.reason, { text: outcome.message, localized });
       }
       const parsed = parseJsonObject(outcome.text);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        return unavailable("invalid-output", appMessages.approval.llmUnparseable(outcome.text.slice(0, 200)));
+        return unavailable("invalid-output", appMessages.approval.llmUnparseable(redactApprovalText(outcome.text).slice(0, 200)));
       }
       const parsedRecord = parsed as Record<string, unknown>;
       const expectedKeys = ["outcome", "risk", "rationale", "readOnly", "userAuthorization"];
@@ -427,7 +442,7 @@ export function createLlmEvaluator(catalog: ModelCatalog): ApprovalEvaluator {
         typeof parsedRecord.readOnly !== "boolean" ||
         !isUserAuthorization(parsedRecord.userAuthorization)
       ) {
-        return unavailable("invalid-output", appMessages.approval.llmBadProtocol(outcome.text.slice(0, 200)));
+        return unavailable("invalid-output", appMessages.approval.llmBadProtocol(redactApprovalText(outcome.text).slice(0, 200)));
       }
       return {
         status: "evaluated",

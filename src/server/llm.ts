@@ -21,7 +21,17 @@ export type LlmSuccess = {
   reasoning: string;
 };
 
-export type LlmFailure = { ok: false; message: string; messageLocalized?: LocalizedText };
+export type LlmFailure = {
+  ok: false;
+  /**
+   * Configuration: the selected model does not resolve. Provider: the request
+   * failed in transport or at the provider. Invalid-output: the provider
+   * answered, but without a complete, usable final answer.
+   */
+  reason: "configuration" | "provider" | "invalid-output";
+  message: string;
+  messageLocalized?: LocalizedText;
+};
 
 export type LlmOutcome = LlmSuccess | LlmFailure;
 
@@ -47,14 +57,15 @@ export async function completeText(
   const model = catalog.chatModel({ providerId: selection.providerId, modelId: selection.modelId });
   if (model === undefined) {
     const missing = modelMessages.chatModelNotConfigured(selection.providerId, selection.modelId);
-    return { ok: false, message: missing.text, messageLocalized: missing.localized };
+    return { ok: false, reason: "configuration", message: missing.text, messageLocalized: missing.localized };
   }
   const effort = catalog.resolveEffort({ providerId: selection.providerId, modelId: selection.modelId }, selection.effort);
   const messages: Message[] = [{ role: "user", content: request.prompt, timestamp: Date.now() }];
   // A logical request session: a caller with a stable identity (an approval
   // evaluation) passes it in; a standalone one-shot call gets a fresh id.
+  const maxTokens = request.maxTokens ?? 1024;
   const options = {
-    maxTokens: request.maxTokens ?? 1024,
+    maxTokens,
     sessionId: request.sessionId ?? randomUUID(),
     ...(effort !== "off" ? { reasoning: effort as "minimal" | "low" | "medium" | "high" } : {}),
     ...(request.signal !== undefined ? { signal: request.signal } : {}),
@@ -68,14 +79,30 @@ export async function completeText(
       options,
     );
     if (message.stopReason === "error" || message.stopReason === "aborted") {
-      if (message.errorMessage !== undefined) return { ok: false, message: message.errorMessage };
+      if (message.errorMessage !== undefined) return { ok: false, reason: "provider", message: message.errorMessage };
       const ended = modelMessages.requestEnded(message.stopReason);
-      return { ok: false, message: ended.text, messageLocalized: ended.localized };
+      return { ok: false, reason: "provider", message: ended.text, messageLocalized: ended.localized };
+    }
+    // Only a clean stop is a complete response. A truncated or otherwise
+    // unfinished response is never used as a final answer, even if its partial
+    // body happens to parse.
+    if (message.stopReason !== "stop") {
+      const incomplete = modelMessages.requestIncomplete(message.stopReason, maxTokens, message.usage.output);
+      return {
+        ok: false,
+        reason: "invalid-output",
+        message: incomplete.text,
+        messageLocalized: incomplete.localized,
+      };
     }
     const text = message.content
       .flatMap((block) => (block.type === "text" ? [block.text] : []))
       .join("")
       .trim();
+    if (text.length === 0) {
+      const empty = modelMessages.requestEmptyOutput(message.stopReason, effort, message.usage.output);
+      return { ok: false, reason: "invalid-output", message: empty.text, messageLocalized: empty.localized };
+    }
     return {
       ok: true,
       text,
@@ -88,6 +115,6 @@ export async function completeText(
     };
   } catch (error) {
     const wrapped = fromError(error);
-    return { ok: false, message: wrapped.text, messageLocalized: wrapped.localized };
+    return { ok: false, reason: "provider", message: wrapped.text, messageLocalized: wrapped.localized };
   }
 }

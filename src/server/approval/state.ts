@@ -1015,7 +1015,11 @@ async function persistOutcome(
           ? { text: outcome.message, localized: outcome.messageLocalized }
           : outcome.verbatim === true
             ? rawText(outcome.message)
-            : appMessages.approval.reviewUnavailableWithReason(outcome.message, outcome.messageLocalized);
+            : appMessages.approval.reviewUnavailableWithReason(
+                outcome.reason,
+                outcome.message,
+                outcome.messageLocalized,
+              );
       doc.autoDecisionReason = reason.text;
       doc.autoDecisionReasonLocalized = reason.localized;
       doc.evidence = policyEvidence(

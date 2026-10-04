@@ -222,7 +222,7 @@ describe("durable mail delivery", () => {
       if (request.prompt.includes("localpart")) return { content: '{"localpart": "tester"}' };
       // 乙 cannot answer until the latch opens: the awaiting state is observed
       // while the child is genuinely still working.
-      if (request.system.includes("乙")) return { content: "回信：结果是 42。", gate: replyGate };
+      if (request.system.includes("你的名字是 乙（")) return { content: "回信：结果是 42。", gate: replyGate };
       // 甲: ask, try to answer early, then answer for real once the reply is read.
       if (request.prompt.includes("收到与本任务相关的邮件回信")) return { content: FINAL };
       if (request.prompt.includes("已发送邮件给")) return { content: PREMATURE };
@@ -314,8 +314,8 @@ describe("durable mail delivery", () => {
     cleanups.push(() => releaseReplies?.());
     const fixture = await startFixture((request) => {
       if (request.prompt.includes("localpart")) return { content: '{"localpart": "tester"}' };
-      if (request.system.includes("乙")) return { content: "回信乙：结果是 B。", gate: repliesGate };
-      if (request.system.includes("丙")) return { content: "回信丙：结果是 C。", gate: repliesGate };
+      if (request.system.includes("你的名字是 乙（")) return { content: "回信乙：结果是 B。", gate: repliesGate };
+      if (request.system.includes("你的名字是 丙（")) return { content: "回信丙：结果是 C。", gate: repliesGate };
       if (request.prompt.includes("收到与本任务相关的邮件回信")) return { content: "最终答复：B 和 C 都收到了。" };
       // First ask 乙, then 丙 once that send came back, then try to answer.
       if (request.prompt.includes("已发送邮件给 丙")) return { content: "等两位回信。" };
@@ -414,7 +414,7 @@ describe("durable mail delivery", () => {
     cleanups.push(() => releaseReply?.());
     const fixture = await startFixture((request) => {
       if (request.prompt.includes("localpart")) return { content: '{"localpart": "tester"}' };
-      if (request.system.includes("乙")) return { content: "回信（永远不会被读到）。", gate: replyGate };
+      if (request.system.includes("你的名字是 乙（")) return { content: "回信（永远不会被读到）。", gate: replyGate };
       if (request.prompt.includes("对方员工的工作已被停止")) return { content: "最终答复：对方被停止了。" };
       if (request.prompt.includes("已发送邮件给")) return { content: "等回信时想先答。" };
       return {
@@ -462,7 +462,7 @@ describe("durable mail delivery", () => {
     const PREMATURE = "停止前的提前答复。";
     const fixture = await startFixture((request) => {
       if (request.prompt.includes("localpart")) return { content: '{"localpart": "tester"}' };
-      if (request.system.includes("乙")) return { content: "回信：晚到的结果。", gate: replyGate };
+      if (request.system.includes("你的名字是 乙（")) return { content: "回信：晚到的结果。", gate: replyGate };
       if (request.prompt.includes("收到与本任务相关的邮件回信")) return { content: "最终答复：不该出现。" };
       if (request.prompt.includes("已发送邮件给")) return { content: PREMATURE };
       return {

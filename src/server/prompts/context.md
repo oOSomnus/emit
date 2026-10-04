@@ -26,10 +26,18 @@
 本次工作是该会话的一轮对话。
 
 ## work-context
-当前执行固定属于工作「{{name}}」（ID {{id}}）。
+当前执行固定属于工作「{{name}}」（工作 ID {{id}}，不是频道 ID）。
 
 目标：{{goal}}
 工作说明：{{instructions}}
+
+## current-channel
+当前频道（send_message.roomId 使用 id）：{{channel}}
+这是你当前工作所在频道，请只使用该 id 作为 roomId；工作 ID 和频道名称都不能代替它。
+
+## employee-directory
+工作区员工目录（共 {{total}} 人）：{{indexes}}
+employeeIds 使用目录中的 id，不是姓名或邮箱；member=true 表示该员工是当前频道成员，enabled=false 的员工已停用，不能邀请或唤醒。
 
 ## work-context-resources
 该工作的资料索引（共 {{total}} 项，以下最多列出 40 项）：{{indexes}}
