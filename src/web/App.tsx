@@ -90,7 +90,7 @@ export function App(): ReactNode {
         </div>
         {errorBanner}
         {state.connected ? null : <div className="banner warn">{messages.app.reconnect}</div>}
-        {state.view === "chat" ? <ChatView /> : null}
+        {state.view === "chat" ? <ChatView key={state.activeRoomId} /> : null}
         {state.view === "mail" ? <MailView /> : null}
         {state.view === "approvals" ? <ApprovalsView /> : null}
         {state.view === "employees" ? <EmployeesView /> : null}

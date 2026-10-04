@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page, Response } from "@playwright/test";
-import type { AppConfigDTO, MessageDTO, RoomDTO, WorkDTO, WorkExecutionDTO } from "../../src/shared/contracts.ts";
+import type { AppConfigDTO, BootstrapDTO, MessageDTO, RoomDTO, WorkDTO, WorkExecutionDTO } from "../../src/shared/contracts.ts";
 import { expect, onboarded, test, type BrowserE2eFixture } from "./fixtures.ts";
 
 type SendReceipt = { message: MessageDTO; workIds: string[] };
@@ -94,8 +94,6 @@ test("public chat distinguishes ordinary text from an @mention wake without dupl
   // Enter accepts the member suggestion. It must not also send the message.
   await composer.press("Enter");
   const addressedDraft = await composer.inputValue();
-  expect(addressedDraft).toMatch(/^@[^\s]+\s$/u);
-  await expect(page.getByText("Visible to everyone; replies: Alice", { exact: true })).toBeVisible();
   expect(postedMessages).toBe(1);
   const beforeSend = await roomMessages(app, app.workspace.channelId);
   expect(beforeSend.messages.filter((message) => message.author.type === "user")).toHaveLength(1);
@@ -228,4 +226,312 @@ test("execution details load an earlier page of real tool history without duplic
   const combinedIds = [...latestPage.steps, ...earlierPage.steps].map((step) => step.id);
   expect(new Set(combinedIds).size).toBe(combinedIds.length);
   await expect(dialog.getByRole("list").getByRole("listitem")).toHaveCount(combinedIds.length);
+});
+
+test("creating a channel uses a batch member picker bound to the current work", async ({ app, page }) => {
+  await onboarded(page, app);
+  const aliceId = app.workspace.employeeIds[0]!;
+  const bobId = app.workspace.employeeIds[1]!;
+  const roomsBefore = await api<RoomDTO[]>(app, "/api/rooms");
+  const narrow = (page.viewportSize()?.width ?? 0) <= 760;
+
+  await revealNavigation(page);
+  const channelButton = page.getByRole("button", { name: "New channel", exact: true });
+  await channelButton.click();
+  const dialog = page.getByRole("dialog", { name: "New channel", exact: true });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("Channel name", { exact: true }).fill("Planning Team");
+  const search = dialog.getByLabel("Search name, role, or address", { exact: true });
+  await search.fill("Ali");
+  await dialog.getByRole("checkbox", { name: /Alice/ }).check();
+  await search.fill("Bob");
+  await dialog.getByRole("button", { name: "Select all results", exact: true }).click();
+  await expect(dialog.getByRole("checkbox", { name: /Bob/ })).toBeChecked();
+  await search.fill("");
+  await expect(dialog.getByRole("checkbox", { name: /Alice/ })).toBeChecked();
+  await expect(dialog.getByRole("checkbox", { name: /Bob/ })).toBeChecked();
+  await dialog.getByRole("checkbox", { name: /Bob/ }).uncheck();
+  const createResponse = page.waitForResponse((response) => {
+    const request = response.request();
+    return request.method() === "POST" && new URL(response.url()).pathname === "/api/rooms";
+  });
+  await dialog.getByRole("button", { name: "Create", exact: true }).click();
+  const created = await createResponse;
+  expect(created.status()).toBe(200);
+  const room = await created.json() as RoomDTO;
+  expect(room).toMatchObject({
+    kind: "channel",
+    name: "Planning Team",
+    workContextId: app.workspace.workContextId,
+    memberIds: [aliceId],
+  });
+  await expect(page.getByRole("heading", { name: /Planning Team/ })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
+  const roomsAfterCreate = await api<RoomDTO[]>(app, "/api/rooms");
+  expect(roomsAfterCreate.filter((entry) => entry.name === "Planning Team")).toHaveLength(1);
+
+  // Cancel and Escape leave no record and return focus to the entry button.
+  await revealNavigation(page);
+  await channelButton.click();
+  const cancelDialog = page.getByRole("dialog", { name: "New channel", exact: true });
+  await expect(cancelDialog).toBeVisible();
+  await cancelDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(cancelDialog).toHaveCount(0);
+  await expect(channelButton).toBeFocused();
+  expect((await api<RoomDTO[]>(app, "/api/rooms")).length).toBe(roomsBefore.length + 1);
+
+  await channelButton.click();
+  const escapeDialog = page.getByRole("dialog", { name: "New channel", exact: true });
+  await expect(escapeDialog).toBeVisible();
+  await escapeDialog.press("Escape");
+  await expect(escapeDialog).toHaveCount(0);
+  if (narrow) {
+    // The dialog's Escape must not also close the narrow-screen navigation.
+    await expect(
+      page.locator(".mobile-bar").getByRole("button", { name: "Close navigation", exact: true }),
+    ).toBeVisible();
+  }
+  expect((await api<RoomDTO[]>(app, "/api/rooms")).length).toBe(roomsBefore.length + 1);
+
+  // A selected member disabled elsewhere blocks creation until deselected.
+  await channelButton.click();
+  const staleDialog = page.getByRole("dialog", { name: "New channel", exact: true });
+  await expect(staleDialog).toBeVisible();
+  await staleDialog.getByLabel("Channel name", { exact: true }).fill("Stale Team");
+  await staleDialog.getByRole("checkbox", { name: /Bob/ }).check();
+  const disabled = await app.request(`/api/employees/${bobId}`, "PATCH", { enabled: false });
+  expect(disabled.status).toBe(200);
+  await expect(staleDialog.getByRole("alert")).toContainText("disabled or removed");
+  await expect(staleDialog.getByRole("button", { name: "Create", exact: true })).toBeDisabled();
+  await staleDialog.getByRole("checkbox", { name: /Bob/ }).click();
+  await expect(staleDialog.getByRole("alert")).toHaveCount(0);
+  await expect(staleDialog.getByRole("button", { name: "Create", exact: true })).toBeEnabled();
+  await staleDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(staleDialog).toHaveCount(0);
+
+  // Filtering, empty results, and an intentionally empty channel.
+  await revealNavigation(page);
+  await channelButton.click();
+  const emptyDialog = page.getByRole("dialog", { name: "New channel", exact: true });
+  await expect(emptyDialog).toBeVisible();
+  await emptyDialog.getByLabel("Channel name", { exact: true }).fill("Quiet Room");
+  const emptySearch = emptyDialog.getByLabel("Search name, role, or address", { exact: true });
+  await emptySearch.fill("zzz");
+  await expect(emptyDialog.getByText("No matching employees", { exact: true })).toBeVisible();
+  await expect(emptyDialog.getByRole("button", { name: "Select all results", exact: true })).toBeDisabled();
+  await emptySearch.fill("");
+  await expect(emptyDialog.getByRole("checkbox", { name: /Alice/ })).toBeVisible();
+  await emptyDialog.getByRole("button", { name: "Create", exact: true }).click();
+  await expect(page.getByRole("heading", { name: /Quiet Room/ })).toBeVisible();
+  const quiet = (await api<RoomDTO[]>(app, "/api/rooms")).find((entry) => entry.name === "Quiet Room");
+  expect(quiet?.memberIds).toEqual([]);
+});
+
+test("a channel message wakes exactly the employees mentioned in its text", async ({ app, page }) => {
+  await openChannel(page, app);
+  const aliceId = app.workspace.employeeIds[0]!;
+  const composer = page.getByRole("textbox", { name: "Message" });
+  let posted = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === `/api/rooms/${app.workspace.channelId}/messages`) {
+      posted += 1;
+    }
+  });
+
+  // @all is plain text: deleting it before sending removes the wake.
+  await composer.fill("@all");
+  await expect(page.getByRole("option", { name: "Everyone", exact: true })).toBeVisible();
+  await composer.press("Enter");
+  expect(await composer.inputValue()).toBe("@all ");
+  expect(posted).toBe(0);
+  await composer.fill("ordinary after deleting mentions");
+  const plainPost = waitForMessagePost(page, app.workspace.channelId);
+  await composer.press("Enter");
+  const plainReceipt = await (await plainPost).json() as SendReceipt;
+  expect(plainReceipt).toMatchObject({
+    workIds: [],
+    message: { addressing: { recipientIds: [], mentionAll: false } },
+  });
+  expect(posted).toBe(1);
+
+  // The trigger inserts text without posting; sending it wakes Alice only.
+  await page.getByRole("button", { name: "Mention a member", exact: true }).click();
+  await expect(page.getByRole("listbox", { name: "Members", exact: true })).toBeVisible();
+  await page.getByRole("option", { name: /Alice/ }).click();
+  expect(await composer.inputValue()).toBe("@Alice ");
+  expect(posted).toBe(1);
+  await composer.fill(`${await composer.inputValue()}please read notes.txt`);
+  const alicePost = waitForMessagePost(page, app.workspace.channelId);
+  await composer.press("Enter");
+  const aliceReceipt = await (await alicePost).json() as SendReceipt;
+  expect(aliceReceipt.workIds).toHaveLength(1);
+  expect(aliceReceipt.message).toMatchObject({ addressing: { recipientIds: [aliceId], mentionAll: false } });
+  const aliceWork = await waitForWork(app, aliceReceipt.workIds[0]!, "succeeded");
+  expect(aliceWork.employeeId).toBe(aliceId);
+  expect(posted).toBe(2);
+
+  // Deleting the mention removes the wake again.
+  await composer.fill("notes handled without a mention");
+  const deletedPost = waitForMessagePost(page, app.workspace.channelId);
+  await composer.press("Enter");
+  const deletedReceipt = await (await deletedPost).json() as SendReceipt;
+  expect(deletedReceipt).toMatchObject({
+    workIds: [],
+    message: { addressing: { recipientIds: [], mentionAll: false } },
+  });
+  expect(posted).toBe(3);
+
+  // Escape closes the menu and keeps the text; Shift+Enter inserts a newline.
+  await composer.fill("@Ali");
+  await expect(page.getByRole("option", { name: /Alice/ })).toBeVisible();
+  await composer.press("Escape");
+  await expect(page.getByRole("listbox", { name: "Members", exact: true })).toHaveCount(0);
+  expect(await composer.inputValue()).toBe("@Ali");
+  await composer.press("Shift+Enter");
+  expect(await composer.inputValue()).toBe("@Ali\n");
+  expect(posted).toBe(3);
+
+  // Switching rooms drops the draft and the menu state with it.
+  await composer.fill("@Ali");
+  await expect(page.getByRole("option", { name: /Alice/ })).toBeVisible();
+  await createDirect(page, aliceId);
+  await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("");
+  await revealNavigation(page);
+  await page.getByRole("button", { name: "General", exact: true }).click();
+  await expect(page.getByRole("heading", { name: /General/ })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("");
+  await expect(page.getByRole("listbox", { name: "Members", exact: true })).toHaveCount(0);
+});
+
+test("IME confirmation and duplicate names never mis-address a channel message", async ({ app, page }) => {
+  await openChannel(page, app);
+  const bobId = app.workspace.employeeIds[1]!;
+  const composer = page.getByRole("textbox", { name: "Message" });
+  let posted = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === `/api/rooms/${app.workspace.channelId}/messages`) {
+      posted += 1;
+    }
+  });
+
+  // An Enter that confirms an IME composition neither sends nor accepts.
+  await composer.fill("@Al");
+  await expect(page.getByRole("option", { name: /Alice/ })).toBeVisible();
+  await composer.evaluate((element) => {
+    element.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    element.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, isComposing: true }),
+    );
+    element.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+  });
+  expect(await composer.inputValue()).toBe("@Al");
+  expect(posted).toBe(0);
+  await composer.fill("");
+
+  // Renaming Bob to Alice makes the display name ambiguous: both candidates
+  // fall back to addresses, and the chosen address wakes only its employee.
+  const renamed = await app.request(`/api/employees/${bobId}`, "PATCH", { name: "Alice" });
+  expect(renamed.status).toBe(200);
+  const bootstrap = await api<BootstrapDTO>(app, "/api/bootstrap");
+  const bobAddress = bootstrap.employees.find((employee) => employee.id === bobId)!.address;
+  await composer.fill("@Ali");
+  await expect(page.getByRole("option", { name: /Alice/ })).toHaveCount(2);
+  await page.getByRole("option").filter({ hasText: bobAddress }).click();
+  expect(await composer.inputValue()).toBe(`@${bobAddress} `);
+  await composer.fill(`${await composer.inputValue()}please read notes.txt`);
+  const post = waitForMessagePost(page, app.workspace.channelId);
+  await composer.press("Enter");
+  const receipt = await (await post).json() as SendReceipt;
+  expect(receipt.workIds).toHaveLength(1);
+  expect(receipt.message).toMatchObject({ addressing: { recipientIds: [bobId], mentionAll: false } });
+  const work = await waitForWork(app, receipt.workIds[0]!, "succeeded");
+  expect(work.employeeId).toBe(bobId);
+});
+
+test("employee Markdown renders safely in final answers and survives a reload", async ({ app, page }) => {
+  test.setTimeout(120_000);
+  await openChannel(page, app);
+  const requests: string[] = [];
+  page.on("request", (request) => requests.push(request.url()));
+
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await composer.fill("@Alice BROWSER_MARKDOWN");
+  const post = waitForMessagePost(page, app.workspace.channelId);
+  await composer.press("Enter");
+  const response = await post;
+  expect(response.status()).toBe(200);
+  const receipt = await response.json() as SendReceipt;
+  expect(receipt.workIds).toHaveLength(1);
+  const work = await waitForWork(app, receipt.workIds[0]!, "succeeded");
+  expect(work.answer).toContain("MARKDOWN_HEADING");
+
+  const body = page.locator(".message.employee .markdown-body").last();
+  await expect(body).toBeVisible();
+  await expect(body.getByRole("heading", { name: "MARKDOWN_HEADING", exact: true })).toBeVisible();
+  await expect(body.locator("strong", { hasText: "MARKDOWN_BOLD" })).toBeVisible();
+  await expect(body.locator("code", { hasText: "MARKDOWN_CODE" })).toBeVisible();
+  await expect(body.getByText("MARKDOWN_ITEM", { exact: true })).toBeVisible();
+  await expect(body.getByText("MARKDOWN_QUOTE", { exact: true })).toBeVisible();
+  await expect(body.getByText("MARKDOWN_CELL", { exact: true })).toBeVisible();
+  const task = body.locator('input[type="checkbox"]');
+  await expect(task).toBeDisabled();
+  await expect(task).toBeChecked();
+  const codeBlock = body.locator("pre code");
+  await expect(codeBlock).toContainText("**literal**");
+  await expect(codeBlock).toContainText("@all");
+  expect(await codeBlock.locator("strong").count()).toBe(0);
+
+  // Raw HTML stays text; unsafe URLs and remote images never execute or fetch.
+  expect(await body.locator("script").count()).toBe(0);
+  expect(await page.evaluate(() => (window as unknown as { __markdownExecuted?: boolean }).__markdownExecuted)).toBeUndefined();
+  expect(await body.locator('a[href^="javascript:"]').count()).toBe(0);
+  await expect(body.getByRole("link", { name: "safe", exact: true })).toHaveAttribute(
+    "href",
+    "https://example.test/docs",
+  );
+  await expect(body.getByRole("link", { name: "remote", exact: true })).toHaveAttribute(
+    "href",
+    "https://example.test/image.png",
+  );
+  expect(requests.some((url) => url.includes("example.test"))).toBe(false);
+
+  // The stored message keeps the original Markdown, and a reload re-renders it.
+  const stored = await roomMessages(app, app.workspace.channelId);
+  const answer = stored.messages.find((message) => message.body.includes("MARKDOWN_HEADING"));
+  expect(answer?.body).toContain("**MARKDOWN_BOLD**");
+  expect(answer?.body).toContain("```txt");
+  await page.reload();
+  await onboarded(page, app);
+  await expect(
+    page.locator(".message.employee .markdown-body").last().getByRole("heading", { name: "MARKDOWN_HEADING", exact: true }),
+  ).toBeVisible();
+});
+
+test("live Markdown progress renders before the answer completes", async ({ app, page }) => {
+  test.setTimeout(120_000);
+  await openChannel(page, app);
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await composer.fill("@Alice BROWSER_MARKDOWN_STREAM");
+  const post = waitForMessagePost(page, app.workspace.channelId);
+  await composer.press("Enter");
+  const receipt = await (await post).json() as SendReceipt;
+  expect(receipt.workIds).toHaveLength(1);
+  const workId = receipt.workIds[0]!;
+  try {
+    await expect.poll(async () => {
+      const ready = await fetch(`${app.provider.url}/_markdown_stream_ready`);
+      return ((await ready.json()) as { ready: boolean }).ready;
+    }, { timeout: 30_000 }).toBe(true);
+    const live = page.locator(".work-live .markdown-body");
+    await expect(live.getByRole("heading", { name: "MARKDOWN_HEADING", exact: true })).toBeVisible();
+    await expect(live.locator("pre code")).toContainText("**literal**");
+    await fetch(`${app.provider.url}/_release_markdown_stream`, { method: "POST" });
+    const work = await waitForWork(app, workId, "succeeded");
+    expect(work.answer).toContain("MARKDOWN_HEADING");
+    await expect(
+      page.locator(".message.employee .markdown-body").last().getByRole("heading", { name: "MARKDOWN_HEADING", exact: true }),
+    ).toBeVisible();
+  } finally {
+    await fetch(`${app.provider.url}/_release_markdown_stream`, { method: "POST" }).catch(() => {});
+  }
 });

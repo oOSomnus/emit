@@ -219,6 +219,37 @@ function currentRequest(prompt) {
   return request.replace(/^主题：[^\n]*\n\n/, "");
 }
 
+/**
+ * The fixed Markdown answer the browser rendering test observes. It carries
+ * every supported construct plus unsafe material (javascript: URL, raw script,
+ * remote image) that the renderer must neutralize.
+ */
+const BROWSER_MARKDOWN_ANSWER = [
+  "## MARKDOWN_HEADING",
+  "",
+  "**MARKDOWN_BOLD** 与 `MARKDOWN_CODE`",
+  "",
+  "- MARKDOWN_ITEM",
+  "- [x] MARKDOWN_DONE",
+  "",
+  "> MARKDOWN_QUOTE",
+  "",
+  "```txt",
+  "**literal**",
+  "@all",
+  "```",
+  "",
+  "| Key | Value |",
+  "| --- | --- |",
+  "| result | MARKDOWN_CELL |",
+  "",
+  "[safe](https://example.test/docs)",
+  "[bad](javascript:alert(1))",
+  "![remote](https://example.test/image.png)",
+  "",
+  "<script>window.__markdownExecuted = true</script>",
+].join("\n");
+
 function approvalResponse(messages) {
   const input = caseFromPrompt(messages);
   return { ...approvalVerdict(input), input };
@@ -264,6 +295,9 @@ function decide(body) {
   }
   if (request.includes("BROWSER_SSE_REPLY")) {
     return { content: "BROWSER_SSE_REPLY_CONTENT", toolCalls: [] };
+  }
+  if (request.includes("BROWSER_MARKDOWN")) {
+    return { content: BROWSER_MARKDOWN_ANSWER, toolCalls: [] };
   }
 
   // A reply that was awaited continues the parent task; the parent only
@@ -643,6 +677,13 @@ let resumeAskBack;
 const askBackReleased = new Promise((resolve) => {
   resumeAskBack = resolve;
 });
+/** The Markdown stream answer holds after its content delta until released. */
+let markdownStreamSeen = false;
+let markdownStreamOpen = false;
+let resumeMarkdownStream;
+const markdownStreamReleased = new Promise((resolve) => {
+  resumeMarkdownStream = resolve;
+});
 const server = createServer(async (request, response) => {
   if (request.method === "POST" && request.url === "/_exfiltration_probe") {
     exfiltrationRequests += 1;
@@ -683,6 +724,17 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && request.url === "/_release_ask_back") {
     askBackOpen = true;
     resumeAskBack();
+    response.writeHead(204).end();
+    return;
+  }
+  if (request.method === "GET" && request.url === "/_markdown_stream_ready") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ready: markdownStreamSeen }));
+    return;
+  }
+  if (request.method === "POST" && request.url === "/_release_markdown_stream") {
+    markdownStreamOpen = true;
+    resumeMarkdownStream();
     response.writeHead(204).end();
     return;
   }
@@ -778,6 +830,12 @@ const server = createServer(async (request, response) => {
   response.write(chunk({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] }));
   if (content.length > 0) {
     response.write(chunk({ ...base, choices: [{ index: 0, delta: { content }, finish_reason: null }] }));
+  }
+  // The Markdown live-render test observes the delta while this answer is held
+  // open; releasing it lets the finish/DONE frames through.
+  if (!markdownStreamOpen && employeePrompt.includes("BROWSER_MARKDOWN_STREAM")) {
+    markdownStreamSeen = true;
+    await markdownStreamReleased;
   }
   if (toolCalls.length > 0) {
     response.write(
