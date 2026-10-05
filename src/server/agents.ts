@@ -32,6 +32,7 @@ import {
 } from "./prompts/index.ts";
 import { BUILTIN_TOOL_RISK, buildFileTools } from "./tools.ts";
 import { gateToolCall, type ToolRisk } from "./approval/state.ts";
+import type { McpToolBinding, McpToolTrust } from "./mcp.ts";
 import { readWorkDirectoryScope } from "./work-directories.ts";
 
 const THINKING_LEVELS: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -45,8 +46,8 @@ export function toThinkingLevel(effort: string): ModelThinkingLevel {
 export type EmployeeTools = {
   /** Extra tools the employee may call, such as the collaboration set. */
   collaboration: readonly ToolRegistration[];
-  /** MCP tools already adapted by their own builder. */
-  mcp: readonly ToolRegistration[];
+  /** MCP tools already adapted by their own builder, each with its trust fact. */
+  mcp: readonly McpToolBinding[];
   /** Extra hooks, such as the delivery and budget hooks of the work layer. */
   hooks: readonly HookRegistration[];
 };
@@ -57,6 +58,9 @@ export type EmployeeTools = {
  * The tool's own risk class is a fact of the tool, not of the arguments, so the
  * gate never has to guess. `allowedTools` is the employee's allow list; an empty
  * list means the collaboration tools only, matching what the editor shows.
+ * MCP tools are classified only from the caller's binding: their trust is a
+ * human declaration made for a raw reference, never something inferred from a
+ * display name.
  */
 const COLLABORATION_TOOL_NAMES: Record<string, true> = {
   send_message: true,
@@ -68,7 +72,11 @@ const COLLABORATION_TOOL_NAMES: Record<string, true> = {
   delegate_task: true,
 };
 
-export function classifyTool(employee: EmployeeRecord, toolName: string): ToolRisk | { blocked: string } {
+export function classifyTool(
+  employee: EmployeeRecord,
+  toolName: string,
+  mcpTrust: McpToolTrust | undefined,
+): ToolRisk | { blocked: string } {
   if (COLLABORATION_TOOL_NAMES[toolName] === true) return { risk: "safe" };
 
   const builtin = BUILTIN_TOOL_RISK[toolName];
@@ -79,31 +87,11 @@ export function classifyTool(employee: EmployeeRecord, toolName: string): ToolRi
     return builtin;
   }
 
-  // Anything else is an MCP tool, named `mcp__<server>__<tool>`.
-  if (toolName.startsWith("mcp__")) {
-    const reference = mcpReferenceFor(employee, toolName);
-    if (reference !== undefined && employee.trustedReadOnlyTools.includes(reference)) return { risk: "safe" };
-    return { risk: "gated", kind: "mcp" };
+  if (mcpTrust !== undefined) {
+    return mcpTrust.trustedReadOnly ? { risk: "safe" } : { risk: "gated", kind: "mcp" };
   }
 
   return { blocked: `Unknown tool ${toolName}; call blocked` };
-}
-
-/**
- * Recover the `server/tool` reference from a mapped tool name. The mapping
- * sanitizes both halves, so a match is made against the employee's servers.
- */
-function mcpReferenceFor(employee: EmployeeRecord, mappedName: string): string | undefined {
-  const parts = mappedName.split("__");
-  if (parts.length < 3) return undefined;
-  const server = parts[1] ?? "";
-  const tool = parts.slice(2).join("__");
-  for (const serverId of employee.mcpServerIds) {
-    if (serverId === server || serverId.replace(/[^A-Za-z0-9_]/g, "_") === server) {
-      return `${serverId}/${tool}`;
-    }
-  }
-  return undefined;
 }
 
 export type EmployeeAgentInput = {
@@ -241,10 +229,13 @@ export function buildEmployeeExtension(input: EmployeeAgentInput): Extension {
   });
 
   const skillSection = section("skills", () => renderSkillSection(boundSkills, employee.skillIds));
+  const mcpBindingByToolName = new Map<string, McpToolBinding>(
+    input.tools.mcp.map((binding) => [binding.registration.name, binding]),
+  );
   const tools: ToolRegistration[] = [
     ...buildFileTools({ runtime, employee, skills: boundSkills }),
     ...input.tools.collaboration,
-    ...input.tools.mcp,
+    ...input.tools.mcp.map((binding) => binding.registration),
   ];
   const toolDescriptions = new Map<string, string>(
     tools.map((tool): [string, string] => [tool.name, tool.description]),
@@ -254,12 +245,13 @@ export function buildEmployeeExtension(input: EmployeeAgentInput): Extension {
     ...input.tools.hooks,
     hook(ToolTask, {
       async beforeTool(call, api, ctx) {
-        const decision = classifyTool(employee, call.name);
+        const mcpBinding = mcpBindingByToolName.get(call.name);
+        const decision = classifyTool(employee, call.name, mcpBinding);
         if ("blocked" in decision) return { block: decision.blocked };
         const needsDirectoryVersionCheck =
           call.name === "read_file" ||
           call.name === "load_skill" ||
-          (call.name.startsWith("mcp__") && decision.risk === "safe");
+          mcpBinding?.trustedReadOnly === true;
         if (needsDirectoryVersionCheck) {
           const directory = await readWorkDirectoryScope(runtime, api.conversationId);
           if (!directory.ok) return { block: directory.message };

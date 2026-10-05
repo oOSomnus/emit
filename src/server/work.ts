@@ -12,7 +12,6 @@
  * unwritten (and the resumed generation delivers again) or both written.
  */
 
-import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import type { AssistantMessage, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
@@ -40,13 +39,13 @@ import {
   MailSendReceiptDoc,
   RoomDoc,
   RoomMessageEntry,
+  WorkContextDoc,
   WorkDoc,
   type EmployeeRecord,
   type MailEnvelope,
   type MailSendReceiptRecord,
   type RoomMessageData,
   type RoomRecord,
-  type WorkDirectoryScopeRecord,
   type WorkRecord,
 } from "./documents.ts";
 import type { McpManager } from "./mcp.ts";
@@ -88,24 +87,14 @@ import { CANONICAL_LOCALE } from "../shared/i18n.ts";
 import { AppError, rawText, type AppText } from "./app-text.ts";
 import { appMessages } from "./messages.ts";
 import { noticeOf } from "./messages/work.ts";
-import { findWorkContext, workContextDirectorySnapshot } from "./work-contexts.ts";
-
-export type WorkKind = "message" | "mail" | "delegation";
-
-export type StartWorkInput = {
-  roomId: string;
-  employeeId: string;
-  /** The work every run of this message belongs to. */
-  workContextId: string;
-  intent: string;
-  kind: WorkKind;
-  sourceEntryId: string;
-  parentWorkId?: string;
-  rootWorkId?: string;
-  depth?: number;
-  /** Conversation that owns the dispatch task; the room's, or the caller's for a delegation. */
-  dispatchConversationId?: number;
-};
+import { findWorkContext } from "./work-contexts.ts";
+import {
+  WakeBudgetExceededError,
+  enqueueWorksIn,
+  findWork,
+  isTerminal,
+  type WorkKind,
+} from "./work-queue.ts";
 
 /** One process's shared handles; the task sets resolve lazily to break the import cycle. */
 export type Resume = {
@@ -160,89 +149,6 @@ export async function installAllExtensions(resume0: Resume): Promise<number> {
   const employees = await listEmployees(resume0.runtime);
   for (const employee of employees) await installEmployeeExtension(resume0, employee);
   return employees.length;
-}
-
-/**
- * Enqueue one work item and its durable dispatch task in a single commit.
- *
- * The validations decide whether the request is acceptable at all; the record
- * is written `queued` and the `emit.work-dispatch` task that starts it is
- * created in the same commit, so "the request was accepted" and "the employee
- * will run" are the same fact. No conversation and no run happen here: the
- * scheduler's two-phase task does that, restartably.
- */
-export async function createQueuedWork(resume0: Resume, input: StartWorkInput): Promise<WorkRecord> {
-  const { runtime } = resume0;
-  const employee = await runtime.readFamily(EmployeeDoc, input.employeeId, { id: input.employeeId });
-  if (employee === undefined) throw new AppError(appMessages.work.employeeNotFound(input.employeeId));
-  if (!employee.enabled) throw new AppError(appMessages.work.employeeDisabled(employee.name));
-  // A model that no longer resolves stops the work here, with the employee and
-  // model named, instead of failing deep inside the first request.
-  const modelProblem = runtime.catalog.chatSelectionProblem({
-    providerId: employee.executionModel.providerId,
-    modelId: employee.executionModel.modelId,
-    effort: employee.executionModel.effort,
-  });
-  if (modelProblem !== undefined) throw new AppError(appMessages.work.modelUnavailable(employee.name, modelProblem));
-  const app = await runtime.readSession(AppDoc);
-
-  const depth = input.depth ?? 0;
-  if (depth > app.collaboration.maxDepth) {
-    throw new AppError(appMessages.work.depthOverLimit(app.collaboration.maxDepth));
-  }
-  const workId = `wk_${randomUUID().replace(/-/g, "").slice(0, 20)}`;
-  const directoryScope = await directoriesForWork(runtime, input);
-  const dispatchConversationId = input.dispatchConversationId;
-  await runtime.harness.commit(async (tx) => {
-    await createQueuedWorkIn(tx, {
-      ...input,
-      depth,
-      id: workId,
-      directoryScope,
-      now: Date.now(),
-    });
-    const taskId = await tx.createTask(
-      resume0.dispatch,
-      { workId },
-      {
-        ownership: { kind: "conversation" },
-        ...(dispatchConversationId !== undefined ? { conversationId: dispatchConversationId as ConversationId } : {}),
-        background: true,
-      },
-    );
-    const doc = await tx.doc(WorkDoc, workId, { id: workId });
-    doc.dispatchTaskId = String(taskId);
-  }, runtime.ctx);
-  const record = await runtime.readFamily(WorkDoc, workId, { id: workId });
-  if (record === undefined) throw new AppError(appMessages.work.workWriteFailed(workId));
-  runtime.emit({ type: "work", work: toWorkDTO(record, employee.name, await roomName(runtime, input.roomId)) });
-  return record;
-}
-
-/**
- * The transaction-level half shared by both creation entries.
- *
- * Callers validate first and pass exactly what they validated; this only does
- * the field assignment, so the two paths cannot drift apart.
- */
-export async function createQueuedWorkIn(
-  tx: Tx,
-  input: StartWorkInput & { id: string; directoryScope: WorkDirectoryScopeRecord; now: number },
-): Promise<void> {
-  const doc = await tx.doc(WorkDoc, input.id, { id: input.id });
-  doc.id = input.id;
-  doc.employeeId = input.employeeId;
-  doc.roomId = input.roomId;
-  doc.workContextId = input.workContextId;
-  doc.kind = input.kind;
-  doc.status = "queued";
-  doc.sourceEntryId = input.sourceEntryId;
-  doc.parentWorkId = input.parentWorkId ?? "";
-  doc.rootWorkId = (input.rootWorkId ?? "").length > 0 ? (input.rootWorkId ?? "") : input.id;
-  doc.depth = input.depth ?? 0;
-  doc.startedAt = input.now;
-  doc.intent = input.intent;
-  doc.directoryScope = { ...input.directoryScope, paths: [...input.directoryScope.paths] };
 }
 
 /**
@@ -722,17 +628,9 @@ async function workUsage(
   return { input, output, cost };
 }
 
-export function isTerminal(status: WorkRecord["status"]): boolean {
-  return status === "succeeded" || status === "failed" || status === "stopped";
-}
-
 export async function listWorks(runtime: EmitRuntime): Promise<WorkRecord[]> {
   const members = await runtime.listFamily(WorkDoc, (id) => ({ id }));
   return members.map((member) => member.value).sort((a, b) => b.startedAt - a.startedAt);
-}
-
-export async function findWork(runtime: EmitRuntime, id: string): Promise<WorkRecord | undefined> {
-  return runtime.readFamily(WorkDoc, id, { id });
 }
 
 /** Stop a running work: mark it stopped, unwind its start task, cancel approvals, then abort the run. */
@@ -1165,25 +1063,63 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
       if (await isAncestor(runtime, currentWork, target.id)) {
         return toolError(`Cannot delegate to ${target.name}: they are an ancestor of this task and it would form a loop`);
       }
-      if (!(await reserveWake(runtime, rootWorkId, app.collaboration.maxCrossEmployeeWakes))) {
-        return toolError(appMessages.work.wakeLimit(app.collaboration.maxCrossEmployeeWakes).text);
-      }
       const callerWork = await findWork(runtime, currentWork);
       if (callerWork === undefined) return toolError(appMessages.work.workNotFound(currentWork).text);
-      const work = await createQueuedWork(resume0, {
-        roomId: "",
-        employeeId: target.id,
-        workContextId: callerWork.workContextId,
-        intent: args.task,
-        kind: "delegation",
-        sourceEntryId: "",
-        parentWorkId: currentWork,
-        rootWorkId,
-        depth,
-        dispatchConversationId: api.conversationId,
+      if (!target.enabled) return toolError(appMessages.work.employeeDisabled(target.name).text);
+      const modelProblem = runtime.catalog.chatSelectionProblem({
+        providerId: target.executionModel.providerId,
+        modelId: target.executionModel.modelId,
+        effort: target.executionModel.effort,
       });
+      if (modelProblem !== undefined) return toolError(appMessages.work.modelUnavailable(target.name, modelProblem).text);
+      // A delegation inherits exactly the caller's directory snapshot: the
+      // child must not see directories the parent never had, and the snapshot
+      // must still be the work context's live version.
+      const workContext = await findWorkContext(runtime, callerWork.workContextId);
+      if (workContext === undefined || workContext.directories.version !== callerWork.directoryScope.version) {
+        throw new AppError(appMessages.work.directoryChanged());
+      }
+      let workIds: string[] = [];
+      try {
+        workIds = await runtime.harness.commit(async (tx) => {
+          // The pre-check above is not enough: re-read the context inside the
+          // commit, so a directory save racing this delegation cannot be
+          // smuggled into the new run or silently spend the wake budget.
+          const contextDoc = await tx.doc(WorkContextDoc, callerWork.workContextId, { id: callerWork.workContextId });
+          if (contextDoc.createdAt === 0) throw new AppError(appMessages.workContexts.notFound(callerWork.workContextId));
+          if (contextDoc.directories.version !== callerWork.directoryScope.version) {
+            throw new AppError(appMessages.work.directoryChanged());
+          }
+          return enqueueWorksIn(tx, resume0.dispatch, {
+            employeeIds: [target.id],
+            roomId: "",
+            workContextId: callerWork.workContextId,
+            intent: args.task,
+            kind: "delegation",
+            sourceEntryId: "",
+            parentWorkId: currentWork,
+            rootWorkId,
+            depth,
+            dispatchConversationId: api.conversationId,
+            directoryScope: callerWork.directoryScope,
+            now: Date.now(),
+            wakeBudget: { rootWorkId, max: app.collaboration.maxCrossEmployeeWakes },
+          });
+        }, runtime.ctx);
+      } catch (error) {
+        // The budget is checked before anything is written, so a refusal is a
+        // tool-level answer and costs no capacity.
+        if (error instanceof WakeBudgetExceededError) {
+          return toolError(appMessages.work.wakeLimit(error.limit).text);
+        }
+        throw error;
+      }
+      const workId = workIds[0] ?? "";
+      const record = await findWork(runtime, workId);
+      if (record === undefined) throw new AppError(appMessages.work.workWriteFailed(workId));
+      runtime.emit({ type: "work", work: toWorkDTO(record, target.name, await roomName(runtime, "")) });
       return toolText(
-        renderToolResult("delegate-ok", { name: target.name, workId: work.id }),
+        renderToolResult("delegate-ok", { name: target.name, workId: record.id }),
       );
     },
   });
@@ -1203,18 +1139,6 @@ async function isAncestor(runtime: EmitRuntime, workId: string, employeeId: stri
     current = work.parentWorkId;
   }
   return false;
-}
-
-/** Reserve one cross-employee wake against the root work's budget. */
-async function reserveWake(runtime: EmitRuntime, rootWorkId: string, max: number): Promise<boolean> {
-  if (rootWorkId.length === 0) return true;
-  const used = await runtime.updateFamily(CollaborationDoc, rootWorkId, { rootWorkId }, (doc) => {
-    doc.rootWorkId = rootWorkId;
-    // Count first, then compare: capping the counter at `max` made every later
-    // call look affordable and let the budget be exceeded indefinitely.
-    doc.crossEmployeeWakes += 1;
-  });
-  return used.crossEmployeeWakes <= max;
 }
 
 /** Count one model response against the root work's turn budget. */
@@ -1247,32 +1171,6 @@ async function depthOf(runtime: EmitRuntime, api: ToolExecutionApi, context: Con
 
 async function resolveTarget(runtime: EmitRuntime, token: string): Promise<EmployeeRecord | undefined> {
   return resolveEmployee(await listEmployees(runtime), token);
-}
-
-/**
- * The directory snapshot a new work may use.
- *
- * A child inherits its parent's snapshot verbatim — a delegation must not see
- * directories the parent never had — while a root work snapshots its work
- * context's current configuration. Either way the snapshot's version must
- * still be the context's live version, so a concurrent directory save fails
- * the send instead of silently widening the run.
- */
-async function directoriesForWork(runtime: EmitRuntime, input: StartWorkInput): Promise<WorkDirectoryScopeRecord> {
-  const parent = input.parentWorkId ? await findWork(runtime, input.parentWorkId) : undefined;
-  if (parent !== undefined) {
-    if (parent.workContextId !== input.workContextId) {
-      throw new AppError(appMessages.work.directoryChanged());
-    }
-    const context = await findWorkContext(runtime, parent.workContextId);
-    if (context === undefined || context.directories.version !== parent.directoryScope.version) {
-      throw new AppError(appMessages.work.directoryChanged());
-    }
-    return { ...parent.directoryScope, paths: [...parent.directoryScope.paths] };
-  }
-  const context = await findWorkContext(runtime, input.workContextId);
-  if (context === undefined) throw new AppError(appMessages.workContexts.notFound(input.workContextId));
-  return workContextDirectorySnapshot(context, input.roomId);
 }
 
 async function mailParent(runtime: EmitRuntime, caller: WorkRecord, room: RoomRecord): Promise<string> {

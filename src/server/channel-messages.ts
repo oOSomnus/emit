@@ -15,20 +15,17 @@
  * helper.
  */
 
-import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { ConversationId, EntryRecord } from "@earendil-works/pi-durable";
 import {
   AppDoc,
-  CollaborationDoc,
   EmployeeDoc,
   MessageSendReceiptDoc,
   RoomDoc,
   RoomMessageEntry,
   WorkContextDoc,
   WorkContextMutationReceiptDoc,
-  WorkDoc,
   type EmployeeRecord,
   type RoomRecord,
   type WorkContextRecord,
@@ -45,11 +42,8 @@ import {
   roomDTOWithUnread,
   toMessageDTO,
 } from "./rooms.ts";
-import {
-  createQueuedWorkIn,
-  findWork,
-  type Resume,
-} from "./work.ts";
+import type { Resume } from "./work.ts";
+import { findWork, WakeBudgetExceededError, enqueueWorksIn } from "./work-queue.ts";
 import { toWorkDTO } from "./dto.ts";
 import { MessageAddressingError, resolveMessageAddressing, type AddressableMember } from "../shared/message-addressing.ts";
 import { CANONICAL_LOCALE } from "../shared/i18n.ts";
@@ -220,42 +214,40 @@ export async function sendQueuedMessage(
   const workIds: string[] = [];
   const now = Date.now();
 
-  const committed = await runtime.harness.commit(async (tx) => {
-    const doc = await tx.doc(RoomDoc, room.id, { id: room.id });
-    if (doc.kind === "mail") throw new RoomError(400, appMessages.rooms.mailNotByMessageSend);
-    // The work and its directory version must still be exactly what the send
-    // was resolved against; a concurrent directory save cannot be silently
-    // smuggled into the new run.
-    const contextDoc = await tx.doc(WorkContextDoc, room.workContextId, { id: room.workContextId });
-    if (contextDoc.createdAt === 0) {
-      throw new RoomError(404, appMessages.workContexts.notFound(room.workContextId));
-    }
-    if (contextDoc.directories.version !== directoryScope.version) {
-      throw new RoomError(409, appMessages.work.directoryChanged());
-    }
-    // Recipients are re-checked against the current member set and state.
-    if (doc.kind === "channel") {
-      for (const id of recipients) {
-        if (!doc.memberIds.includes(id)) throw new RoomError(400, appMessages.rooms.memberNotFound(id));
+  const committed = await runtime.harness
+    .commit(async (tx) => {
+      const doc = await tx.doc(RoomDoc, room.id, { id: room.id });
+      if (doc.kind === "mail") throw new RoomError(400, appMessages.rooms.mailNotByMessageSend);
+      // The work and its directory version must still be exactly what the send
+      // was resolved against; a concurrent directory save cannot be silently
+      // smuggled into the new run.
+      const contextDoc = await tx.doc(WorkContextDoc, room.workContextId, { id: room.workContextId });
+      if (contextDoc.createdAt === 0) {
+        throw new RoomError(404, appMessages.workContexts.notFound(room.workContextId));
       }
-    } else if (doc.kind === "dm" && !doc.dmParticipantIds.includes(input.author.id)) {
-      throw new RoomError(400, appMessages.rooms.notParticipant(input.author.name));
-    }
-    const entry = await appendRoomMessageIn(
-      tx,
-      doc,
-      messageData({
-        author: input.author,
-        body: input.body,
-        addressing: { recipientIds: [...recipients], mentionAll },
-      }),
-    );
-    const created: string[] = [];
-    for (const employeeId of recipients) {
-      const workId = `wk_${randomUUID().replace(/-/g, "").slice(0, 20)}`;
-      await createQueuedWorkIn(tx, {
+      if (contextDoc.directories.version !== directoryScope.version) {
+        throw new RoomError(409, appMessages.work.directoryChanged());
+      }
+      // Recipients are re-checked against the current member set and state.
+      if (doc.kind === "channel") {
+        for (const id of recipients) {
+          if (!doc.memberIds.includes(id)) throw new RoomError(400, appMessages.rooms.memberNotFound(id));
+        }
+      } else if (doc.kind === "dm" && !doc.dmParticipantIds.includes(input.author.id)) {
+        throw new RoomError(400, appMessages.rooms.notParticipant(input.author.name));
+      }
+      const entry = await appendRoomMessageIn(
+        tx,
+        doc,
+        messageData({
+          author: input.author,
+          body: input.body,
+          addressing: { recipientIds: [...recipients], mentionAll },
+        }),
+      );
+      const created = await enqueueWorksIn(tx, resume.dispatch, {
+        employeeIds: recipients,
         roomId: doc.id,
-        employeeId,
         workContextId: doc.workContextId,
         intent: input.body,
         kind: "message",
@@ -263,42 +255,36 @@ export async function sendQueuedMessage(
         parentWorkId: parent?.id ?? "",
         rootWorkId: parent?.rootWorkId ?? "",
         depth,
-        id: workId,
+        dispatchConversationId: doc.conversationId,
         directoryScope,
         now,
+        ...(parent !== undefined && recipients.length > 0
+          ? {
+              wakeBudget: {
+                rootWorkId: parent.rootWorkId.length > 0 ? parent.rootWorkId : parent.id,
+                max: app.collaboration.maxCrossEmployeeWakes,
+              },
+            }
+          : {}),
       });
-      const taskId = await tx.createTask(
-        resume.dispatch,
-        { workId },
-        {
-          ownership: { kind: "conversation" },
-          conversationId: doc.conversationId as ConversationId,
-          background: true,
-        },
-      );
-      const work = await tx.doc(WorkDoc, workId, { id: workId });
-      work.dispatchTaskId = String(taskId);
-      created.push(workId);
-    }
-    if (parent !== undefined && created.length > 0) {
-      const scope = parent.rootWorkId.length > 0 ? parent.rootWorkId : parent.id;
-      const collaboration = await tx.doc(CollaborationDoc, scope, { rootWorkId: scope });
-      collaboration.rootWorkId = scope;
-      collaboration.crossEmployeeWakes += created.length;
-      if (collaboration.crossEmployeeWakes > app.collaboration.maxCrossEmployeeWakes) {
-        throw new RoomError(409, appMessages.work.wakeLimit(app.collaboration.maxCrossEmployeeWakes));
+      if (input.toolTaskId !== undefined && input.toolTaskId.length > 0) {
+        const receiptKey = `tool:${input.toolTaskId}`;
+        const receipt = await tx.doc(MessageSendReceiptDoc, receiptKey, { key: receiptKey });
+        receipt.key = receiptKey;
+        receipt.roomId = doc.id;
+        receipt.entryId = String(entry.id);
+        receipt.workIds = [...created];
       }
-    }
-    if (input.toolTaskId !== undefined && input.toolTaskId.length > 0) {
-      const receiptKey = `tool:${input.toolTaskId}`;
-      const receipt = await tx.doc(MessageSendReceiptDoc, receiptKey, { key: receiptKey });
-      receipt.key = receiptKey;
-      receipt.roomId = doc.id;
-      receipt.entryId = String(entry.id);
-      receipt.workIds = [...created];
-    }
-    return { entry, workIds: created };
-  }, runtime.ctx);
+      return { entry, workIds: created };
+    }, runtime.ctx)
+    .catch((error: unknown) => {
+      // A wake-budget refusal is a room-level answer, not a broken send; the
+      // commit rolled the budget, works, and message back together.
+      if (error instanceof WakeBudgetExceededError) {
+        throw new RoomError(409, appMessages.work.wakeLimit(error.limit));
+      }
+      throw error;
+    });
   workIds.push(...committed.workIds);
 
   const dto = toMessageDTO(committed.entry);

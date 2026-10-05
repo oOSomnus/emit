@@ -11,6 +11,7 @@
  * mark a tool as trusted read-only before it skips the approval gate.
  */
 
+import { createHash } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import {
   McpClient,
@@ -30,7 +31,16 @@ import { mcpMessages } from "./messages/mcp.ts";
 import { gatedExecute, toolError } from "./tools.ts";
 import { readWorkDirectoryScope } from "./work-directories.ts";
 
-const MCP_NAME_LIMIT = 64;
+/** The human's read-only declaration for one raw MCP tool reference. */
+export type McpToolTrust = {
+  readonly reference: string;
+  readonly trustedReadOnly: boolean;
+};
+
+/** One adapted MCP tool: its trust fact, its raw identity, and the registration itself. */
+export type McpToolBinding = McpToolTrust & {
+  readonly registration: ToolRegistration;
+};
 
 type LiveConnection = {
   signature: string;
@@ -74,10 +84,18 @@ function configSignature(record: McpServerRecord): string {
   ]);
 }
 
-/** Provider-facing tool name; providers cap names at 64 characters. */
-export function mcpToolName(serverName: string, toolName: string): string {
+/**
+ * Provider-facing tool name. Providers cap names at 64 characters, so the
+ * readable label is shortened and a hash of the raw `[serverId, toolName]`
+ * pair keeps every raw tool separately addressable: distinct raw names never
+ * collapse into one display name, and a display name always maps back to the
+ * exact raw identity it was built from.
+ */
+export function mcpToolName(serverId: string, toolName: string): string {
   const sanitize = (value: string) => value.replace(/[^A-Za-z0-9_]/g, "_");
-  return `mcp__${sanitize(serverName)}__${sanitize(toolName)}`.slice(0, MCP_NAME_LIMIT);
+  const label = `mcp__${sanitize(serverId)}__${sanitize(toolName)}`;
+  const hash = createHash("sha256").update(JSON.stringify([serverId, toolName])).digest("hex").slice(0, 32);
+  return `${label.slice(0, 30)}__${hash}`;
 }
 
 function mcpServerId(name: string, taken: ReadonlySet<string>): string {
@@ -247,24 +265,34 @@ export class McpManager {
     }
   }
 
-  /** Tools offered by the given servers, with the given names trusted read-only. */
   /**
    * Adapt one employee's enabled MCP tools. A tool the employee marks trusted
    * read-only runs directly; every other one passes through the approval gate
-   * exactly like a shell command does.
+   * exactly like a shell command does. Each binding carries the raw reference
+   * and the trust decision computed from it, so no later code has to recover
+   * either one from the display name.
    */
-  toolsFor(employee: EmployeeRecord, runtime: EmitRuntime): ToolRegistration[] {
-    const tools: ToolRegistration[] = [];
-    const used = new Set<string>();
+  toolsFor(employee: EmployeeRecord, runtime: EmitRuntime): McpToolBinding[] {
+    const tools: McpToolBinding[] = [];
+    const seen = new Map<string, string>();
     for (const serverId of employee.mcpServerIds) {
       const connection = this.#connections.get(serverId);
       if (connection === undefined) continue;
       for (const tool of connection.tools) {
+        const reference = mcpToolReference(serverId, tool.name);
         const mapped = mcpToolName(serverId, tool.name);
-        if (used.has(mapped)) continue;
-        used.add(mapped);
-        const trusted = employee.trustedReadOnlyTools.includes(mcpToolReference(serverId, tool.name));
-        tools.push(this.#buildTool(serverId, connection.client, tool, mapped, trusted, employee, runtime));
+        const existing = seen.get(mapped);
+        if (existing === reference) continue;
+        if (existing !== undefined) {
+          throw new Error(`MCP tool name collision: ${existing} and ${reference} both map to ${mapped}`);
+        }
+        seen.set(mapped, reference);
+        const trustedReadOnly = employee.trustedReadOnlyTools.includes(reference);
+        tools.push({
+          reference,
+          trustedReadOnly,
+          registration: this.#buildTool(serverId, connection.client, tool, mapped, trustedReadOnly, employee, runtime),
+        });
       }
     }
     return tools;

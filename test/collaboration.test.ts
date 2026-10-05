@@ -17,14 +17,13 @@ import {
 } from "../src/server/rooms.ts";
 import {
   ensureWorkConversation,
-  findWork,
   installEmployeeExtension,
-  isTerminal,
   listWorks,
   reconcileWorks,
   stopWork,
   type Resume,
 } from "../src/server/work.ts";
+import { findWork, isTerminal } from "../src/server/work-queue.ts";
 import { createEmployee, listEmployees, readApp, updateAppConfig, updateEmployee } from "../src/server/workspace.ts";
 import type { ChatSelectionDTO, MessageDTO } from "../src/shared/contracts.ts";
 import {

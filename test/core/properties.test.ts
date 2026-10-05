@@ -149,20 +149,14 @@ describe("L1 fixed oracle examples", () => {
     ["edit_file", { risk: "gated", kind: "file-write" }],
     ["run_shell", { risk: "gated", kind: "shell" }],
   ] as const)("classifies explicitly allowed built-in %s", (toolName, expected) => {
-    expect(classifyTool(employee({ allowedTools: [toolName] }), toolName)).toEqual(expected);
-    expect(classifyTool(employee({ allowedTools: [] }), toolName)).toHaveProperty("blocked");
+    expect(classifyTool(employee({ allowedTools: [toolName] }), toolName, undefined)).toEqual(expected);
+    expect(classifyTool(employee({ allowedTools: [] }), toolName, undefined)).toHaveProperty("blocked");
   });
 
-  it("blocks unavailable evaluations and requires the exact bound MCP reference for trust", () => {
+  it("blocks unavailable evaluations and unknown tools", () => {
     expect(approvalVerdict({ status: "unavailable", reason: "provider", message: "fixture unavailable" }).action).toBe("block");
 
-    const bound = employee({ mcpServerIds: ["fixture-server"], trustedReadOnlyTools: ["fixture-server/search"] });
-    expect(classifyTool(bound, "mcp__fixture-server__search")).toEqual({ risk: "safe" });
-    expect(classifyTool(bound, "mcp__fixture-server__mutate")).toEqual({ risk: "gated", kind: "mcp" });
-    expect(classifyTool(bound, "mcp__other-server__search")).toEqual({ risk: "gated", kind: "mcp" });
-    expect(classifyTool(employee({ trustedReadOnlyTools: ["fixture-server/search"] }), "mcp__fixture-server__search"))
-      .toEqual({ risk: "gated", kind: "mcp" });
-    expect(classifyTool(employee(), "unknown_fixture_tool")).toHaveProperty("blocked");
+    expect(classifyTool(employee(), "unknown_fixture_tool", undefined)).toHaveProperty("blocked");
   });
 
   it("redacts nested credential canaries and extracts text without thinking", () => {

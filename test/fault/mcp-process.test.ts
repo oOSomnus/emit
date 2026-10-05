@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { EmployeeDTO, McpServerDTO, MessageDTO, WorkDTO, WorkExecutionDTO } from "../../src/shared/contracts.ts";
 import { createE2eFixture, type E2eFixture } from "../helpers/e2e-fixture.ts";
 import { waitForFixture } from "../helpers/emit-fixture.ts";
+import { mcpToolName } from "../../src/server/mcp.ts";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -116,7 +117,7 @@ describe("real stdio MCP failure recovery", () => {
 
     const employeeId = fixture.workspace.employeeIds[0];
     if (employeeId === undefined) throw new Error("Seeded workspace did not include Alice");
-    const mappedTool = `mcp__${callFailure.id}__echo_notes`;
+    const mappedTool = mcpToolName(callFailure.id, "echo_notes");
     const patched = await request<EmployeeDTO>(fixture, `/api/employees/${employeeId}`, "PATCH", {
       mcpServerIds: [callFailure.id],
       toolPolicy: { allowedTools: [mappedTool], trustedReadOnlyTools: [`${callFailure.id}/echo_notes`] },

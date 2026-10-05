@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { findWork } from "../../src/server/work.ts";
+import { findWork } from "../../src/server/work-queue.ts";
 import type { MessageDTO } from "../../src/shared/contracts.ts";
 import { FAKE_KEY_ENV, startFixture, startHttpRuntime, waitForFixture } from "../helpers/emit-fixture.ts";
 import { seedTestWorkspace } from "../helpers/workspace-fixture.ts";

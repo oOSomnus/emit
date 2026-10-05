@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ApprovalDTO, EmployeeDTO, MessageDTO, McpServerDTO, RoomDTO, SkillDTO, WorkContextDTO, WorkDTO, WorkExecutionDTO } from "../../src/shared/contracts.ts";
 import { createE2eFixture, type E2eFixture } from "../helpers/e2e-fixture.ts";
 import { waitForFixture } from "../helpers/emit-fixture.ts";
+import { mcpToolName } from "../../src/server/mcp.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 const model = { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" };
@@ -51,10 +52,10 @@ async function finished(fixture: E2eFixture, workId: string) {
 async function approvals(fixture: E2eFixture, workId: string) {
   return (await call<{ approvals: ApprovalDTO[] }>(fixture, "/api/approvals")).approvals.filter((entry) => entry.workId === workId);
 }
-async function approval(fixture: E2eFixture, workId: string, status: ApprovalDTO["status"]) {
+async function approval(fixture: E2eFixture, workId: string, status: ApprovalDTO["status"], toolName: string) {
   await waitForFixture(async () => (await approvals(fixture, workId)).some((entry) => entry.status === status), `${status} approval for ${workId}`);
   const entry = (await approvals(fixture, workId)).find((entry) => entry.status === status)!;
-  expect(entry.toolName).toBe("mcp__fixture__echo_notes");
+  expect(entry.toolName).toBe(toolName);
   return entry;
 }
 function results(execution: WorkExecutionDTO) { return execution.steps.filter((step) => step.kind === "tool-result"); }
@@ -100,7 +101,8 @@ describe("real-process skills and MCP protocols", () => {
   it("calls a trusted MCP tool with and without local roots while keeping the server independent", async () => {
     const fixture = await open();
     const server = await connect(fixture);
-    const worker = await employee(fixture, "MCP 员工", { mcpServerIds: [server.id], toolPolicy: { allowedTools: ["mcp__fixture__echo_notes"], trustedReadOnlyTools: ["fixture/echo_notes"] } });
+    const echoName = mcpToolName(server.id, "echo_notes");
+    const worker = await employee(fixture, "MCP 员工", { mcpServerIds: [server.id], toolPolicy: { allowedTools: [echoName], trustedReadOnlyTools: ["fixture/echo_notes"] } });
     expect(worker.mcpServerIds).toEqual([server.id]);
     const dm = await room(fixture, worker.id);
     const withRoots = await send(fixture, dm.id, "用 MCP 工具看看笔记");
@@ -123,17 +125,18 @@ describe("real-process skills and MCP protocols", () => {
   it("reviews untrusted hinted reads as low, gates high until approved, and blocks unknown", async () => {
     const fixture = await open();
     const server = await connect(fixture);
-    const worker = await employee(fixture, "MCP 未信任员工", { mcpServerIds: [server.id], toolPolicy: { allowedTools: ["mcp__fixture__echo_notes"], trustedReadOnlyTools: [] } });
+    const echoName = mcpToolName(server.id, "echo_notes");
+    const worker = await employee(fixture, "MCP 未信任员工", { mcpServerIds: [server.id], toolPolicy: { allowedTools: [echoName], trustedReadOnlyTools: [] } });
     const dm = await room(fixture, worker.id);
     const lowId = await send(fixture, dm.id, "用 MCP 工具看看笔记");
     const lowExecution = await finished(fixture, lowId);
-    const low = await approval(fixture, lowId, "approved");
+    const low = await approval(fixture, lowId, "approved", echoName);
     expect(low.evidence).toMatchObject({ kind: "llm", outcome: "allow", risk: "low" });
     expect(low.execution.state).toBe("succeeded");
     expect(results(lowExecution)).toEqual(expect.arrayContaining([expect.objectContaining({ isError: false, text: "来自 MCP fixture 的笔记：notes.txt" })]));
 
     const highId = await send(fixture, dm.id, "用 MCP 工具触发受控高风险审查");
-    const high = await approval(fixture, highId, "pending-human");
+    const high = await approval(fixture, highId, "pending-human", echoName);
     expect(JSON.parse(high.argumentsPreview)).toEqual({ path: "SMOKE-CONTROLLED-HIGH" });
     expect(high.evidence).toMatchObject({ kind: "llm", outcome: "allow", risk: "high" });
     expect(high.execution.state).toBe("not-started");
@@ -143,7 +146,7 @@ describe("real-process skills and MCP protocols", () => {
     await call(fixture, `/api/approvals/${high.id}/decision`, "POST", { decision: "approved" });
     const highExecution = await finished(fixture, highId);
     expect(results(highExecution)).toEqual(expect.arrayContaining([expect.objectContaining({ isError: false, text: "来自 MCP fixture 的笔记：SMOKE-CONTROLLED-HIGH" })]));
-    expect((await approval(fixture, highId, "approved")).execution.state).toBe("succeeded");
+    expect((await approval(fixture, highId, "approved", echoName)).execution.state).toBe("succeeded");
 
     // The echo server reports the requested path; it does not read real credentials.
     const canary = "PRIVATE-MCP-CREDENTIAL-CANARY";
@@ -151,7 +154,7 @@ describe("real-process skills and MCP protocols", () => {
     writeFileSync(envFile, `API_KEY=${canary}\n`);
     const secretId = await send(fixture, dm.id, "用 MCP 工具读取密钥");
     const secretExecution = await finished(fixture, secretId);
-    const secret = await approval(fixture, secretId, "approved");
+    const secret = await approval(fixture, secretId, "approved", echoName);
     expect(secret.evidence).toMatchObject({ outcome: "allow", risk: "low" });
     expect(secret.execution.state).toBe("succeeded");
     expect(JSON.parse(secret.argumentsPreview)).toEqual({ path: ".env" });
@@ -160,7 +163,7 @@ describe("real-process skills and MCP protocols", () => {
     expect(readFileSync(envFile, "utf8")).toBe(`API_KEY=${canary}\n`);
 
     const unknownId = await send(fixture, dm.id, "用 MCP 工具读取不确定内容");
-    const unknown = await approval(fixture, unknownId, "blocked");
+    const unknown = await approval(fixture, unknownId, "blocked", echoName);
     expect(unknown.evidence).toMatchObject({ risk: "unknown" });
     expect(unknown.execution.state).toBe("not-started");
     expect((await approvals(fixture, unknownId)).some((entry) => entry.status === "pending-human")).toBe(false);

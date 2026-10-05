@@ -23,13 +23,12 @@ import { AppDoc, EmployeeDoc, WorkContextDoc, type WorkRecord } from "./document
 import {
   WorkFinishedError,
   ensureWorkConversationIn,
-  findWork,
   installEmployeeExtension,
-  isTerminal,
   markFailed,
   startQueuedWork,
   type Resume,
 } from "./work.ts";
+import { findWork, isTerminal } from "./work-queue.ts";
 import { toThinkingLevel } from "./agents.ts";
 import { fromError, type AppText } from "./app-text.ts";
 import { appMessages } from "./messages.ts";

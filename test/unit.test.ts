@@ -126,25 +126,20 @@ describe("approval identity", () => {
 
 describe("tool policy", () => {
   it("lets a listed built-in through and blocks an unlisted one", () => {
-    const allowed = classifyTool(employee(), "write_file");
+    const allowed = classifyTool(employee(), "write_file", undefined);
     expect(allowed).toEqual({ risk: "gated", kind: "file-write" });
-    expect(classifyTool(employee({ allowedTools: [] }), "write_file")).toHaveProperty("blocked");
+    expect(classifyTool(employee({ allowedTools: [] }), "write_file", undefined)).toHaveProperty("blocked");
   });
 
   it("always allows the collaboration tools", () => {
-    expect(classifyTool(employee({ allowedTools: [] }), "send_message")).toEqual({ risk: "safe" });
-    expect(classifyTool(employee({ allowedTools: [] }), "delegate_task")).toEqual({ risk: "safe" });
-  });
-
-  it("treats an MCP tool as gated until the employee trusts that exact reference", () => {
-    const gated = employee({ mcpServerIds: ["srv"], trustedReadOnlyTools: [] });
-    expect(classifyTool(gated, "mcp__srv__search")).toEqual({ risk: "gated", kind: "mcp" });
-    const trusted = employee({ mcpServerIds: ["srv"], trustedReadOnlyTools: ["srv/search"] });
-    expect(classifyTool(trusted, "mcp__srv__search")).toEqual({ risk: "safe" });
+    expect(classifyTool(employee({ allowedTools: [] }), "send_message", undefined)).toEqual({ risk: "safe" });
+    expect(classifyTool(employee({ allowedTools: [] }), "delegate_task", undefined)).toEqual({ risk: "safe" });
   });
 
   it("blocks a tool it cannot classify", () => {
-    expect(classifyTool(employee(), "rm_rf")).toHaveProperty("blocked");
+    expect(classifyTool(employee(), "rm_rf", undefined)).toHaveProperty("blocked");
+    // MCP trust is a binding fact: without one, even a bound server's tool stays unknown.
+    expect(classifyTool(employee({ mcpServerIds: ["srv"] }), "mcp__srv__search", undefined)).toHaveProperty("blocked");
   });
 });
 

@@ -15,11 +15,9 @@
 import { defineExtension, defineTask, type Extension, type Task } from "@earendil-works/pi-durable";
 import type { ConversationId, EntryId, EntryRecord } from "@earendil-works/pi-durable";
 import type { Draft } from "@earendil-works/chord/delta";
-import { randomUUID } from "node:crypto";
 import type { EmitRuntime } from "./runtime.ts";
 import {
   AppDoc,
-  CollaborationDoc,
   EmployeeDoc,
   MailFlagDoc,
   MailSendReceiptDoc,
@@ -41,7 +39,8 @@ import {
   toMessageDTO,
   type RoomCreateInput,
 } from "./rooms.ts";
-import { createQueuedWorkIn, findWork, isTerminal, markFailed, type Resume } from "./work.ts";
+import { markFailed, type Resume } from "./work.ts";
+import { findWork, isTerminal, WakeBudgetExceededError, enqueueWorksIn } from "./work-queue.ts";
 import { commitTerminal } from "./work-dispatch.ts";
 import { renderMailContinuation } from "./prompts/index.ts";
 import { AppError, type AppText } from "./app-text.ts";
@@ -327,49 +326,35 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
         ? { ...parentDraft.directoryScope, paths: [...parentDraft.directoryScope.paths] }
         : workContextDirectorySnapshot(context, room.id);
     const now = Date.now();
-    const workIds: string[] = [];
-    for (const employeeId of recipients) {
-      const workId = `wk_${randomUUID().replace(/-/g, "").slice(0, 20)}`;
-      await createQueuedWorkIn(tx, {
-        roomId: room.id,
-        employeeId,
-        workContextId,
-        intent,
-        kind: "mail",
-        sourceEntryId: String(entry.id),
-        parentWorkId: input.parentWorkId,
-        rootWorkId,
-        depth,
-        id: workId,
-        directoryScope,
-        now,
-      });
-      const taskId = await tx.createTask(
-        resume.dispatch,
-        { workId },
-        {
-          ownership: { kind: "conversation" },
-          conversationId: room.conversationId as ConversationId,
-          background: true,
-        },
-      );
-      const work = await tx.doc(WorkDoc, workId, { id: workId });
-      work.dispatchTaskId = String(taskId);
-      workIds.push(workId);
-    }
+    // The caller waits for every recipient of an awaited send; its budget max
+    // is read while the send's own transaction is open.
+    const wakeBudget =
+      input.awaitReply === true
+        ? {
+            rootWorkId: rootWorkId ?? input.parentWorkId!,
+            max: (await tx.doc(AppDoc)).collaboration.maxCrossEmployeeWakes,
+          }
+        : undefined;
+    const workIds = await enqueueWorksIn(tx, resume.dispatch, {
+      employeeIds: recipients,
+      roomId: room.id,
+      workContextId,
+      intent,
+      kind: "mail",
+      sourceEntryId: String(entry.id),
+      parentWorkId: input.parentWorkId ?? "",
+      rootWorkId: rootWorkId ?? "",
+      depth: depth ?? 0,
+      dispatchConversationId: room.conversationId,
+      directoryScope,
+      now,
+      ...(wakeBudget === undefined ? {} : { wakeBudget }),
+    });
 
     if (input.awaitReply === true) {
-      // The caller waits for every recipient of this send. Both the awaited
-      // list and the wake budget land with the mail, so a crash cannot leave a
-      // reply with nobody waiting or a wake that was never paid for.
-      const app = await tx.doc(AppDoc);
-      const scope = rootWorkId ?? input.parentWorkId!;
-      const collaboration = await tx.doc(CollaborationDoc, scope, { rootWorkId: scope });
-      collaboration.rootWorkId = scope;
-      collaboration.crossEmployeeWakes += workIds.length;
-      if (collaboration.crossEmployeeWakes > app.collaboration.maxCrossEmployeeWakes) {
-        throw new RoomDirectoryError(409, appMessages.work.wakeLimit(app.collaboration.maxCrossEmployeeWakes));
-      }
+      // The awaited list and the wake budget land with the mail, so a crash
+      // cannot leave a reply with nobody waiting or a wake that was never
+      // paid for.
       parentDraft!.awaitedMailWorkIds = [...parentDraft!.awaitedMailWorkIds, ...workIds];
     }
 
@@ -388,7 +373,14 @@ export async function sendQueuedMail(resume: Resume, input: SendQueuedMailInput)
     }
 
     return { room, entry, workIds };
-  }, runtime.ctx);
+  }, runtime.ctx).catch((error: unknown) => {
+    // A wake-budget refusal is a room-level answer, not a broken send; the
+    // budget, works, and message rolled back together.
+    if (error instanceof WakeBudgetExceededError) {
+      throw new RoomDirectoryError(409, appMessages.work.wakeLimit(error.limit));
+    }
+    throw error;
+  });
 
   const dto = toMessageDTO(committed.entry);
   if (dto === undefined) throw new AppError(appMessages.mail.sentMailInvariant());

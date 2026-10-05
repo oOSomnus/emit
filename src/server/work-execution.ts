@@ -14,7 +14,7 @@ import type { EmitRuntime } from "./runtime.ts";
 import { AppError } from "./app-text.ts";
 import { appMessages } from "./messages.ts";
 import { EmployeeDoc, WorkDoc } from "./documents.ts";
-import { findWork } from "./work.ts";
+import { findWork } from "./work-queue.ts";
 import { findRoom } from "./rooms.ts";
 import { toWorkDTO } from "./dto.ts";
 import { listApprovals, toApprovalDTO } from "./approval/state.ts";

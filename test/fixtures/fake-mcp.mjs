@@ -14,6 +14,29 @@ const PROTOCOL_VERSION = "2025-06-18";
 const mode = process.argv.find((argument) => argument.startsWith("--mode="))?.slice(7) ?? "normal";
 const modes = { normal: true, "fail-init": true, crash: true, hang: true, "invalid-json": true, "error-list": true, "error-call": true };
 if (modes[mode] !== true) throw new Error(`Unknown MCP fixture mode: ${mode}`);
+const identityTools = process.argv.includes("--identity-tools");
+
+/**
+ * Names that a lossy `sanitize + truncate` mapping would collide or lose; the
+ * client must keep each raw tool separately addressable and trusted by its own
+ * raw identity.
+ */
+const IDENTITY_TOOLS = [
+  "read.notes",
+  "read-notes",
+  `read_${"x".repeat(80)}a`,
+  `read_${"x".repeat(80)}b`,
+  "read__notes",
+].map((name) => ({
+  name,
+  description: `Identity fixture tool ${name}`,
+  inputSchema: {
+    type: "object",
+    properties: { path: { type: "string", description: "Caller marker" } },
+    required: ["path"],
+  },
+  annotations: { readOnlyHint: true },
+}));
 
 const TOOLS = [
   {
@@ -93,11 +116,20 @@ lines.on("line", (line) => {
       if (!notification) result(id, {});
       return;
     case "tools/list":
-      result(id, { tools: TOOLS });
+      result(id, { tools: identityTools ? IDENTITY_TOOLS : TOOLS });
       return;
     case "tools/call": {
       const name = params?.name;
       const args = params?.arguments ?? {};
+      if (identityTools) {
+        // The marker carries the raw tool the client actually called, so a
+        // wrong-tool or dropped-tool mapping is visible in the result text.
+        result(id, {
+          content: [{ type: "text", text: `MCP_IDENTITY:${String(name)}:${args.path ?? ""}` }],
+          isError: false,
+        });
+        return;
+      }
       if (name === "echo_notes") {
         result(id, {
           content: [{ type: "text", text: `来自 MCP fixture 的笔记：${args.path ?? "（未给路径）"}` }],

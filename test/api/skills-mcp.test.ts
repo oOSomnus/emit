@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ApprovalDTO, EmployeeDTO, McpServerDTO, SkillDTO, WorkDTO, WorkExecutionDTO, WorkStatusDTO } from "../../src/shared/contracts.ts";
+import { mcpToolName, mcpToolReference } from "../../src/server/mcp.ts";
 import {
   FAKE_KEY_ENV,
   startFixture,
@@ -141,6 +142,45 @@ async function patchEmployee(
 /** Required checked-in local stdio dependency; a missing or broken fixture is a failure, never a skip. */
 const MCP_FIXTURE = resolve(process.cwd(), "test/fixtures/fake-mcp.mjs");
 
+/**
+ * Raw tool names whose sanitized display names collide or truncate into one
+ * another; each one must stay separately addressable and trusted by raw name.
+ */
+const IDENTITY_RAW_TOOLS = [
+  "read.notes",
+  "read-notes",
+  `read_${"x".repeat(80)}a`,
+  `read_${"x".repeat(80)}b`,
+  "read__notes",
+] as const;
+/** Trusted read-only declarations: the dot name, the first long name, and the doubled-underscore name. */
+const IDENTITY_TRUSTED_INDEXES = [0, 2, 4] as const;
+/** Untrusted names: the hyphen name and the second long name; both need a human. */
+const IDENTITY_GATED_INDEXES = [1, 3] as const;
+
+/** Wait for the first observable branch, so a wrong branch fails fast with its actual shape. */
+async function waitForWorkBranch(api: TestApi, id: string): Promise<WorkStatusDTO | "pending-approval"> {
+  let branch: WorkStatusDTO | "pending-approval" | undefined;
+  await waitForFixture(async () => {
+    const [works, approvals] = await Promise.all([
+      request<WorkDTO[]>(api.http.url, "/api/works"),
+      request<{ approvals: ApprovalDTO[] }>(api.http.url, "/api/approvals"),
+    ]);
+    const work = works.body.find((entry) => entry.id === id);
+    if (work !== undefined && ["succeeded", "failed", "stopped"].includes(work.status)) {
+      branch = work.status;
+      return true;
+    }
+    if (approvals.body.approvals.some((entry) => entry.workId === id && entry.status === "pending-human")) {
+      branch = "pending-approval";
+      return true;
+    }
+    return false;
+  }, `work ${id} to finish or wait for a human`, 45_000);
+  if (branch === undefined) throw new Error(`Work ${id} reached neither a terminal status nor a pending approval`);
+  return branch;
+}
+
 describe("skills and stdio MCP API contract", () => {
   it("imports valid skills with diagnostics, deduplicates repeated imports, and deletes the skill", async () => {
     const api = await openApi("emit-api-skills-", (request) => request.model === "fake-reviewer" ? lowRiskReview() : { content: "ready" });
@@ -185,14 +225,16 @@ describe("skills and stdio MCP API contract", () => {
   }, 30_000);
 
   it("discovers both stdio tools, gates hinted read-only tools until trusted, and exposes connection/call failures", async () => {
+    let serverId = "";
+    let errorServerId = "";
     const api = await openApi("emit-api-mcp-", (request) => {
       if (request.model === "fake-reviewer") return highRiskReview();
       const markers = [...request.prompt.matchAll(/MCP_TOOL_(?:UNTRUSTED_ECHO|TRUSTED_ECHO|SHOUT|ERROR_CALL)/g)];
       const marker = markers.at(-1)?.[0];
       if (marker === undefined || request.prompt.includes('"role":"tool"')) return { content: "MCP result handled." };
-      if (marker === "MCP_TOOL_SHOUT") return { toolCall: { name: "mcp__fixture__shout", args: { message: "be loud" } } };
-      if (marker === "MCP_TOOL_ERROR_CALL") return { toolCall: { name: "mcp__mcpfailure__echo_notes", args: { path: "error.txt" } } };
-      return { toolCall: { name: "mcp__fixture__echo_notes", args: { path: marker } } };
+      if (marker === "MCP_TOOL_SHOUT") return { toolCall: { name: mcpToolName(serverId, "shout"), args: { message: "be loud" } } };
+      if (marker === "MCP_TOOL_ERROR_CALL") return { toolCall: { name: mcpToolName(errorServerId, "echo_notes"), args: { path: "error.txt" } } };
+      return { toolCall: { name: mcpToolName(serverId, "echo_notes"), args: { path: marker } } };
     });
     const normal = await request<McpServerDTO>(api.http.url, "/api/mcp", json("POST", {
       name: "fixture",
@@ -203,7 +245,7 @@ describe("skills and stdio MCP API contract", () => {
       enabled: true,
     }));
     expect(normal.status).toBe(200);
-    const serverId = normal.body.id;
+    serverId = normal.body.id;
     const connected = await request<{ ok: boolean; message: string; tools: string[] }>(api.http.url, `/api/mcp/${serverId}/connect`, json("POST", {}));
     expect(connected.status).toBe(200);
     expect(connected.body.ok).toBe(true);
@@ -241,8 +283,8 @@ describe("skills and stdio MCP API contract", () => {
     expect(missingConnect.body).toMatchObject({ ok: false, tools: [] });
 
     const employeeId = api.workspace.employeeIds[0]!;
-    const mappedEcho = `mcp__${serverId}__echo_notes`;
-    const mappedShout = `mcp__${serverId}__shout`;
+    const mappedEcho = mcpToolName(serverId, "echo_notes");
+    const mappedShout = mcpToolName(serverId, "shout");
     await patchEmployee(api, {
       mcpServerIds: [serverId],
       toolPolicy: { allowedTools: [mappedEcho, mappedShout], trustedReadOnlyTools: [] },
@@ -286,7 +328,8 @@ describe("skills and stdio MCP API contract", () => {
     expect(errorServer.status).toBe(200);
     const errorConnected = await request<{ ok: boolean }>(api.http.url, `/api/mcp/${errorServer.body.id}/connect`, json("POST", {}));
     expect(errorConnected.status).toBe(200);
-    const errorTool = `mcp__${errorServer.body.id}__echo_notes`;
+    errorServerId = errorServer.body.id;
+    const errorTool = mcpToolName(errorServerId, "echo_notes");
     await patchEmployee(api, {
       mcpServerIds: [serverId, errorServer.body.id],
       toolPolicy: { allowedTools: [mappedEcho, mappedShout, errorTool], trustedReadOnlyTools: [`${serverId}/echo_notes`] },
@@ -303,4 +346,79 @@ describe("skills and stdio MCP API contract", () => {
     const employees = await request<{ employees: EmployeeDTO[] }>(api.http.url, "/api/bootstrap");
     expect(employees.body.employees.find((employee) => employee.id === employeeId)?.mcpServerIds).toEqual([serverId, errorServer.body.id]);
   }, 120_000);
+
+  it("keeps MCP trust and raw tool identity consistent across lossy display names", async () => {
+    let serverId = "";
+    const api = await openApi("emit-api-mcp-identity-", (request) => {
+      if (request.model === "fake-reviewer") return highRiskReview();
+      const markers = [...request.prompt.matchAll(/MCP_IDENTITY_CASE:(\d)/g)];
+      const marker = markers.at(-1);
+      if (marker === undefined || request.prompt.includes('"role":"tool"')) return { content: "Identity case handled." };
+      const index = Number(marker[1]);
+      const raw = IDENTITY_RAW_TOOLS[index];
+      if (raw === undefined) return { content: "Identity case handled." };
+      return { toolCall: { name: mcpToolName(serverId, raw), args: { path: `identity-${index}` } } };
+    });
+    const created = await request<McpServerDTO>(api.http.url, "/api/mcp", json("POST", {
+      name: "fixture",
+      transport: "stdio",
+      command: process.execPath,
+      args: [MCP_FIXTURE, "--identity-tools"],
+      cwd: process.cwd(),
+      enabled: true,
+    }));
+    expect(created.status).toBe(200);
+    serverId = created.body.id;
+    const connected = await request<{ ok: boolean; tools: string[] }>(api.http.url, `/api/mcp/${serverId}/connect`, json("POST", {}));
+    expect(connected.status).toBe(200);
+    expect(connected.body.ok).toBe(true);
+    expect([...connected.body.tools].sort()).toEqual([...IDENTITY_RAW_TOOLS].sort());
+
+    const displayNames = IDENTITY_RAW_TOOLS.map((raw) => mcpToolName(serverId, raw));
+    await patchEmployee(api, {
+      mcpServerIds: [serverId],
+      toolPolicy: {
+        allowedTools: displayNames,
+        trustedReadOnlyTools: IDENTITY_TRUSTED_INDEXES.map((index) => mcpToolReference(serverId, IDENTITY_RAW_TOOLS[index])),
+      },
+    });
+
+    const observedNames: string[] = [];
+    for (const index of IDENTITY_TRUSTED_INDEXES) {
+      const workId = await sendWork(api, `MCP_IDENTITY_CASE:${index}`);
+      expect(await waitForWorkBranch(api, workId)).toBe("succeeded");
+      const execution = await request<WorkExecutionDTO>(api.http.url, `/api/works/${workId}/execution`);
+      expect(execution.body.steps).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "tool-result", isError: false, text: `MCP_IDENTITY:${IDENTITY_RAW_TOOLS[index]}:identity-${index}` }),
+      ]));
+      const approvals = await request<{ approvals: ApprovalDTO[] }>(api.http.url, "/api/approvals");
+      expect(approvals.body.approvals.some((approval) => approval.workId === workId)).toBe(false);
+      observedNames.push(...execution.body.steps.filter((step) => step.kind === "tool-call").map((step) => step.toolName ?? ""));
+    }
+
+    for (const index of IDENTITY_GATED_INDEXES) {
+      const workId = await sendWork(api, `MCP_IDENTITY_CASE:${index}`);
+      expect(await waitForWorkBranch(api, workId)).toBe("pending-approval");
+      const approval = await waitForPendingApproval(api, workId);
+      const before = await request<WorkExecutionDTO>(api.http.url, `/api/works/${workId}/execution`);
+      expect(before.body.steps.some((step) => step.kind === "tool-result" && step.text?.includes("MCP_IDENTITY:"))).toBe(false);
+      const decision = await request<ApprovalDTO>(api.http.url, `/api/approvals/${approval.id}/decision`, json("POST", { decision: "approved" }));
+      expect(decision.body.status).toBe("approved");
+      await waitForWorkStatus(api, workId, "succeeded");
+      const execution = await request<WorkExecutionDTO>(api.http.url, `/api/works/${workId}/execution`);
+      expect(execution.body.steps).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "tool-result", isError: false, text: `MCP_IDENTITY:${IDENTITY_RAW_TOOLS[index]}:identity-${index}` }),
+      ]));
+      const approvals = await request<{ approvals: ApprovalDTO[] }>(api.http.url, "/api/approvals");
+      expect(approvals.body.approvals.find((entry) => entry.workId === workId)?.execution.state).toBe("succeeded");
+      observedNames.push(...execution.body.steps.filter((step) => step.kind === "tool-call").map((step) => step.toolName ?? ""));
+    }
+
+    expect(observedNames).toHaveLength(IDENTITY_RAW_TOOLS.length);
+    expect([...new Set(observedNames)].sort()).toEqual([...displayNames].sort());
+    for (const name of observedNames) {
+      expect(name).toMatch(/^[A-Za-z0-9_]+$/);
+      expect(name.length).toBeLessThanOrEqual(64);
+    }
+  }, 180_000);
 });

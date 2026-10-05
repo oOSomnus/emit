@@ -64,12 +64,12 @@ import {
 } from "./rooms.ts";
 import {
   installEmployeeExtension,
-  isTerminal,
   listWorks,
   reconcileWorks,
   stopWork,
   type Resume,
 } from "./work.ts";
+import { isTerminal } from "./work-queue.ts";
 import { sendQueuedMail } from "./mail.ts";
 import { sendQueuedMessage } from "./channel-messages.ts";
 import { WorkExecutionCursorError, readWorkExecution } from "./work-execution.ts";

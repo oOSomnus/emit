@@ -12,7 +12,7 @@ import { fill, readResource, resourceFragments, resourceJson } from "./loader.ts
 import type { SkillRecord, RoomMessageData } from "../documents.ts";
 import type { MailAddress } from "../rooms.ts";
 import type { MessageDTO } from "../../shared/contracts.ts";
-import type { WorkKind } from "../work.ts";
+import type { WorkKind } from "../work-queue.ts";
 
 // The shapes of the work input prompt; kept here so the prompt and its limits
 // cannot drift apart.

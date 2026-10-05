@@ -5,7 +5,8 @@ import { decideApproval, findApproval, gateToolCall, invalidateStaleGrants, inva
 import { sendQueuedMessage } from "../../src/server/channel-messages.ts";
 import type { ApprovalRecord, EmployeeRecord, RoomRecord, WorkContextRecord } from "../../src/server/documents.ts";
 import { createRoom } from "../../src/server/rooms.ts";
-import { ensureWorkConversation, findWork, listWorks, stopWork, type Resume } from "../../src/server/work.ts";
+import { ensureWorkConversation, listWorks, stopWork, type Resume } from "../../src/server/work.ts";
+import { findWork } from "../../src/server/work-queue.ts";
 import type { EmitRuntime } from "../../src/server/runtime.ts";
 import { createWorkContext, findWorkContext, updateWorkContext } from "../../src/server/work-contexts.ts";
 import { readWorkExecution } from "../../src/server/work-execution.ts";

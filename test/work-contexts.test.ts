@@ -30,7 +30,8 @@ import {
   updateRoomMembers,
 } from "../src/server/rooms.ts";
 import type { ConversationId, TaskId, ToolExecutionApi } from "@earendil-works/pi-durable";
-import { ensureWorkConversation, findWork, installEmployeeExtension, listWorks, type Resume } from "../src/server/work.ts";
+import { ensureWorkConversation, installEmployeeExtension, listWorks, type Resume } from "../src/server/work.ts";
+import { findWork } from "../src/server/work-queue.ts";
 import {
   gateToolCall,
   findApproval,

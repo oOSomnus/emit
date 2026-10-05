@@ -6,7 +6,8 @@ import type { MessageDTO, ServerEvent } from "../../src/shared/contracts.ts";
 import { buildMessageTools, sendQueuedMessage } from "../../src/server/channel-messages.ts";
 import type { EmployeeRecord, RoomRecord } from "../../src/server/documents.ts";
 import { createRoom } from "../../src/server/rooms.ts";
-import { ensureWorkConversation, findWork, listWorks, type Resume } from "../../src/server/work.ts";
+import { buildCollaborationTools, ensureWorkConversation, listWorks, type Resume } from "../../src/server/work.ts";
+import { findWork } from "../../src/server/work-queue.ts";
 import { readWorkExecution } from "../../src/server/work-execution.ts";
 import type { EmitRuntime } from "../../src/server/runtime.ts";
 import { readApp, updateAppConfig } from "../../src/server/workspace.ts";
@@ -82,6 +83,24 @@ async function executeMessageTool(
   const api = {
     taskId: taskId as TaskId,
     conversationId: conversation.id as ConversationId,
+  } as unknown as ToolExecutionApi;
+  return tool.execute(args as never, api, resume.runtime.ctx);
+}
+
+async function executeDelegateTool(
+  resume: Resume,
+  employee: EmployeeRecord,
+  workId: string,
+  args: unknown,
+  taskId: number,
+): Promise<ToolExecutionResult> {
+  const conversation = await ensureWorkConversation(resume, workId);
+  const tool = buildCollaborationTools(resume, employee).find((candidate) => candidate.name === "delegate_task");
+  if (tool === undefined) throw new Error("Missing delegate_task tool");
+  const api = {
+    taskId: taskId as TaskId,
+    conversationId: conversation.id as ConversationId,
+    snapshot: resume.runtime.harness.snapshot.bind(resume.runtime.harness),
   } as unknown as ToolExecutionApi;
   return tool.execute(args as never, api, resume.runtime.ctx);
 }
@@ -310,5 +329,52 @@ describe("work and collaboration limits", () => {
     const roomMessages = await readFixtureRoomMessages(runtime, room);
     expect(roomMessages.some((message) => message.body === "This answer must not bypass the turn limit.")).toBe(false);
     expect(fixture.requests.some((request) => request.prompt.includes(marker))).toBe(true);
+  }, 60_000);
+
+  it("refused delegation preserves wake budget and can be admitted after increasing the limit", async () => {
+    const fixture = await startFixture(workFixtureAnswer);
+    cleanups.push(() => fixture.close());
+    const root = mkdtempDataDir("emit-delegation-budget-");
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const { runtime, resume } = await openRuntime(root);
+    cleanups.push(() => runtime.close());
+    await runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
+    const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta", "Cara"]);
+    const alpha = employeeNamed(employees, "Alpha");
+    const beta = employeeNamed(employees, "Beta");
+    const cara = employeeNamed(employees, "Cara");
+    const context = await createWorkContextFixture(runtime, "Delegation budget");
+    const room = await createChannel(runtime, context.id, employees);
+    const app = await readApp(runtime);
+    await updateAppConfig(runtime, {
+      collaboration: { ...app.collaboration, maxDepth: 3, maxCrossEmployeeWakes: 1 },
+    });
+    const rootWorkId = await createRootWork(resume, room, alpha, "ROOT-DELEGATION-BUDGET");
+    await ensureWorkConversation(resume, rootWorkId);
+
+    const first = await executeDelegateTool(resume, alpha, rootWorkId, { employee: beta.name, task: "DELEGATE-BETA-ALLOWED" }, 10_301);
+    expect(first.isError).not.toBe(true);
+    const admittedWorks = await listWorks(runtime);
+    const childrenAfterAdmission = admittedWorks.filter((work) => work.parentWorkId === rootWorkId);
+    expect(childrenAfterAdmission).toHaveLength(1);
+    expect(childrenAfterAdmission[0]).toMatchObject({ employeeId: beta.id, rootWorkId, depth: 1 });
+
+    for (const taskId of [10_302, 10_303]) {
+      const refused = await executeDelegateTool(resume, alpha, rootWorkId, { employee: cara.name, task: "DELEGATE-CARA-REFUSED" }, taskId);
+      expect(refused.isError).toBe(true);
+      // A refusal leaves the observable work set exactly as it was: the budget is
+      // committed only together with a delegation that is actually queued.
+      expect(await listWorks(runtime)).toEqual(admittedWorks);
+    }
+
+    const raised = await readApp(runtime);
+    await updateAppConfig(runtime, {
+      collaboration: { ...raised.collaboration, maxCrossEmployeeWakes: 2 },
+    });
+    const admitted = await executeDelegateTool(resume, alpha, rootWorkId, { employee: cara.name, task: "DELEGATE-CARA-ADMITTED" }, 10_304);
+    expect(admitted.isError).not.toBe(true);
+    const children = (await listWorks(runtime)).filter((work) => work.parentWorkId === rootWorkId);
+    expect(children).toHaveLength(2);
+    expect(children.map((work) => work.employeeId).sort()).toEqual([beta.id, cara.id].sort());
   }, 60_000);
 });

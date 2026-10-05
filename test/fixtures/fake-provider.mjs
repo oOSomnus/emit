@@ -196,7 +196,7 @@ function approvalVerdict(input) {
   const shellQuery =
     tool === "run_shell" &&
     /^(?:pwd|ls(?:\s+-[a-z]+)?|cat\s+\S+|rg\s+.*|git\s+(?:status|diff|log)(?:\s+.*)?)$/.test(command.trim());
-  const trustedQuery = tool === "mcp__fixture__echo_notes";
+  const trustedQuery = tool.startsWith("mcp__fixture__echo_notes__");
   if (shellQuery || trustedQuery) {
     return {
       verdict: { ...APPROVAL_LOW, readOnly: true },
@@ -410,7 +410,7 @@ function decide(body) {
       toolCalls: [{ id: "call_skill_1", name: "load_skill", arguments: JSON.stringify({ name: "smoke-review" }) }],
     };
   }
-  if (request.includes("MCP")) {
+  if (request.includes("MCP") && Array.isArray(body.tools) && body.tools.length > 0) {
     const path = request.includes("密钥")
       ? ".env"
       : request.includes("不确定")
@@ -418,12 +418,18 @@ function decide(body) {
         : request.includes("受控高风险审查")
           ? "SMOKE-CONTROLLED-HIGH"
           : "notes.txt";
+    // Call the fixture server's echo tool by the exact name this request
+    // offered; the client's display mapping is not guessed here.
+    const offered = (Array.isArray(body.tools) ? body.tools : [])
+      .map((tool) => tool?.function?.name)
+      .find((name) => typeof name === "string" && name.startsWith("mcp__fixture__echo_notes__"));
+    if (offered === undefined) throw new Error("fixture expected an offered fixture echo_notes MCP tool");
     return {
       content: "",
       toolCalls: [
         {
           id: "call_mcp_1",
-          name: "mcp__fixture__echo_notes",
+          name: offered,
           arguments: JSON.stringify({ path }),
         },
       ],
