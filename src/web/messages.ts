@@ -12,7 +12,7 @@
  * languages.
  */
 
-import type { LocalizedText } from "../shared/i18n.ts";
+import { type Locale, type LocalizedText, LOCALES } from "../shared/i18n.ts";
 import { englishApp, chineseApp } from "./messages/app.ts";
 import { englishApprovals, chineseApprovals } from "./messages/approvals.ts";
 import { englishChat, chineseChat } from "./messages/chat.ts";
@@ -73,7 +73,20 @@ export const chineseMessages: UiMessages = {
   model: chineseModel,
 };
 
-/** Build a message pair from a selector run against both dictionaries. */
+/** The catalog for each registered locale; English is the shape authority. */
+export const uiMessagesByLocale: Record<Locale, UiMessages> = {
+  en: englishMessages,
+  "zh-CN": chineseMessages,
+};
+
+/** The catalog for one locale. */
+export function messagesFor(locale: Locale): UiMessages {
+  return uiMessagesByLocale[locale];
+}
+
+/** Build a message pair from a selector run against every registered catalog. */
 export function uiText(select: (messages: UiMessages) => string): LocalizedText {
-  return { en: select(englishMessages), "zh-CN": select(chineseMessages) };
+  const text = {} as LocalizedText;
+  for (const locale of LOCALES) text[locale] = select(messagesFor(locale));
+  return text;
 }

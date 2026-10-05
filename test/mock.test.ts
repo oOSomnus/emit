@@ -131,9 +131,9 @@ function failureReport(instance: MockInstance): string {
 function waitForReady(instance: MockInstance): Promise<void> {
   const ready = Promise.withResolvers<void>();
   const check = (): boolean => {
-    const url = /Emit 已启动：(http:\/\/\S+)/.exec(instance.stdout)?.[1];
-    const rootDir = /^隔离目录：(.*)$/m.exec(instance.stdout)?.[1]?.trim();
-    const dataDir = /^数据目录：(.*)$/m.exec(instance.stdout)?.[1]?.trim();
+    const url = /Emit started: (http:\/\/\S+)/.exec(instance.stdout)?.[1];
+    const rootDir = /^Isolated directory:(.*)$/m.exec(instance.stdout)?.[1]?.trim();
+    const dataDir = /^Data directory:(.*)$/m.exec(instance.stdout)?.[1]?.trim();
     if (url === undefined || rootDir === undefined || dataDir === undefined) return false;
     instance.url = url;
     instance.rootDir = rootDir;
@@ -152,13 +152,13 @@ function waitForReady(instance: MockInstance): Promise<void> {
   };
   const onExit = (): void => {
     settle();
-    ready.reject(new Error(`mock 在就绪前退出\n${failureReport(instance)}`));
+    ready.reject(new Error(`mock exited before becoming ready\n${failureReport(instance)}`));
   };
   // A subprocess that never prints readiness produces no event; the deadline
   // is the only way to fail instead of hanging the suite.
   const deadline = setTimeout(() => {
     settle();
-    ready.reject(new Error(`等待 mock 就绪超时\n${failureReport(instance)}`));
+    ready.reject(new Error(`Timed out waiting for mock readiness\n${failureReport(instance)}`));
   }, READY_TIMEOUT_MS);
   if (check()) {
     settle();
@@ -288,14 +288,14 @@ describe("make mock", () => {
       expect(bootstrap.employees.every((employee) => employee.executionModel.model.modelId === "fake-chat")).toBe(true);
 
       const channels = bootstrap.rooms.filter((room) => room.kind === "channel");
-      expect(channels.map((room) => room.name).sort()).toEqual(["团队大厅", "研发讨论"]);
-      const lobby = channels.find((room) => room.name === "团队大厅");
-      const lab = channels.find((room) => room.name === "研发讨论");
+      expect(channels.map((room) => room.name).sort()).toEqual(["Development discussion", "Team lobby"]);
+      const lobby = channels.find((room) => room.name === "Team lobby");
+      const lab = channels.find((room) => room.name === "Development discussion");
       expect(lobby?.memberIds.map((id) => byId.get(id))).toEqual(["Alice", "Bob", "Carol"]);
       expect(lab?.memberIds.map((id) => byId.get(id))).toEqual(["Bob", "Carol"]);
       expect(bootstrap.rooms.some((room) => room.name === "源群聊")).toBe(false);
 
-      expect(bootstrap.workContexts.map((context) => context.name)).toEqual(["Mock 项目"]);
+      expect(bootstrap.workContexts.map((context) => context.name)).toEqual(["Mock project"]);
       const workDir = join(instance.rootDir, "work");
       expect(bootstrap.workContexts[0]?.directories.paths).toEqual([workDir]);
       expect(bootstrap.workContexts[0]?.directories.defaultPath).toBe(workDir);
@@ -372,7 +372,7 @@ describe("make mock", () => {
       expect(await waitForExit(missing)).not.toBe(0);
       expect(missing.stderr).toContain(join(tmpDir, "missing-source"));
       expect(missing.stderr).toContain("emit.sqlite");
-      expect(missing.stdout).not.toContain("Emit 已启动");
+      expect(missing.stdout).not.toContain("Emit started");
       expect(mockRoots(tmpDir)).toEqual([]);
 
       // An onboarded workspace without a default execution model names the gap.
@@ -397,19 +397,19 @@ describe("make mock", () => {
       const incomplete = spawnMock(["--source-data-dir", sourceDir], tmpDir);
       expect(await waitForExit(incomplete)).not.toBe(0);
       expect(incomplete.stderr).toContain(sourceDir);
-      expect(incomplete.stderr).toContain("默认执行模型");
-      expect(incomplete.stdout).not.toContain("Emit 已启动");
+      expect(incomplete.stderr).toContain("default execution model");
+      expect(incomplete.stdout).not.toContain("Emit started");
       expect(mockRoots(tmpDir)).toEqual([]);
 
       // Unknown and value-less options are refused rather than ignored.
       const unknown = spawnMock(["--source-data-dir", sourceDir, "--data-dir", join(tmpDir, "elsewhere")], tmpDir);
       expect(await waitForExit(unknown)).not.toBe(0);
-      expect(unknown.stderr).toContain("未知选项: --data-dir");
+      expect(unknown.stderr).toContain("Unknown option: --data-dir");
       expect(existsSync(join(tmpDir, "elsewhere"))).toBe(false);
 
       const valueless = spawnMock(["--port"], tmpDir);
       expect(await waitForExit(valueless)).not.toBe(0);
-      expect(valueless.stderr).toContain("缺少参数值: --port");
+      expect(valueless.stderr).toContain("Missing value for option: --port");
       expect(mockRoots(tmpDir)).toEqual([]);
     },
     TEST_TIMEOUT_MS,

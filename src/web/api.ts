@@ -36,7 +36,7 @@ import type {
   WorkDTO,
   WorkExecutionDTO,
 } from "../shared/contracts.ts";
-import { isLocalizedText, type LocalizedText } from "../shared/i18n.ts";
+import { CANONICAL_LOCALE, isLocalizedText, type LocalizedText } from "../shared/i18n.ts";
 import { uiText } from "./messages.ts";
 
 /** One failed HTTP request; `messageLocalized` is present for app-authored errors. */
@@ -71,7 +71,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // A response without a message is a failed request, not an application
     // error: name the status in the user's language.
     const fallback = uiText((messages) => messages.common.requestFailed(response.status));
-    throw new ApiError(response.status, fallback["zh-CN"], fallback);
+    throw new ApiError(response.status, fallback[CANONICAL_LOCALE], fallback);
   }
   return payload as T;
 }

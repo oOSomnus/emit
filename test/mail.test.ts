@@ -222,10 +222,10 @@ describe("durable mail delivery", () => {
       if (request.prompt.includes("localpart")) return { content: '{"localpart": "tester"}' };
       // 乙 cannot answer until the latch opens: the awaiting state is observed
       // while the child is genuinely still working.
-      if (request.system.includes("你的名字是 乙（")) return { content: "回信：结果是 42。", gate: replyGate };
+      if (request.system.includes("Your name is 乙 (")) return { content: "回信：结果是 42。", gate: replyGate };
       // 甲: ask, try to answer early, then answer for real once the reply is read.
-      if (request.prompt.includes("收到与本任务相关的邮件回信")) return { content: FINAL };
-      if (request.prompt.includes("已发送邮件给")) return { content: PREMATURE };
+      if (request.prompt.includes("Received an email reply related to this task")) return { content: FINAL };
+      if (request.prompt.includes("Email sent to")) return { content: PREMATURE };
       return {
         toolCall: {
           name: "send_mail",
@@ -314,12 +314,12 @@ describe("durable mail delivery", () => {
     cleanups.push(() => releaseReplies?.());
     const fixture = await startFixture((request) => {
       if (request.prompt.includes("localpart")) return { content: '{"localpart": "tester"}' };
-      if (request.system.includes("你的名字是 乙（")) return { content: "回信乙：结果是 B。", gate: repliesGate };
-      if (request.system.includes("你的名字是 丙（")) return { content: "回信丙：结果是 C。", gate: repliesGate };
-      if (request.prompt.includes("收到与本任务相关的邮件回信")) return { content: "最终答复：B 和 C 都收到了。" };
+      if (request.system.includes("Your name is 乙 (")) return { content: "回信乙：结果是 B。", gate: repliesGate };
+      if (request.system.includes("Your name is 丙 (")) return { content: "回信丙：结果是 C。", gate: repliesGate };
+      if (request.prompt.includes("Received an email reply related to this task")) return { content: "最终答复：B 和 C 都收到了。" };
       // First ask 乙, then 丙 once that send came back, then try to answer.
-      if (request.prompt.includes("已发送邮件给 丙")) return { content: "等两位回信。" };
-      if (request.prompt.includes("已发送邮件给 乙")) {
+      if (request.prompt.includes("Email sent to 丙")) return { content: "等两位回信。" };
+      if (request.prompt.includes("Email sent to 乙")) {
         return { toolCall: { name: "send_mail", args: { to: "丙", subject: "求助", body: "读一下 notes.txt", awaitReply: true } } };
       }
       return {
@@ -365,8 +365,8 @@ describe("durable mail delivery", () => {
   it("hands a failing child to the parent as a failure instead of waiting forever", async () => {
     const fixture = await startFixture((request) => {
       if (request.prompt.includes("localpart")) return { content: '{"localpart": "tester"}' };
-      if (request.prompt.includes("对方员工未能完成该请求")) return { content: "最终答复：对方失败了。" };
-      if (request.prompt.includes("已发送邮件给")) return { content: "等回信时想先答。" };
+      if (request.prompt.includes("The other employee could not complete this request")) return { content: "最终答复：对方失败了。" };
+      if (request.prompt.includes("Email sent to")) return { content: "等回信时想先答。" };
       return {
         toolCall: {
           name: "send_mail",
@@ -394,11 +394,11 @@ describe("durable mail delivery", () => {
       return parent?.status === "succeeded" && child?.status === "failed";
     }, "甲 收到失败结果");
     const child = (await listWorks(runtime)).find((work) => work.employeeId === b.id)!;
-    expect(child.error).toContain("已停用");
+    expect(child.error).toContain("disabled");
     const finalRequest = fixture.requests.at(-1)!;
-    expect(finalRequest.prompt).toContain("对方员工未能完成该请求");
+    expect(finalRequest.prompt).toContain("The other employee could not complete this request");
     // The failure text is the real reason the child ended, not an invented one.
-    expect(finalRequest.prompt).toContain("失败说明：员工 乙 已停用");
+    expect(finalRequest.prompt).toContain("Failure details: Employee 乙 is disabled");
     const messages = await roomMessages(runtime, room);
     expect(messages.filter((message) => message.body === "最终答复：对方失败了。")).toHaveLength(1);
     // The parent is not left waiting on a child that will never answer.
@@ -414,9 +414,9 @@ describe("durable mail delivery", () => {
     cleanups.push(() => releaseReply?.());
     const fixture = await startFixture((request) => {
       if (request.prompt.includes("localpart")) return { content: '{"localpart": "tester"}' };
-      if (request.system.includes("你的名字是 乙（")) return { content: "回信（永远不会被读到）。", gate: replyGate };
-      if (request.prompt.includes("对方员工的工作已被停止")) return { content: "最终答复：对方被停止了。" };
-      if (request.prompt.includes("已发送邮件给")) return { content: "等回信时想先答。" };
+      if (request.system.includes("Your name is 乙 (")) return { content: "回信（永远不会被读到）。", gate: replyGate };
+      if (request.prompt.includes("The other employee's work has been stopped")) return { content: "最终答复：对方被停止了。" };
+      if (request.prompt.includes("Email sent to")) return { content: "等回信时想先答。" };
       return {
         toolCall: {
           name: "send_mail",
@@ -448,7 +448,7 @@ describe("durable mail delivery", () => {
       const parent = works.find((work) => work.employeeId === a.id);
       return parent?.status === "succeeded" && works.find((work) => work.employeeId === b.id)?.status === "stopped";
     }, "甲 收到停止结果");
-    expect(fixture.requests.at(-1)!.prompt).toContain("对方员工的工作已被停止");
+    expect(fixture.requests.at(-1)!.prompt).toContain("The other employee's work has been stopped");
     const messages = await roomMessages(runtime, room);
     expect(messages.filter((message) => message.body === "最终答复：对方被停止了。")).toHaveLength(1);
   }, 60_000);
@@ -462,9 +462,9 @@ describe("durable mail delivery", () => {
     const PREMATURE = "停止前的提前答复。";
     const fixture = await startFixture((request) => {
       if (request.prompt.includes("localpart")) return { content: '{"localpart": "tester"}' };
-      if (request.system.includes("你的名字是 乙（")) return { content: "回信：晚到的结果。", gate: replyGate };
-      if (request.prompt.includes("收到与本任务相关的邮件回信")) return { content: "最终答复：不该出现。" };
-      if (request.prompt.includes("已发送邮件给")) return { content: PREMATURE };
+      if (request.system.includes("Your name is 乙 (")) return { content: "回信：晚到的结果。", gate: replyGate };
+      if (request.prompt.includes("Received an email reply related to this task")) return { content: "最终答复：不该出现。" };
+      if (request.prompt.includes("Email sent to")) return { content: PREMATURE };
       return {
         toolCall: {
           name: "send_mail",
@@ -576,7 +576,7 @@ describe("durable mail delivery", () => {
     expect(call.toolCallId).toBeDefined();
     // A credential-looking argument is redacted before it is displayed.
     expect(call.arguments).not.toContain(SECRET);
-    expect(call.arguments).toContain("[已隐去]");
+    expect(call.arguments).toContain("[REDACTED]");
     const result = steps[2]!;
     expect(result.toolCallId).toBe(call.toolCallId);
     expect(result.isError).toBe(true);
@@ -730,7 +730,7 @@ describe("durable mail delivery", () => {
     if (record === undefined) throw new Error(`Missing failed work ${workId}`);
     const rawError = record.error;
     const workDTO = toWorkDTO(record, "乙", room.name);
-    expect(rawError).toContain("已停用");
+    expect(rawError).toContain("disabled");
     expect(workDTO.error).toBe(rawError);
     expect(workDTO.errorLocalized?.["zh-CN"]).toContain("乙");
     expect(workDTO.errorLocalized?.en).toContain("乙");
@@ -743,7 +743,7 @@ describe("durable mail delivery", () => {
     const notice = notices[0];
     if (notice === undefined) throw new Error("Missing failed system notice");
     expect(notice.body).toContain("乙");
-    expect(notice.bodyLocalized?.["zh-CN"]).toBe(notice.body);
+    expect(notice.bodyLocalized?.en).toBe(notice.body);
     expect(notice.bodyLocalized?.en).toContain("乙");
     expect(notice.bodyLocalized?.en).toMatch(/\b(?:disabled|failed)\b/i);
     expect((notice.bodyLocalized?.en ?? "").replaceAll("乙", "")).not.toMatch(/\p{Script=Han}/u);

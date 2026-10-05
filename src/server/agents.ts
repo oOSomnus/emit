@@ -74,7 +74,7 @@ export function classifyTool(employee: EmployeeRecord, toolName: string): ToolRi
   const builtin = BUILTIN_TOOL_RISK[toolName];
   if (builtin !== undefined) {
     if (!employee.allowedTools.includes(toolName)) {
-      return { blocked: `工具 ${toolName} 不在该员工的允许工具列表中` };
+      return { blocked: `Tool ${toolName} is not in this employee's allowed tool list` };
     }
     return builtin;
   }
@@ -86,7 +86,7 @@ export function classifyTool(employee: EmployeeRecord, toolName: string): ToolRi
     return { risk: "gated", kind: "mcp" };
   }
 
-  return { blocked: `未知工具 ${toolName}，已阻止调用` };
+  return { blocked: `Unknown tool ${toolName}; call blocked` };
 }
 
 /**
@@ -227,7 +227,7 @@ export function buildEmployeeExtension(input: EmployeeAgentInput): Extension {
           ? { kind: "missing-room" }
           : {
               kind: "paths",
-              roomLabel: room.kind === "mail" ? "邮件会话" : room.kind === "dm" ? "私信" : "频道",
+              roomLabel: room.kind === "mail" ? "mail thread" : room.kind === "dm" ? "direct message" : "channel",
               roomName: room.name,
               directoryVersion: scope.version,
               paths: scope.paths,
@@ -266,7 +266,7 @@ export function buildEmployeeExtension(input: EmployeeAgentInput): Extension {
         }
         if (decision.risk === "safe") return undefined;
         const toolDescription = toolDescriptions.get(call.name);
-        if (toolDescription === undefined) return { block: `找不到工具 ${call.name} 的说明，已阻止调用` };
+        if (toolDescription === undefined) return { block: `Tool description not found for ${call.name}; call blocked` };
         const gated = await gateToolCall({
           runtime,
           toolTaskId: String(api.taskId),

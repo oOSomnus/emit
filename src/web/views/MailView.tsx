@@ -12,7 +12,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { api } from "../api.ts";
 import { errorDisplay } from "../../shared/i18n.ts";
 import { useI18n } from "../i18n.tsx";
-import { chineseMail, englishMail } from "../messages/mail.ts";
 import { uiText } from "../messages.ts";
 import { useApp } from "../state.tsx";
 import { Chip, EmployeeAvatar, Icon, IconButton, WorkStatus, timeAgo } from "./ui.tsx";
@@ -127,9 +126,9 @@ function snapshot(compose: Compose): string {
 export function MailView(): ReactNode {
   const { state, dispatch, setError } = useApp();
   const { messages, locale } = useI18n();
-  const namesSeparator = (locale === "zh-CN" ? chineseMail : englishMail).namesSeparator;
+  const namesSeparator = messages.mail.namesSeparator;
   /** The room name a new mail with no subject gets; it is record data from then on. */
-  const noSubjectRoomName = (locale === "zh-CN" ? chineseMail : englishMail).noSubject;
+  const noSubjectRoomName = messages.mail.noSubject;
   const [folder, setFolder] = useState<Folder>("inbox");
   const [query, setQuery] = useState("");
   const [mailbox, setMailbox] = useState<MailboxItemDTO[]>([]);

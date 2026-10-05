@@ -12,21 +12,27 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { formatText, resolveLocale, type DisplayText, type LanguagePreference, type Locale } from "../shared/i18n.ts";
-import { chineseMessages, englishMessages, type UiMessages } from "./messages.ts";
+import {
+  DEFAULT_LANGUAGE_PREFERENCE,
+  formatText,
+  isLanguagePreference,
+  LOCALE_CONFIG,
+  LOCALES,
+  resolveLocale,
+  type DisplayText,
+  type LanguagePreference,
+  type Locale,
+} from "../shared/i18n.ts";
+import { messagesFor, type UiMessages } from "./messages.ts";
 
 export const LANGUAGE_STORAGE_KEY = "emit.language";
-
-export function isLanguagePreference(value: unknown): value is LanguagePreference {
-  return value === "system" || value === "en" || value === "zh-CN";
-}
 
 function readStoredPreference(): LanguagePreference {
   try {
     const stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
-    return isLanguagePreference(stored) ? stored : "system";
+    return isLanguagePreference(stored) ? stored : DEFAULT_LANGUAGE_PREFERENCE;
   } catch {
-    return "system";
+    return DEFAULT_LANGUAGE_PREFERENCE;
   }
 }
 
@@ -37,7 +43,7 @@ function browserLanguages(): readonly string[] {
 
 function applyDocument(locale: Locale): void {
   document.documentElement.lang = locale;
-  document.title = (locale === "zh-CN" ? chineseMessages : englishMessages).language.documentTitle;
+  document.title = messagesFor(locale).language.documentTitle;
 }
 
 /**
@@ -83,7 +89,7 @@ export function LanguageProvider({ children }: { children: ReactNode }): ReactNo
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
       if (event.key !== LANGUAGE_STORAGE_KEY) return;
-      setPreferenceState(isLanguagePreference(event.newValue) ? event.newValue : "system");
+      setPreferenceState(isLanguagePreference(event.newValue) ? event.newValue : DEFAULT_LANGUAGE_PREFERENCE);
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -97,7 +103,7 @@ export function LanguageProvider({ children }: { children: ReactNode }): ReactNo
     return () => window.removeEventListener("languagechange", onLanguageChange);
   }, [preference]);
 
-  const messages = locale === "zh-CN" ? chineseMessages : englishMessages;
+  const messages = messagesFor(locale);
   const text = useCallback((value: DisplayText) => formatText(value, locale), [locale]);
   const value = useMemo<I18nContextValue>(
     () => ({ preference, locale, setPreference, messages, text }),
@@ -129,8 +135,11 @@ export function LanguagePicker({ label }: { label?: string } = {}): ReactNode {
         }}
       >
         <option value="system">{messages.language.system}</option>
-        <option value="en">{messages.language.en}</option>
-        <option value="zh-CN">{messages.language.zh}</option>
+        {LOCALES.map((locale) => (
+          <option key={locale} value={locale}>
+            {messages.language[LOCALE_CONFIG[locale].languageLabelKey]}
+          </option>
+        ))}
       </select>
     </label>
   );

@@ -35,22 +35,22 @@ import type { AppConfigDTO, ApprovalEvaluatorConfigDTO, ChatSelectionDTO } from 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const MOCK_EMPLOYEES = [
-  { name: "Alice", role: "产品经理", instructions: "负责需求澄清与验收标准。" },
-  { name: "Bob", role: "开发工程师", instructions: "负责实现方案与代码开发。" },
-  { name: "Carol", role: "测试工程师", instructions: "负责测试设计与问题复现。" },
+  { name: "Alice", role: "Product manager", instructions: "Clarifies requirements and acceptance criteria." },
+  { name: "Bob", role: "Developer", instructions: "Designs implementation approaches and writes code." },
+  { name: "Carol", role: "Test engineer", instructions: "Designs tests and reproduces issues." },
 ] as const;
 
 const HELP = [
-  "emit mock · 用真实模型凭据启动隔离测试工作区",
+  "emit mock · start an isolated test workspace using real model credentials",
   "",
-  "用法: node --import tsx scripts/mock.ts [选项]",
-  "  --source-data-dir <目录>  读取模型与凭据的真实数据目录（默认 $EMIT_DATA_DIR 或 ~/.emit）",
-  "  --host <地址>             监听地址（默认 $EMIT_HOST 或 127.0.0.1）",
-  "  --port <端口>             监听端口（默认 $EMIT_PORT 或 0，自动分配）",
-  "  --help, -h                显示本说明；不创建目录、不读取源工作区",
+  "Usage: node --import tsx scripts/mock.ts [options]",
+  "  --source-data-dir <dir>  Read model and credential settings from the real data directory (default $EMIT_DATA_DIR or ~/.emit)",
+  "  --host <address>         Listen address (default $EMIT_HOST or 127.0.0.1)",
+  "  --port <port>            Listen port (default $EMIT_PORT or 0, assigned automatically)",
+  "  --help, -h               Show this help; does not create directories or read the source workspace",
   "",
-  "每次运行都新建私有临时工作区，启动前输出其路径，退出时删除。",
-  "发送消息会调用真实模型并可能产生费用。",
+  "Each run creates a new private temporary workspace, prints its path before startup, and removes it on exit.",
+  "Sending messages calls real models and may incur costs.",
   "",
 ].join("\n");
 
@@ -66,7 +66,7 @@ type SourceProviderIds = { executionProviderId: string; approvalProviderId: stri
 /** Initialization was stopped by a signal; `signalName` picks the exit code. */
 class CancelledError extends Error {
   constructor(readonly signalName: "SIGINT" | "SIGTERM") {
-    super(`已取消（收到 ${signalName}）`);
+    super(`Cancelled (received ${signalName})`);
     this.name = "CancelledError";
   }
 }
@@ -107,9 +107,9 @@ function parseArgs(argv: readonly string[]): CliOptions | "help" {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--help" || arg === "-h") return "help";
-    if (arg !== "--source-data-dir" && arg !== "--host" && arg !== "--port") fail(`未知选项: ${arg}`);
+    if (arg !== "--source-data-dir" && arg !== "--host" && arg !== "--port") fail(`Unknown option: ${arg}`);
     const next = argv[index + 1];
-    if (next === undefined) fail(`缺少参数值: ${arg}`);
+    if (next === undefined) fail(`Missing value for option: ${arg}`);
     if (arg === "--source-data-dir") sourceDataDir = next;
     else if (arg === "--host") host = next;
     else port = Number(next);
@@ -137,7 +137,7 @@ async function snapshotDatabase(sourcePath: string, targetPath: string, signal: 
     source = new DatabaseSync(sourcePath, { readOnly: true });
   } catch (error) {
     throw new Error(
-      `无法以只读方式打开源数据库 ${sourcePath}: ${error instanceof Error ? error.message : String(error)}`,
+      `Unable to open source database read-only ${sourcePath}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
   try {
@@ -153,14 +153,14 @@ async function snapshotDatabase(sourcePath: string, targetPath: string, signal: 
 function requireSourceApp(app: AppConfigDTO, sourceDataDir: string): SourceSelection {
   if (!app.onboarded) {
     throw new Error(
-      `源数据目录 ${sourceDataDir} 尚未完成初始化（未 onboarding）：请先在该工作区完成设置（例如 make dev）后重试。`,
+      `Source data directory ${sourceDataDir} has not been initialized (not onboarded): finish setup in that workspace (for example, run make dev) and try again.`,
     );
   }
   if (app.defaultExecutionModel === null) {
-    throw new Error(`源数据目录 ${sourceDataDir} 缺少默认执行模型：请在真实工作区设置后重试。`);
+    throw new Error(`Source data directory ${sourceDataDir} is missing a default execution model: configure it in the real workspace and try again.`);
   }
   if (app.approval === null) {
-    throw new Error(`源数据目录 ${sourceDataDir} 缺少审批模型：请在真实工作区设置后重试。`);
+    throw new Error(`Source data directory ${sourceDataDir} is missing an approval model: configure it in the real workspace and try again.`);
   }
   return { app, executionModel: app.defaultExecutionModel, approval: app.approval };
 }
@@ -184,9 +184,9 @@ function assertCopyableCredentials(
   for (const providerId of new Set(Object.values(providerIdsOf(source)))) {
     if (credentials.auth[providerId]?.type === "oauth") {
       throw new Error(
-        `源数据目录 ${sourceDataDir} 的 provider ${providerId} 使用保存的 OAuth 凭据；` +
-          "mock 工作区不复制 OAuth 凭据（复制 refresh token 可能使真实登录失效）。" +
-          "请在真实工作区改用已配置 API key 的 provider，或在环境中导出该 provider 的凭据后重试。",
+        `Provider ${providerId} in source data directory ${sourceDataDir} uses saved OAuth credentials; ` +
+          "the mock workspace does not copy OAuth credentials (copying a refresh token could invalidate the real login). " +
+          "In the real workspace, switch to a provider with a configured API key, or export the provider's credentials in the environment and try again.",
       );
     }
   }
@@ -202,7 +202,7 @@ function stripOAuthCredentials(credentials: CredentialsFile): CredentialsFile {
 
 function employeeNamed(employees: ReadonlyMap<string, EmployeeRecord>, name: string): EmployeeRecord {
   const employee = employees.get(name);
-  if (employee === undefined) throw new Error(`内部错误：员工 ${name} 未创建`);
+  if (employee === undefined) throw new Error(`Internal error: employee ${name} was not created`);
   return employee;
 }
 
@@ -227,7 +227,7 @@ async function seedMockWorkspace(
   };
   const selectionProblem = runtime.catalog.chatSelectionProblem(execution);
   if (selectionProblem !== undefined) {
-    throw new Error(`源执行模型在新工作区不可用：${selectionProblem.text}（来自 ${sourceDataDir}）`);
+    throw new Error(`Source execution model is unavailable in the new workspace: ${selectionProblem.text} (from ${sourceDataDir})`);
   }
   const approval = {
     kind: source.approval.kind,
@@ -237,15 +237,15 @@ async function seedMockWorkspace(
   };
   const approvalProblem = runtime.catalog.approvalProblem(approval);
   if (approvalProblem !== undefined) {
-    throw new Error(`源审批配置在新工作区不可用：${approvalProblem.text}（来自 ${sourceDataDir}）`);
+    throw new Error(`Source approval configuration is unavailable in the new workspace: ${approvalProblem.text} (from ${sourceDataDir})`);
   }
   const statuses = await runtime.catalog.providerStatuses();
   for (const providerId of new Set([execution.providerId, approval.providerId])) {
     const status = statuses.find((candidate) => candidate.providerId === providerId);
     if (status === undefined || !status.configured) {
       throw new Error(
-        `provider ${providerId} 在新工作区没有可用认证：请在真实工作区完成登录，` +
-          `或导出该 provider 需要的环境变量后重试。（来自 ${sourceDataDir}）`,
+        `Provider ${providerId} is not authenticated in the new workspace: sign in in the real workspace, ` +
+          `or export the provider's required environment variables and try again. (from ${sourceDataDir})`,
       );
     }
   }
@@ -276,8 +276,8 @@ async function seedMockWorkspace(
   }
 
   const workContext = await createWorkContext(runtime, {
-    name: "Mock 项目",
-    goal: "用于人工验证员工与群聊协作",
+    name: "Mock project",
+    goal: "Validate collaboration among employees in group chat",
     directories: { paths: [workDir], defaultPath: workDir },
   });
   const alice = employeeNamed(employees, "Alice");
@@ -285,15 +285,15 @@ async function seedMockWorkspace(
   const carol = employeeNamed(employees, "Carol");
   await createRoom(runtime, {
     kind: "channel",
-    name: "团队大厅",
-    topic: "团队协作测试",
+    name: "Team lobby",
+    topic: "Team collaboration test",
     workContextId: workContext.id,
     memberIds: [alice.id, bob.id, carol.id],
   });
   await createRoom(runtime, {
     kind: "channel",
-    name: "研发讨论",
-    topic: "研发与测试协作",
+    name: "Development discussion",
+    topic: "Development and testing collaboration",
     workContextId: workContext.id,
     memberIds: [bob.id, carol.id],
   });
@@ -310,7 +310,7 @@ async function prepareMockWorkspace(sourceInput: string, signal: AbortSignal): P
   const sourceDbPath = join(sourceDataDir, "emit.sqlite");
   if (!existsSync(sourceDbPath)) {
     throw new Error(
-      `源数据目录 ${sourceDataDir} 中没有 emit.sqlite：请先在该工作区完成初始化（例如 make dev）后重试。`,
+      `Source data directory ${sourceDataDir} does not contain emit.sqlite: finish setup in that workspace (for example, run make dev) and try again.`,
     );
   }
 
@@ -363,13 +363,13 @@ async function prepareMockWorkspace(sourceInput: string, signal: AbortSignal): P
 function printReady(workspace: MockWorkspace, options: CliOptions): void {
   process.stdout.write(
     [
-      `源数据目录：${options.sourceDataDir}`,
-      `隔离目录：${workspace.rootDir}`,
-      `数据目录：${workspace.dataDir}`,
-      `工作目录：${workspace.workDir}`,
-      "员工：Alice（产品经理）、Bob（开发工程师）、Carol（测试工程师）",
-      "群聊：团队大厅（Alice/Bob/Carol）、研发讨论（Bob/Carol）",
-      "提示：发送消息将调用真实模型并可能产生费用；按 Ctrl-C 退出并清理本次临时目录。",
+      `Source data directory: ${options.sourceDataDir}`,
+      `Isolated directory: ${workspace.rootDir}`,
+      `Data directory: ${workspace.dataDir}`,
+      `Work directory: ${workspace.workDir}`,
+      "Employees: Alice (Product manager), Bob (Developer), Carol (Test engineer)",
+      "Channels: Team lobby (Alice/Bob/Carol), Development discussion (Bob/Carol)",
+      "Note: Sending messages calls real models and may incur costs; press Ctrl-C to exit and remove this temporary directory.",
       "",
     ].join("\n"),
   );
@@ -404,7 +404,7 @@ async function main(): Promise<void> {
     workspace = await prepareMockWorkspace(options.sourceDataDir, abort.signal);
   } catch (error) {
     if (error instanceof CancelledError) {
-      process.stderr.write(`${error.message}；本次临时目录已清理。\n`);
+      process.stderr.write(`${error.message}; the temporary directory for this run has been removed.\n`);
       exitAfterFlush(error.signalName === "SIGTERM" ? 143 : 130);
       return;
     }
@@ -416,7 +416,7 @@ async function main(): Promise<void> {
     // A signal raced in after initialization finished but before the service
     // started; never spawn, just clean up.
     rmSync(workspace.rootDir, { recursive: true, force: true });
-    process.stderr.write("启动前收到退出信号；本次临时目录已清理。\n");
+    process.stderr.write("Received an exit signal before startup; the temporary directory for this run has been removed.\n");
     exitAfterFlush(2);
     return;
   }
@@ -436,7 +436,7 @@ async function main(): Promise<void> {
     else appExit.resolve(code ?? 1);
   });
   const exitCode = await appExit.promise.catch((error: unknown) => {
-    process.stderr.write(`无法启动应用：${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`Unable to start app: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   });
 
@@ -447,6 +447,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  process.stderr.write(`mock 启动失败: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
+  process.stderr.write(`mock startup failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
   exitAfterFlush(1);
 });

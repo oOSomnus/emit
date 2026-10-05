@@ -1,5 +1,5 @@
 {
-  "chat": "连接检查。只回复 OK。",
+  "chat": "Connection check. Reply only with OK.",
   "classifier": {
     "state": { "probe": "emit connection check" },
     "question": {

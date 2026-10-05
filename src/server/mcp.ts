@@ -293,7 +293,7 @@ export class McpManager {
         { runtime, employee, toolName: mappedName },
         trustedReadOnly,
         async (args, api, context) => {
-        api.output(`调用 MCP ${serverId}/${tool.name}\n`);
+        api.output(`Calling MCP ${serverId}/${tool.name}\n`);
         try {
           const result = await client.callTool(tool.name, args as Record<string, unknown>, {
             ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),

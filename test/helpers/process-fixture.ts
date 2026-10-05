@@ -221,7 +221,7 @@ async function waitForReady(instance: RunningProcess, timeoutMs: number): Promis
     reject(error);
   };
   const scan = (): void => {
-    const match = /Emit 已启动：([^\s]+)/.exec(instance.output);
+    const match = /Emit started: (\S+)/.exec(instance.output);
     if (match?.[1] === undefined) return;
     try {
       succeed(validateReadyUrl(match[1]));

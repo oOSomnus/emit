@@ -13,9 +13,9 @@ export type ModelKind = "chat" | "classifier";
 /**
  * One application message as it crosses the wire.
  *
- * `message` is always the original text (the Chinese string the server has
- * always produced, or a raw native reason); `messageLocalized`, when present,
- * is the pair the browser renders in its own language. The two are separate so
+ * `message` is always the canonical text (the English string the server
+ * produces, or a raw native reason); `messageLocalized`, when present, is the
+ * pair the browser renders in its own language. The two are separate so
  * persisted text and model context never depend on the browser locale.
  */
 export type ApiErrorBody = { message: string; messageLocalized?: LocalizedText };
@@ -255,7 +255,7 @@ export type MessageAuthorDTO = {
   type: "user" | "employee" | "system";
   id: string;
   name: string;
-  /** Present for application-generated display names ("你"/"系统"). */
+  /** Present for application-generated display names ("You"/"你", "System"/"系统"). */
   nameLocalized?: LocalizedText;
   address?: string;
 };

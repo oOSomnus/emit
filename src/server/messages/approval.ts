@@ -12,8 +12,8 @@
  */
 
 import type { RiskLevel, ReviewOutcome, UserAuthorizationLevel } from "../approval/contracts.ts";
-import type { LocalizedText } from "../../shared/i18n.ts";
-import { appText, type AppText } from "../app-text.ts";
+import { formatText, type LocalizedText } from "../../shared/i18n.ts";
+import { appText, appTextIn, type AppText } from "../app-text.ts";
 
 export const approvalMessages = {
   // ------------------------------------------------------------- actor labels
@@ -40,13 +40,13 @@ export const approvalMessages = {
   // -------------------------------------------------------------- blocked cases
   blockedRejected: (id: string, detail: string, detailLocalized?: LocalizedText): AppText =>
     appText({
-      en: `The tool call was automatically rejected (approval ${id})${detail.length > 0 ? `: ${detailLocalized?.en ?? detail}` : ""}`,
-      "zh-CN": `工具调用被自动拒绝（审批 ${id}）${detail.length > 0 ? `：${detail}` : ""}`,
+      en: `The tool call was automatically rejected (approval ${id})${detail.length > 0 ? `: ${formatText(detailLocalized ?? detail, "en")}` : ""}`,
+      "zh-CN": `工具调用被自动拒绝（审批 ${id}）${detail.length > 0 ? `：${formatText(detailLocalized ?? detail, "zh-CN")}` : ""}`,
     }),
   blockedAutomatic: (id: string, detail: string, detailLocalized?: LocalizedText): AppText =>
     appText({
-      en: `Automatic review blocked the tool call (approval ${id})${detail.length > 0 ? `: ${detailLocalized?.en ?? detail}` : ""}`,
-      "zh-CN": `自动审查阻止了工具调用（审批 ${id}）${detail.length > 0 ? `：${detail}` : ""}`,
+      en: `Automatic review blocked the tool call (approval ${id})${detail.length > 0 ? `: ${formatText(detailLocalized ?? detail, "en")}` : ""}`,
+      "zh-CN": `自动审查阻止了工具调用（审批 ${id}）${detail.length > 0 ? `：${formatText(detailLocalized ?? detail, "zh-CN")}` : ""}`,
     }),
   blockedCancelled: (id: string): AppText =>
     appText({
@@ -94,35 +94,35 @@ export const approvalMessages = {
   ): AppText =>
     reason === "configuration"
       ? appText({
-          en: `Automatic review is unavailable; configure an approval judge model in Settings: ${detailLocalized?.en ?? detail}`,
-          "zh-CN": `自动审查不可用，请在设置中配置审批判断模型：${detail}`,
+          en: `Automatic review is unavailable; configure an approval judge model in Settings: ${formatText(detailLocalized ?? detail, "en")}`,
+          "zh-CN": `自动审查不可用，请在设置中配置审批判断模型：${formatText(detailLocalized ?? detail, "zh-CN")}`,
         })
       : reason === "provider"
         ? appText({
-            en: `Automatic review is unavailable (model request failed); this call was blocked: ${detailLocalized?.en ?? detail}`,
-            "zh-CN": `自动审查不可用（模型请求失败），本次调用已阻止：${detail}`,
+            en: `Automatic review is unavailable (model request failed); this call was blocked: ${formatText(detailLocalized ?? detail, "en")}`,
+            "zh-CN": `自动审查不可用（模型请求失败），本次调用已阻止：${formatText(detailLocalized ?? detail, "zh-CN")}`,
           })
         : appText({
-            en: `Automatic review is unavailable (invalid model response); this call was blocked: ${detailLocalized?.en ?? detail}`,
-            "zh-CN": `自动审查不可用（模型响应无效），本次调用已阻止：${detail}`,
+            en: `Automatic review is unavailable (invalid model response); this call was blocked: ${formatText(detailLocalized ?? detail, "en")}`,
+            "zh-CN": `自动审查不可用（模型响应无效），本次调用已阻止：${formatText(detailLocalized ?? detail, "zh-CN")}`,
           }),
   /** Policy evidence for a blocked evaluation; `reason` is the outcome reason enum. */
   unavailableEvidence: (reason: string, detail: string, detailLocalized?: LocalizedText): AppText =>
     appText({
-      en: `Automatic review unavailable (${reason}): ${detailLocalized?.en ?? detail}`,
-      "zh-CN": `自动审查不可用（${reason}）：${detail}`,
+      en: `Automatic review unavailable (${reason}): ${formatText(detailLocalized ?? detail, "en")}`,
+      "zh-CN": `自动审查不可用（${reason}）：${formatText(detailLocalized ?? detail, "zh-CN")}`,
     }),
   /** Verdict wrapper for an unavailable evaluation; the reason is embedded raw. */
   unavailableVerdict: (detail: string, detailLocalized?: LocalizedText): AppText =>
     appText({
-      en: `Automatic review is unavailable: ${detailLocalized?.en ?? detail}`,
-      "zh-CN": `自动审查不可用：${detail}`,
+      en: `Automatic review is unavailable: ${formatText(detailLocalized ?? detail, "en")}`,
+      "zh-CN": `自动审查不可用：${formatText(detailLocalized ?? detail, "zh-CN")}`,
     }),
   /** Timeline sentence for a blocked evaluation; `reason` is a composed AppText. */
   blockedTimeline: (reason: AppText): AppText =>
     appText({
-      en: `Automatic review blocked: ${reason.localized?.en ?? reason.text}`,
-      "zh-CN": `自动审查受阻：${reason.text}`,
+      en: `Automatic review blocked: ${appTextIn(reason, "en")}`,
+      "zh-CN": `自动审查受阻：${appTextIn(reason, "zh-CN")}`,
     }),
 
   // ------------------------------------------------------- automatic verdicts
@@ -141,23 +141,23 @@ export const approvalMessages = {
   /** `prefix reason；rest reason` with each part localized independently. */
   combinedReason: (prefix: AppText, rest: AppText): AppText =>
     appText({
-      en: `${prefix.localized?.en ?? prefix.text}; ${rest.localized?.en ?? rest.text}`,
-      "zh-CN": `${prefix.text}；${rest.text}`,
+      en: `${appTextIn(prefix, "en")}; ${appTextIn(rest, "en")}`,
+      "zh-CN": `${appTextIn(prefix, "zh-CN")}；${appTextIn(rest, "zh-CN")}`,
     }),
   autoApproved: (reason: AppText): AppText =>
     appText({
-      en: `Automatically approved: ${reason.localized?.en ?? reason.text}`,
-      "zh-CN": `自动批准：${reason.text}`,
+      en: `Automatically approved: ${appTextIn(reason, "en")}`,
+      "zh-CN": `自动批准：${appTextIn(reason, "zh-CN")}`,
     }),
   humanHandoff: (reason: AppText): AppText =>
     appText({
-      en: `High risk escalated for human review: ${reason.localized?.en ?? reason.text}`,
-      "zh-CN": `高风险转人工：${reason.text}`,
+      en: `High risk escalated for human review: ${appTextIn(reason, "en")}`,
+      "zh-CN": `高风险转人工：${appTextIn(reason, "zh-CN")}`,
     }),
   autoRejected: (reason: AppText): AppText =>
     appText({
-      en: `Automatically rejected: ${reason.localized?.en ?? reason.text}`,
-      "zh-CN": `自动拒绝：${reason.text}`,
+      en: `Automatically rejected: ${appTextIn(reason, "en")}`,
+      "zh-CN": `自动拒绝：${appTextIn(reason, "zh-CN")}`,
     }),
 
   // --------------------------------------------------------- evaluator results

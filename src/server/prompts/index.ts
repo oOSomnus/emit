@@ -38,7 +38,7 @@ for (const file of FILES) fragmentFiles[file] = resourceFragments(file);
 
 function fragment(file: string, id: string): string {
   const found = fragmentFiles[file]?.get(id);
-  if (found === undefined) throw new Error(`提示词资源 ${file} 缺少片段 ${id}`);
+  if (found === undefined) throw new Error(`Prompt resource ${file} is missing fragment ${id}`);
   return found;
 }
 
@@ -82,7 +82,7 @@ export type EmployeeContextInput = {
     | { kind: "missing-room" }
     | {
         kind: "paths";
-        roomLabel: "频道" | "私信" | "邮件会话";
+        roomLabel: "channel" | "direct message" | "mail thread";
         roomName: string;
         directoryVersion: number;
         paths: readonly string[];
@@ -187,7 +187,7 @@ export function renderEmployeeContext(input: EmployeeContextInput): string {
       parts.push(fragment("context.md", "directory-empty"));
     } else {
       parts.push(
-        filled("context.md", "directory-paths", { paths: input.directory.paths.join("、") }),
+        filled("context.md", "directory-paths", { paths: input.directory.paths.join(", ") }),
         filled("context.md", "directory-default", { defaultPath: input.directory.defaultPath }),
       );
     }
@@ -243,7 +243,7 @@ export function renderWorkInput(
   if (kind === "mail") {
     const mail = mailSource?.message.mail;
     if (mailSource === undefined || mail === null || mail === undefined) {
-      throw new Error("找不到本次邮件原文，无法生成回复任务");
+      throw new Error("The original email message could not be found; a reply task cannot be generated");
     }
     const source = mailSource.message;
     parts.push(
@@ -294,13 +294,13 @@ export type MailContinuationInput = {
 
 export function renderMailContinuation(input: MailContinuationInput): string {
   const names = (addresses: readonly MailAddress[]): string =>
-    addresses.map((entry) => `${entry.name} <${entry.address}>`).join("、");
+    addresses.map((entry) => `${entry.name} <${entry.address}>`).join(", ");
   return filled("continuations.md", "mail-continuation", {
     subject: input.subject,
     fromName: input.from.name,
     fromAddress: input.from.address,
     to: names(input.to),
-    cc: input.cc.length > 0 ? names(input.cc) : "(无)",
+    cc: input.cc.length > 0 ? names(input.cc) : "(none)",
     inReplyTo: input.inReplyTo,
     entryId: input.entryId,
     outcome: fragment("continuations.md", `mail-continuation-outcome-${input.outcome}`),
@@ -382,7 +382,7 @@ const toolResources = resourceJson<Record<string, ToolTextResource>>("tools.json
 for (const name of BUILTIN_TOOL_NAMES) {
   const entry = toolResources[name];
   if (entry === undefined || typeof entry.description !== "string") {
-    throw new Error(`提示词资源 tools.json 缺少工具 ${name} 的说明`);
+    throw new Error(`Prompt resource tools.json is missing a description for tool ${name}`);
   }
 }
 
@@ -439,7 +439,7 @@ const classifierResource = resourceJson<{
 }>("classifier.json");
 for (const key of ["outcome", "risk", "read_only", "authorized"] as const) {
   if (classifierResource.questions[key]?.instructions === undefined) {
-    throw new Error(`提示词资源 classifier.json 缺少 ${key} 问题`);
+    throw new Error(`Prompt resource classifier.json is missing question ${key}`);
   }
 }
 

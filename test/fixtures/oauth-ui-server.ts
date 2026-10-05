@@ -42,7 +42,7 @@ async function main() {
     await installAllExtensions(http.resume);
     http.runtime.resume();
     await reconcileWorks(http.resume);
-    process.stdout.write(`Emit 已启动：${http.url}\n数据目录：${http.runtime.dataDir}\n`);
+    process.stdout.write(`Emit started: ${http.url}\nData directory: ${http.runtime.dataDir}\n`);
     const instance = http;
     let closing = false;
     const shutdown = async () => {

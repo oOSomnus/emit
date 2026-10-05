@@ -37,6 +37,7 @@ import {
 import { deleteSkill, importSkillDirectory, listSkills, toSkillDTO, type SkillImportResult } from "./skills.ts";
 import { toMcpServerDTO } from "./mcp.ts";
 import { ProviderAuthError } from "./provider-auth.ts";
+import { CANONICAL_LOCALE } from "../shared/i18n.ts";
 import { appMessages, fromError, type AppText } from "./messages.ts";
 import { apiMessages } from "./messages/api.ts";
 import { approvalMessages } from "./messages/approval.ts";
@@ -470,7 +471,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
     const author = {
       type: "user" as const,
       id: "user",
-      name: appRecord.userName.length > 0 ? appRecord.userName : "你",
+      name: appRecord.userName.length > 0 ? appRecord.userName : appMessages.rooms.userFallbackAuthorName[CANONICAL_LOCALE],
       address: appRecord.userAddress,
     };
 
@@ -566,7 +567,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
           author: {
             type: "user",
             id: "user",
-            name: appRecord.userName.length > 0 ? appRecord.userName : "你",
+            name: appRecord.userName.length > 0 ? appRecord.userName : appMessages.rooms.userFallbackAuthorName[CANONICAL_LOCALE],
             address: appRecord.userAddress,
           },
           body: draft.body,
@@ -634,7 +635,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
     const author = {
       type: "user" as const,
       id: "user",
-      name: appRecord.userName.length > 0 ? appRecord.userName : "你",
+      name: appRecord.userName.length > 0 ? appRecord.userName : appMessages.rooms.userFallbackAuthorName[CANONICAL_LOCALE],
       address: appRecord.userAddress,
     };
     const subject = typeof body.subject === "string" ? body.subject.trim() : "";
@@ -937,7 +938,7 @@ async function resolveMailAddresses(
     const addresses: MailAddress[] = [];
     for (const id of ids) {
       if (id === "user") {
-        addresses.push({ name: app.userName.length > 0 ? app.userName : "你", address: app.userAddress });
+        addresses.push({ name: app.userName.length > 0 ? app.userName : appMessages.rooms.userFallbackAuthorName[CANONICAL_LOCALE], address: app.userAddress });
         continue;
       }
       const employee = employees.find((entry) => entry.id === id);

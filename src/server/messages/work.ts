@@ -8,7 +8,7 @@
  */
 
 import type { LocalizedText } from "../../shared/i18n.ts";
-import { appText, type AppText } from "../app-text.ts";
+import { appText, appTextIn, type AppText } from "../app-text.ts";
 
 /**
  * An SSE notice event: `text` stays the original string the event has always
@@ -30,8 +30,8 @@ export const workMessages = {
     appText({ en: `Employee ${name} is disabled`, "zh-CN": `员工 ${name} 已停用` }),
   modelUnavailable: (name: string, problem: AppText): AppText =>
     appText({
-      en: `Employee ${name}'s model is unavailable: ${problem.localized?.en ?? problem.text}`,
-      "zh-CN": `员工 ${name} 的模型不可用：${problem.text}`,
+      en: `Employee ${name}'s model is unavailable: ${appTextIn(problem, "en")}`,
+      "zh-CN": `员工 ${name} 的模型不可用：${appTextIn(problem, "zh-CN")}`,
     }),
   depthOverLimit: (max: number): AppText =>
     appText({ en: `Delegation depth exceeds the limit (${max} levels)`, "zh-CN": `交办层数超过上限（${max} 层）` }),
@@ -87,8 +87,8 @@ export const workMessages = {
     appText({ en: `The reply never reached the original task (${childId})`, "zh-CN": `回信没有进入原任务（${childId}）` }),
   awaitUnreachable: (broken: AppText): AppText =>
     appText({
-      en: `The awaited reply cannot resume from the original task: ${broken.localized?.en ?? broken.text}`,
-      "zh-CN": `等待的回信无法续接原任务：${broken.text}`,
+      en: `The awaited reply cannot resume from the original task: ${appTextIn(broken, "en")}`,
+      "zh-CN": `等待的回信无法续接原任务：${appTextIn(broken, "zh-CN")}`,
     }),
 
   /** Stops. */
@@ -102,8 +102,8 @@ export const workMessages = {
   /** Room notices and SSE notices. */
   failNotice: (name: string, reason: AppText): AppText =>
     appText({
-      en: `${name.length > 0 ? name : "The employee"}'s work did not complete: ${reason.localized?.en ?? reason.text}. Please send it again.`,
-      "zh-CN": `${name.length > 0 ? name : "员工"} 的这次工作未能完成：${reason.text}。请重新发送。`,
+      en: `${name.length > 0 ? name : "The employee"}'s work did not complete: ${appTextIn(reason, "en")}. Please send it again.`,
+      "zh-CN": `${name.length > 0 ? name : "员工"} 的这次工作未能完成：${appTextIn(reason, "zh-CN")}。请重新发送。`,
     }),
   turnLimit: (max: number): AppText =>
     appText({

@@ -52,6 +52,7 @@ import {
 } from "./work.ts";
 import { toWorkDTO } from "./dto.ts";
 import { MessageAddressingError, resolveMessageAddressing, type AddressableMember } from "../shared/message-addressing.ts";
+import { CANONICAL_LOCALE } from "../shared/i18n.ts";
 import { appMessages } from "./messages.ts";
 import { addressingErrorText } from "./messages/addressing.ts";
 import {
@@ -390,21 +391,21 @@ export function buildMessageTools(resume: Resume, employee: EmployeeRecord): Too
     execute: async (args, api, context) => {
       const hasTo = typeof args.to === "string" && args.to.trim().length > 0;
       const hasRoom = typeof args.roomId === "string" && args.roomId.trim().length > 0;
-      if (hasTo === hasRoom) return toolError("请且仅请提供 to 或 roomId 之一");
+      if (hasTo === hasRoom) return toolError("Provide exactly one of to or roomId");
       const active = await activeContext(api.conversationId, runtime);
       if (typeof active === "string") return toolError(active);
       const { work, workContext } = active;
 
       if (hasTo) {
         const target = await resolveEmployee(await listEmployees(runtime), args.to!.trim());
-        if (target === undefined) return toolError(`找不到员工 ${args.to}`);
-        if (target.id === employee.id) return toolError("不能给自己发消息");
-        if (!target.enabled) return toolError(`员工 ${target.name} 已停用`);
+        if (target === undefined) return toolError(`Employee not found: ${args.to}`);
+        if (target.id === employee.id) return toolError("You cannot message yourself");
+        if (!target.enabled) return toolError(`Employee ${target.name} is disabled`);
         const { room } = await ensureEmployeeDm(runtime, {
           workContextId: workContext.id,
           participantIds: [employee.id, target.id],
           name: `${employee.name} ↔ ${target.name}`,
-          topic: `私信：${target.name}`,
+          topic: `Direct message: ${target.name}`,
         });
         try {
           const result = await sendQueuedMessage(resume, {
@@ -424,8 +425,8 @@ export function buildMessageTools(resume: Resume, employee: EmployeeRecord): Too
 
       const roomId = args.roomId!.trim();
       const room = await findRoom(runtime, roomId);
-      if (room === undefined || room.kind !== "channel") return toolError(`找不到频道 ${roomId}`);
-      if (room.workContextId !== workContext.id) return toolError("只能向同一工作下的频道发消息");
+      if (room === undefined || room.kind !== "channel") return toolError(`Channel not found: ${roomId}`);
+      if (room.workContextId !== workContext.id) return toolError("Messages can only be sent to a channel of the same work");
       try {
         const result = await sendQueuedMessage(resume, {
           roomId: room.id,
@@ -461,7 +462,7 @@ export function buildMessageTools(resume: Resume, employee: EmployeeRecord): Too
         return toolError(appMessages.workContexts.inviteChannelOnly.text);
       }
       const ids = [...new Set(args.employeeIds.map((id) => id.trim()).filter((id) => id.length > 0))];
-      if (ids.length === 0) return toolError("请提供要邀请的员工 id");
+      if (ids.length === 0) return toolError("Provide the employee ids to invite");
       if (ids.length > 20) return toolError(appMessages.workContexts.inviteLimit(20).text);
       const employees = await listEmployees(runtime);
       for (const id of ids) {
@@ -477,7 +478,7 @@ export function buildMessageTools(resume: Resume, employee: EmployeeRecord): Too
       const result = await inviteMembersIn(runtime, room.id, ids, employee.name, toolTaskId);
       return toolText(
         renderToolResult("invite-ok", {
-          names: result.added.map((id) => employees.find((entry) => entry.id === id)?.name ?? id).join("、"),
+          names: result.added.map((id) => employees.find((entry) => entry.id === id)?.name ?? id).join(", "),
           count: result.added.length,
         }),
       );
@@ -495,14 +496,14 @@ export function buildMessageTools(resume: Resume, employee: EmployeeRecord): Too
       const context = active.workContext;
       const items = context.notes
         .map((note, index) =>
-          `${index + 1}. ${note.title} · id=${note.id} · 作者=${note.authorId} · 更新=${new Date(note.updatedAt).toISOString()}`,
+          `${index + 1}. ${note.title} · id=${note.id} · author=${note.authorId} · updated=${new Date(note.updatedAt).toISOString()}`,
         )
         .join("\n");
       return toolText(
         renderToolResult("note-list", {
           version: context.version,
           count: context.notes.length,
-          items: items.length > 0 ? items : "(还没有共享笔记)",
+          items: items.length > 0 ? items : "(no shared notes yet)",
         }),
       );
     },
@@ -597,8 +598,8 @@ export function buildMessageTools(resume: Resume, employee: EmployeeRecord): Too
 /** The tool-visible text of one note. */
 function renderNote(note: WorkNoteRecord): string {
   return [
-    `标题：${note.title}`,
-    `id=${note.id} · 作者=${note.authorId} · 来源会话=${note.sourceRoomId || "(无)"} · 来源消息=${note.sourceEntryId || "(无)"}`,
+    `Title: ${note.title}`,
+    `id=${note.id} · author=${note.authorId} · source conversation=${note.sourceRoomId || "(none)"} · source message=${note.sourceEntryId || "(none)"}`,
     "",
     note.body,
   ].join("\n");
@@ -642,7 +643,7 @@ async function inviteMembersIn(
         tx,
         JSON.parse(JSON.stringify(doc)) as RoomRecord,
         messageData({
-          author: { type: "system", id: "system", name: "系统" },
+          author: { type: "system", id: "system", name: appMessages.rooms.systemAuthorName[CANONICAL_LOCALE] },
           body: sentence.text,
           ...(sentence.localized === undefined ? {} : { bodyLocalized: sentence.localized }),
           notice: true,

@@ -36,7 +36,7 @@ import type {
   MessageDTO,
   RoomDTO,
 } from "../shared/contracts.ts";
-import type { LocalizedText } from "../shared/i18n.ts";
+import { CANONICAL_LOCALE, type DisplayText, type LocalizedText } from "../shared/i18n.ts";
 
 /** One address on a mail envelope. */
 export type MailAddress = { name: string; address: string };
@@ -220,12 +220,18 @@ export function toMessageDTO(
  *
  * Only application-generated labels are localized: a system author is known by
  * its type (never by its stored name), and the user's fallback label is the
- * name the app wrote for an unnamed user. Employees and named users keep
- * their real name untranslated — it is record data, not application text.
+ * name the app wrote for an unnamed user. Older records stored the Chinese
+ * fallback label and newer ones the canonical English label, so both are
+ * recognized. Employees and named users keep their real name untranslated — it
+ * is record data, not application text.
  */
 function authorNameLocalized(data: RoomMessageData): { nameLocalized?: LocalizedText } {
   if (data.authorType === "system") return { nameLocalized: roomMessages.systemAuthorName };
-  if (data.authorType === "user" && data.authorName === roomMessages.userFallbackAuthorName["zh-CN"]) {
+  if (
+    data.authorType === "user" &&
+    (data.authorName === roomMessages.userFallbackAuthorName["zh-CN"] ||
+      data.authorName === roomMessages.userFallbackAuthorName[CANONICAL_LOCALE])
+  ) {
     return { nameLocalized: roomMessages.userFallbackAuthorName };
   }
   return {};
@@ -597,7 +603,7 @@ export async function updateRoomMembers(
     requested.push(id);
   }
   const app = await runtime.readSession(AppDoc);
-  const actor = app.userName.length > 0 ? app.userName : roomMessages.userFallbackAuthorName["zh-CN"];
+  const actor: DisplayText = app.userName.length > 0 ? app.userName : roomMessages.userFallbackAuthorName;
   const expected = expectedVersion;
   const committed = await runtime.harness.commit(async (tx) => {
     const doc = await tx.doc(RoomDoc, roomId, { id: roomId });
@@ -631,7 +637,7 @@ export async function updateRoomMembers(
       const sentence = roomMessages.membersRemoved(actor, removed.map((id) => names.get(id) ?? id));
       sentences.push({ text: sentence.text, localized: sentence.localized ?? { en: sentence.text, "zh-CN": sentence.text } });
     }
-    const body = sentences.map((sentence) => sentence.text).join("；");
+    const body = sentences.map((sentence) => sentence.text).join("; ");
     const bodyLocalized: LocalizedText = {
       en: sentences.map((sentence) => sentence.localized.en).join("; "),
       "zh-CN": sentences.map((sentence) => sentence.localized["zh-CN"]).join("；"),
@@ -640,7 +646,7 @@ export async function updateRoomMembers(
       tx,
       plainRoom(doc),
       messageData({
-        author: { type: "system", id: "system", name: "系统" },
+        author: { type: "system", id: "system", name: roomMessages.systemAuthorName[CANONICAL_LOCALE] },
         body,
         bodyLocalized,
         notice: true,

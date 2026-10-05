@@ -213,10 +213,10 @@ function approvalVerdict(input) {
 
 function currentRequest(prompt) {
   const match =
-    /(?:现在请你处理这条消息|现在请你回复这封邮件|另一位员工把这件事交办给你)：\n([\s\S]*)$/.exec(prompt);
+    /(?:Please handle this message now|Please reply to this email now|Another employee delegated this work to you):\n([\s\S]*)$/.exec(prompt);
   const request = match?.[1] ?? prompt;
   // A reply's subject names its thread, not the recipient's requested action.
-  return request.replace(/^主题：[^\n]*\n\n/, "");
+  return request.replace(/^Subject: [^\n]*\n\n/, "");
 }
 
 /**
@@ -302,7 +302,7 @@ function decide(body) {
 
   // A reply that was awaited continues the parent task; the parent only
   // answers for real when the reply text is really in its context.
-  if (text.includes("收到与本任务相关的邮件回信")) {
+  if (text.includes("Received an email reply related to this task")) {
     return {
       content: text.includes("ASK_BACK_RESULT") ? "最终答复：回信结果已使用。" : "最终答复：没有看到回信内容。",
       toolCalls: [],
@@ -316,7 +316,7 @@ function decide(body) {
       const sentBranches = messages.filter(
         (message) =>
           (message.role === "tool" || message.role === "toolResult") &&
-          messageText(message).includes("已发送邮件给"),
+          messageText(message).includes("Email sent to"),
       ).length;
       if (sentBranches === 1) {
         return {
@@ -333,28 +333,28 @@ function decide(body) {
         };
       }
     }
-    if (request.includes("ASK_BACK_START") && text.includes("已发送邮件给")) {
+    if (request.includes("ASK_BACK_START") && text.includes("Email sent to")) {
       // An answer written before the reply was read; the work must hold it.
       return { content: "提前给出的答复（不应投递）。", toolCalls: [] };
     }
     // A refusal is echoed back so the run can show what the model was told.
     if (
-      text.includes("不在该员工的允许工具列表") ||
-      text.includes("超出该会话允许的目录") ||
-      text.includes("没有可用的工作目录") ||
-      text.includes("会话工作目录已变更") ||
-      text.includes("自动审查输入预算") ||
-      text.includes("自动审查不可用")
+      text.includes("is not in this employee's allowed tool list") ||
+      text.includes("is outside the directories allowed for this conversation") ||
+      text.includes("no working directory configured") ||
+      text.includes("The session working directories") ||
+      text.includes("automatic review input budget") ||
+      text.includes("Automatic review is unavailable")
     ) {
       return { content: "被阻止：工作目录或自动审查策略阻止了这次调用。", toolCalls: [] };
     }
-    if (text.includes("会形成循环")) {
+    if (text.includes("it would form a loop")) {
       return { content: "交办被阻止：会形成循环。", toolCalls: [] };
     }
-    if (text.includes("跨员工唤醒上限")) {
+    if (text.includes("cross-employee wake limit")) {
       return { content: "交办被阻止：跨员工唤醒上限。", toolCalls: [] };
     }
-    if (text.includes("交办层数会超过上限")) {
+    if (text.includes("exceed the depth limit")) {
       return { content: "交办被阻止：超过交办层数上限。", toolCalls: [] };
     }
     if (text.includes("SMOKE-SKILL-BODY")) {
@@ -373,7 +373,7 @@ function decide(body) {
     if (request.includes("已读目录标记") || request.includes("SMOKE-CONTEXT-HIGH")) {
       return { content: "已读取本会话目录中的具体事实。", toolCalls: [] };
     }
-    if (text.includes("已把任务交办给") || text.includes("的交办结果")) {
+    if (text.includes("Task delegated to") || text.includes("Delegated result from")) {
       return { content: "链上已完成：我交办的活有结果了。", toolCalls: [] };
     }
     return { content: "已完成：我读了工作目录里的文件并写下了结果。", toolCalls: [] };

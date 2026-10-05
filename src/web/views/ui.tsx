@@ -5,7 +5,7 @@ import { api } from "../api.ts";
 import type { CheckResultDTO, ModelInfoDTO, WorkStatusDTO } from "../../shared/contracts.ts";
 import { errorDisplay, type DisplayText, type Locale } from "../../shared/i18n.ts";
 import { useI18n } from "../i18n.tsx";
-import { chineseMessages, englishMessages } from "../messages.ts";
+import { messagesFor } from "../messages.ts";
 import { generateEmployeeAvatar } from "../avatar.ts";
 import { useTheme } from "../theme.tsx";
 
@@ -177,7 +177,7 @@ export function WorkStatus({ status }: { status: WorkStatusDTO }): ReactNode {
 
 export function timeAgo(value: number, locale: Locale): string {
   if (value <= 0) return "";
-  const messages = locale === "zh-CN" ? chineseMessages : englishMessages;
+  const messages = messagesFor(locale);
   const seconds = Math.max(0, Math.round((Date.now() - value) / 1000));
   if (seconds < 60) return messages.common.secondsAgo(seconds);
   const minutes = Math.round(seconds / 60);

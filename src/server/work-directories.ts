@@ -10,6 +10,7 @@ import {
   WorkDoc,
   type WorkDirectoryScopeRecord,
 } from "./documents.ts";
+import { appMessages } from "./messages.ts";
 import type { EmitRuntime } from "./runtime.ts";
 
 export type WorkDirectoryScopeResult =
@@ -53,13 +54,13 @@ export async function readWorkDirectoryScope(
 ): Promise<WorkDirectoryScopeResult> {
   const binding = await runtime.readConversationDoc(ConversationContextDoc, conversationId);
   if (binding === undefined || binding.workId.length === 0) {
-    return { ok: false, message: "该会话没有绑定工作上下文，已阻止本地目录工具" };
+    return { ok: false, message: appMessages.workContexts.conversationNotBound.text };
   }
   const work = await runtime.readFamily(WorkDoc, binding.workId, { id: binding.workId });
   if (work === undefined || work.conversationId !== conversationId || work.roomId !== binding.roomId) {
-    return { ok: false, message: "该会话没有有效工作记录，已阻止本地目录工具" };
+    return { ok: false, message: "This conversation has no valid work record; local directory tools are blocked" };
   }
-  const missing = "该工作缺少目录配置，请重新创建工作";
+  const missing = appMessages.workContexts.directoriesMissingRecreate.text;
   const candidate: unknown = work.directoryScope;
   if (!validDirectories(candidate) || typeof (candidate as WorkDirectoryScopeRecord).roomId !== "string") {
     return { ok: false, message: missing };
@@ -91,12 +92,12 @@ export async function readWorkDirectoryScope(
       workContext.directories.paths.every((path, index) => path === scope.paths[index])
     )
   ) {
-    return { ok: false, message: "工作目录已变更，请停止并重新发送任务" };
+    return { ok: false, message: appMessages.work.directoryChanged().text };
   }
   if (scope.roomId.length > 0) {
     const room = await runtime.readFamily(RoomDoc, scope.roomId, { id: scope.roomId });
     if (room === undefined || room.workContextId !== workContext.id) {
-      return { ok: false, message: "该工作缺少目录配置，请重新创建工作" };
+      return { ok: false, message: missing };
     }
   }
   for (const path of scope.paths) {
@@ -104,10 +105,10 @@ export async function readWorkDirectoryScope(
       const canonical = await realpath(path);
       const info = await stat(canonical);
       if (canonical !== path || !info.isDirectory()) {
-        return { ok: false, message: "工作目录已变更，请停止并重新发送任务" };
+        return { ok: false, message: appMessages.work.directoryChanged().text };
       }
     } catch {
-      return { ok: false, message: "工作目录已变更，请停止并重新发送任务" };
+      return { ok: false, message: appMessages.work.directoryChanged().text };
     }
   }
   return {
@@ -136,11 +137,11 @@ export async function canonicalTarget(
       return { ok: true, path: suffix.length === 0 ? resolved.value : join(resolved.value, suffix) };
     }
     const parent = dirname(current);
-    if (parent === current) return { ok: false, message: `无法解析路径：${absolute}` };
+    if (parent === current) return { ok: false, message: `Unable to resolve path: ${absolute}` };
     suffix = suffix.length === 0 ? basename(current) : join(basename(current), suffix);
     current = parent;
   }
-  return { ok: false, message: `路径层级过深：${absolute}` };
+  return { ok: false, message: `Path has too many levels: ${absolute}` };
 }
 
 /** Resolve a path against an explicit base and confine it to canonical roots. */
@@ -151,9 +152,12 @@ export async function resolveWithin(
   roots: readonly string[],
   baseDirectory: string,
 ): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
-  if (target.length === 0) return { ok: false, message: "路径不能为空" };
+  if (target.length === 0) return { ok: false, message: "Path cannot be empty" };
   if (!isAbsolute(target) && baseDirectory.length === 0) {
-    return { ok: false, message: `没有默认工作目录，不能解析相对路径：${target}` };
+    return {
+      ok: false,
+      message: `No default working directory is configured; cannot resolve relative path: ${target}`,
+    };
   }
   const absolute = isAbsolute(target) ? target : resolve(baseDirectory, target);
   const canonical = await canonicalTarget(env, context, absolute);
@@ -171,8 +175,8 @@ export async function resolveWithin(
     return {
       ok: false,
       message:
-        `路径 ${canonical.path} 超出该会话允许的目录。\n` +
-        `允许的目录：${allowed.length > 0 ? allowed.join(", ") : "(未配置工作目录)"}`,
+        `Path ${canonical.path} is outside the directories allowed for this conversation.\n` +
+        `Allowed directories: ${allowed.length > 0 ? allowed.join(", ") : "(no working directory configured)"}`,
     };
   }
   return { ok: true, path: canonical.path };
@@ -199,7 +203,7 @@ export async function resolveToolDirectoryScope(
 
   if (toolName === "write_file" || toolName === "edit_file") {
     if (typeof values.path !== "string" || values.path.length === 0) {
-      return { ok: false, message: `${toolName} 缺少有效的 path 参数` };
+      return { ok: false, message: `${toolName} is missing a valid path parameter` };
     }
     const resolved = await resolveWithin(executionEnv, context, values.path, scope.paths, scope.defaultPath);
     if (!resolved.ok) return resolved;
@@ -208,11 +212,14 @@ export async function resolveToolDirectoryScope(
 
   if (toolName === "run_shell") {
     if (values.cwd !== undefined && typeof values.cwd !== "string") {
-      return { ok: false, message: "run_shell 的 cwd 必须是路径字符串" };
+      return { ok: false, message: "run_shell's cwd must be a path string" };
     }
     const requested = typeof values.cwd === "string" && values.cwd.length > 0 ? values.cwd : scope.defaultPath;
     if (requested.length === 0) {
-      return { ok: false, message: "该会话没有默认工作目录，无法执行本地 Shell" };
+      return {
+        ok: false,
+        message: "This conversation has no default working directory, so run_shell cannot be executed",
+      };
     }
     const resolved = await resolveWithin(executionEnv, context, requested, scope.paths, scope.defaultPath);
     if (!resolved.ok) return resolved;

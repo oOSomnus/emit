@@ -124,13 +124,13 @@ type DirectoryEntry = {
 
 /** The current-channel fragment the employee actually received, parsed as data. */
 function contextChannel(request: FixtureRequest): { id: string; name: string } | null {
-  const match = /当前频道（send_message\.roomId 使用 id）：(\{[^\n]*\})/.exec(request.system);
+  const match = /Current channel \(use the id for send_message\.roomId\): (\{[^\n]*\})/.exec(request.system);
   return match === null ? null : (JSON.parse(match[1]!) as { id: string; name: string });
 }
 
 /** The employee-directory fragment the employee actually received, parsed as data. */
 function contextDirectory(request: FixtureRequest): DirectoryEntry[] {
-  const match = /工作区员工目录（共 \d+ 人）：(\[[^\n]*\])/.exec(request.system);
+  const match = /Workspace employee directory \(\d+ people\): (\[[^\n]*\])/.exec(request.system);
   return match === null ? [] : (JSON.parse(match[1]!) as DirectoryEntry[]);
 }
 
@@ -708,7 +708,7 @@ describe("explicit channel addressing and employee collaboration", () => {
     expect(seen.get("roomTwo")?.channel).toBe(roomTwo.id);
     // A delegation inherits its parent's directory but not its channel.
     expect(seen.get("delegation")?.channel).toBeNull();
-    expect(seen.get("delegation")?.system).not.toContain("当前频道（send_message.roomId 使用 id）");
+    expect(seen.get("delegation")?.system).not.toContain("Current channel (use the id for send_message.roomId)");
     expect(seen.get("delegation")?.system).not.toContain(roomOne.id);
     expect(seen.get("delegation")?.directory.every((entry) => !entry.member)).toBe(true);
     expect(seen.get("dm")?.channel).toBeNull();

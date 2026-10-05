@@ -34,19 +34,19 @@ const packageJsonReadExpression = 'readFileSync(getPackageJsonPath(), "utf-8")';
 {
   const [major, minor] = process.versions.node.split(".").map(Number);
   if (major < 22 || (major === 22 && minor < 19)) {
-    throw new Error(`构建需要 Node >= 22.19（node:sea 与 node:sqlite），当前是 ${process.version}`);
+    throw new Error(`Building requires Node >= 22.19 (node:sea and node:sqlite); current version: ${process.version}`);
   }
   for (const specifier of ["node:sea", "node:sqlite"]) {
     try {
       require.resolve(specifier);
     } catch (error) {
-      throw new Error(`当前 Node 缺少 ${specifier}：${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Node is missing ${specifier}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   for (const tool of ["node", "npm"]) {
     const probe = spawnSync(tool, ["--version"], { stdio: "ignore" });
     if (probe.error !== undefined || probe.status !== 0) {
-      throw new Error(`构建需要 ${tool} 在 PATH 中可用`);
+      throw new Error(`Building requires ${tool} to be available on PATH`);
     }
   }
 }
@@ -64,7 +64,7 @@ function resolvePackageRoot(specifier) {
     const manifestPath = path.join(dir, "package.json");
     if (existsSync(manifestPath) && JSON.parse(readFileSync(manifestPath, "utf8")).name === specifier) return dir;
     const parent = path.dirname(dir);
-    if (parent === dir) throw new Error(`无法从已安装入口定位包 ${specifier}`);
+    if (parent === dir) throw new Error(`Unable to locate installed package ${specifier} from its entry point`);
     dir = parent;
   }
 }
@@ -115,7 +115,7 @@ const result = await build({
           const occurrences = source.split(packageJsonReadExpression).length - 1;
           if (occurrences !== 1) {
             throw new Error(
-              `预期 ${piCodingAgentConfigPath} 中恰好出现一次 ${packageJsonReadExpression}，实际 ${occurrences} 次`,
+              `Expected ${packageJsonReadExpression} exactly once in ${piCodingAgentConfigPath}; found ${occurrences}`,
             );
           }
           rewrittenConfigs += 1;
@@ -136,7 +136,7 @@ const result = await build({
 {
   const isBuiltin = (name) => name.startsWith("node:") || builtinModules.includes(name);
   const bundleOutput = result.metafile.outputs[path.relative(repoRoot, bundlePath)];
-  if (bundleOutput === undefined) throw new Error(`metafile 缺少输出 ${bundlePath}`);
+  if (bundleOutput === undefined) throw new Error(`metafile is missing output ${bundlePath}`);
   const missing = bundleOutput.imports.filter((entry) => entry.external && !isBuiltin(entry.path));
   const packaged = missing.filter((entry) => {
     try {
@@ -147,12 +147,12 @@ const result = await build({
     }
   });
   if (packaged.length > 0) {
-    throw new Error(`bundle 未嵌入已安装的依赖：${packaged.map((entry) => `${entry.kind} ${entry.path}`).join(", ")}`);
+    throw new Error(`Bundle does not embed installed dependencies: ${packaged.map((entry) => `${entry.kind} ${entry.path}`).join(", ")}`);
   }
   if (missing.length > 0) {
     process.stdout.write(`optional runtime requires kept as-is: ${missing.map((entry) => entry.path).join(", ")}\n`);
   }
-  if (rewrittenConfigs !== 1) throw new Error(`未能写入 pi-coding-agent 的包元数据（${rewrittenConfigs} 次）`);
+  if (rewrittenConfigs !== 1) throw new Error(`Failed to update pi-coding-agent package metadata (${rewrittenConfigs} occurrence(s))`);
 }
 
 // Prompt resources are read through `getAsset("prompts/<file>")`.
@@ -160,7 +160,7 @@ const promptsDir = path.join(repoRoot, "src", "server", "prompts");
 const promptFiles = readdirSync(promptsDir, { withFileTypes: true })
   .filter((entry) => entry.name.endsWith(".md") || entry.name.endsWith(".json"))
   .map((entry) => {
-    if (!entry.isFile()) throw new Error(`提示词资源 ${entry.name} 不是普通文件`);
+    if (!entry.isFile()) throw new Error(`Prompt resource ${entry.name} is not a regular file`);
     return entry.name;
   })
   .sort();
@@ -171,15 +171,15 @@ function collectWebFiles(dir, prefix = "") {
   const files = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (entry.isSymbolicLink()) throw new Error(`前端资源 ${full} 是符号链接`);
+    if (entry.isSymbolicLink()) throw new Error(`Web asset ${full} is a symbolic link`);
     if (entry.isDirectory()) files.push(...collectWebFiles(full, `${prefix}${entry.name}/`));
     else if (entry.isFile()) files.push(`${prefix}${entry.name}`);
-    else throw new Error(`前端资源 ${full} 不是普通文件`);
+    else throw new Error(`Web asset ${full} is not a regular file`);
   }
   return files;
 }
 if (!existsSync(path.join(webRoot, "index.html"))) {
-  throw new Error(`缺少前端构建产物 ${path.join(webRoot, "index.html")}，请先运行 npm run build`);
+  throw new Error(`Missing web build output ${path.join(webRoot, "index.html")}; run npm run build first`);
 }
 const webFiles = collectWebFiles(webRoot).sort();
 const manifestFile = path.join(seaDir, "web-manifest.json");
@@ -190,7 +190,7 @@ for (const file of promptFiles) assets[`prompts/${file}`] = path.join(promptsDir
 for (const file of webFiles) assets[`web/${file}`] = path.join(webRoot, file);
 assets["web/.manifest.json"] = manifestFile;
 if (new Set(Object.keys(assets)).size !== Object.keys(assets).length) {
-  throw new Error("嵌入资源存在重复 key");
+  throw new Error("Duplicate embedded asset key");
 }
 
 const seaConfigPath = path.join(seaDir, "sea-config.json");
@@ -213,11 +213,11 @@ writeFileSync(
 function run(command, args) {
   const result = spawnSync(command, args, { cwd: repoRoot, stdio: "inherit" });
   if (result.error !== undefined) throw result.error;
-  if (result.status !== 0) throw new Error(`${command} ${args.join(" ")} 退出码 ${String(result.status)}`);
+  if (result.status !== 0) throw new Error(`${command} ${args.join(" ")} exited with code ${String(result.status)}`);
 }
 
 run(process.execPath, ["--experimental-sea-config", seaConfigPath]);
-if (!existsSync(blobPath)) throw new Error(`SEA blob 未生成：${blobPath}`);
+if (!existsSync(blobPath)) throw new Error(`SEA blob was not generated: ${blobPath}`);
 
 copyFileSync(process.execPath, outputPath);
 // The copy is not executable by default; postject modifies bytes only.
@@ -234,4 +234,4 @@ await inject(outputPath, "NODE_SEA_BLOB", readFileSync(blobPath), {
 if (process.platform === "darwin") run("codesign", ["--sign", "-", outputPath]);
 
 const size = lstatSync(outputPath).size;
-process.stdout.write(`已生成 ${path.relative(repoRoot, outputPath)}（${(size / 1024 / 1024).toFixed(1)} MiB，${webFiles.length} 个前端资源）\n`);
+process.stdout.write(`Built ${path.relative(repoRoot, outputPath)} (${(size / 1024 / 1024).toFixed(1)} MiB, ${webFiles.length} web assets)\n`);

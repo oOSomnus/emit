@@ -53,10 +53,10 @@ export function readCredentials(dataDir: string): CredentialsFile {
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
-    throw new Error(`无法读取凭据文件 ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Unable to read credentials file ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`凭据文件 ${path} 不是有效的对象`);
+    throw new Error(`Credentials file ${path} must be an object`);
   }
   const record = parsed as Partial<CredentialsFile>;
   return {

@@ -21,6 +21,8 @@ import { attachProgress } from "./progress.ts";
 import { readApp } from "./workspace.ts";
 import { resolveWebRoot } from "./web-root.ts";
 import { registerEmbeddedPiModules } from "./pi-modules.ts";
+import { appText } from "./app-text.ts";
+import { noticeOf } from "./messages/work.ts";
 
 type Options = {
   dataDir: string;
@@ -52,13 +54,13 @@ function parseOptions(argv: readonly string[]): Options {
     } else if (arg === "--help" || arg === "-h") {
       process.stdout.write(
         [
-          "emit · 本地数字员工协作工作台",
+          "emit · local digital-employee collaboration workspace",
           "",
-          "用法: emit [选项]",
-          "  --data-dir <目录>   数据目录（默认 ~/.emit）",
-          "  --host <地址>       监听地址（默认 127.0.0.1）",
-          "  --port <端口>       监听端口（默认自动分配，0 表示自动）",
-          "  --web-root <目录>   前端资源目录（默认 dist/web；二进制使用内嵌前端）",
+          "Usage: emit [options]",
+          "  --data-dir <dir>   Data directory (default ~/.emit)",
+          "  --host <address>   Listen address (default 127.0.0.1)",
+          "  --port <port>      Listen port (default auto-assigned; 0 means auto)",
+          "  --web-root <dir>   Web assets directory (default dist/web; the binary embeds the frontend)",
           "",
         ].join("\n"),
       );
@@ -84,7 +86,7 @@ async function main(): Promise<void> {
   // and MCP tools only exist once their servers are connected.
   const mcp = new McpManager(runtime);
   await mcp.connectEnabled().catch((error: unknown) => {
-    process.stdout.write(`MCP 连接失败: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stdout.write(`MCP connection failed: ${error instanceof Error ? error.message : String(error)}\n`);
   });
   const resume: Resume = {
     runtime,
@@ -95,19 +97,15 @@ async function main(): Promise<void> {
   resume.dispatch = buildWorkDispatchTask(() => resume);
   resume.mail = buildMailTasks(() => resume);
   const installed = await installAllExtensions(resume);
-  process.stdout.write(`已加载 ${installed} 位数字员工。\n`);
+  process.stdout.write(`Loaded ${installed} digital employees.\n`);
   runtime.registry.install(buildWorkDispatchExtension(resume.dispatch));
   runtime.registry.install(buildMailExtension(resume.mail));
 
-  runtime.emit({
-    type: "notice",
-    text: "正在恢复上次未完成的工作…",
-    textLocalized: { en: "Resuming unfinished work…", "zh-CN": "正在恢复上次未完成的工作…" },
-  });
+  runtime.emit(noticeOf(appText({ en: "Resuming unfinished work…", "zh-CN": "正在恢复上次未完成的工作…" })));
   runtime.resume();
   const interrupted = await reconcileWorks(resume);
   if (interrupted > 0) {
-    process.stdout.write(`已标记 ${interrupted} 项未能恢复的工作。\n`);
+    process.stdout.write(`Marked ${interrupted} unrecoverable works as failed.\n`);
   }
 
   const detachProgress = attachProgress(runtime);
@@ -115,13 +113,13 @@ async function main(): Promise<void> {
   const webRoot = resolveWebRoot(runtime.dataDir, options.webRoot);
   const server = await buildServer({ resume, webRoot });
   const address = await server.listen({ host: options.host, port: options.port });
-  process.stdout.write(`Emit 已启动：${address}\n数据目录：${runtime.dataDir}\n`);
+  process.stdout.write(`Emit started: ${address}\nData directory: ${runtime.dataDir}\n`);
 
   let closing = false;
   const shutdown = async (signal: string) => {
     if (closing) return;
     closing = true;
-    process.stdout.write(`收到 ${signal}，正在关闭…\n`);
+    process.stdout.write(`Received ${signal}; shutting down…\n`);
     try {
       detachProgress();
       await server.close();
@@ -136,6 +134,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  process.stderr.write(`启动失败: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
+  process.stderr.write(`Startup failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
   process.exit(1);
 });

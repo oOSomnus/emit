@@ -135,7 +135,7 @@ export const providerMessages = {
     } => ({
       id: "base-url",
       label: "Base URL",
-      description: "例如 https://my-resource.openai.azure.com/openai/v1",
+      description: "for example https://my-resource.openai.azure.com/openai/v1",
       descriptionLocalized: {
         en: "for example https://my-resource.openai.azure.com/openai/v1",
         "zh-CN": "例如 https://my-resource.openai.azure.com/openai/v1",
@@ -150,7 +150,7 @@ export const providerMessages = {
     } => ({
       id: "resource-name",
       label: "Resource name",
-      description: "例如 my-resource",
+      description: "for example my-resource",
       descriptionLocalized: { en: "for example my-resource", "zh-CN": "例如 my-resource" },
     }),
 

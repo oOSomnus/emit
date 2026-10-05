@@ -99,7 +99,7 @@ export function gatedExecute<T>(
       targetPaths: resolved.targetPaths,
     };
     const app = await api.snapshot(AppDoc, context);
-    if (app === undefined) return errorResult("无法读取 workspace 配置，已阻止执行");
+    if (app === undefined) return errorResult("The workspace configuration could not be read; execution was blocked");
     const request: ApprovalRequest = {
       toolTaskId: String(api.taskId),
       employeeId: spec.employee.id,
@@ -148,7 +148,7 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
     replay: "safe",
     execute: async (args, api, ctx) => {
       const env = api.env;
-      if (env === undefined) return errorResult("没有可用的执行环境");
+      if (env === undefined) return errorResult("No execution environment is available");
       const scope = await readWorkDirectoryScope(runtime, api.conversationId);
       if (!scope.ok) return errorResult(scope.message);
       const resolved = await resolveWithin(
@@ -160,7 +160,7 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
       );
       if (!resolved.ok) return errorResult(resolved.message);
       const read = await env.readTextFile(resolved.path, ctx);
-      if (!read.ok) return errorResult(`读取失败 ${resolved.path}: ${read.error.message}`);
+      if (!read.ok) return errorResult(`Read failed for ${resolved.path}: ${read.error.message}`);
       if (read.value.length > MAX_READ_BYTES) {
         return errorResult(
           renderToolResult("read-too-large", { size: read.value.length, max: MAX_READ_BYTES }),
@@ -190,16 +190,16 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
       { runtime, employee, toolName: "write_file", kind: "file-write" },
       async (args, api, ctx, directory) => {
         const env = api.env;
-        if (env === undefined) return errorResult("没有可用的执行环境");
+        if (env === undefined) return errorResult("No execution environment is available");
         const target = directory.targetPaths[0];
-        if (target === undefined) return errorResult("没有已验证的写入目标");
+        if (target === undefined) return errorResult("There is no verified write target");
         const parent = dirname(target);
         const created = await env.createDir(parent, { recursive: true }, ctx);
         if (!created.ok && !created.error.message.includes("exist")) {
-          return errorResult(`无法创建目录 ${parent}: ${created.error.message}`);
+          return errorResult(`Could not create the directory ${parent}: ${created.error.message}`);
         }
         const written = await env.writeFile(target, args.content, ctx);
-        if (!written.ok) return errorResult(`写入失败 ${target}: ${written.error.message}`);
+        if (!written.ok) return errorResult(`Write failed for ${target}: ${written.error.message}`);
         return textResult(renderToolResult("write-ok", { path: target, length: args.content.length }));
       },
     ),
@@ -218,14 +218,14 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
       { runtime, employee, toolName: "edit_file", kind: "file-write" },
       async (args, api, ctx, directory) => {
         const env = api.env;
-        if (env === undefined) return errorResult("没有可用的执行环境");
-        if (args.oldText.length === 0) return errorResult("oldText 不能为空");
+        if (env === undefined) return errorResult("No execution environment is available");
+        if (args.oldText.length === 0) return errorResult("oldText must not be empty");
         const target = directory.targetPaths[0];
-        if (target === undefined) return errorResult("没有已验证的编辑目标");
+        if (target === undefined) return errorResult("There is no verified edit target");
         const read = await env.readTextFile(target, ctx);
-        if (!read.ok) return errorResult(`读取失败 ${target}: ${read.error.message}`);
+        if (!read.ok) return errorResult(`Read failed for ${target}: ${read.error.message}`);
         const occurrences = read.value.split(args.oldText).length - 1;
-        if (occurrences === 0) return errorResult("文件中找不到 oldText");
+        if (occurrences === 0) return errorResult("oldText was not found in the file");
         if (occurrences > 1 && args.replaceAll !== true) {
           return errorResult(renderToolResult("edit-ambiguous", { count: occurrences }));
         }
@@ -234,7 +234,7 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
             ? read.value.split(args.oldText).join(args.newText)
             : read.value.replace(args.oldText, args.newText);
         const written = await env.writeFile(target, updated, ctx);
-        if (!written.ok) return errorResult(`写入失败 ${target}: ${written.error.message}`);
+        if (!written.ok) return errorResult(`Write failed for ${target}: ${written.error.message}`);
         return textResult(
           renderToolResult("edit-ok", { path: target, count: args.replaceAll === true ? occurrences : 1 }),
         );
@@ -257,7 +257,7 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
       { runtime, employee, toolName: "run_shell", kind: "shell" },
       async (args, api, ctx, directory) => {
         const env = api.env;
-        if (env === undefined) return errorResult("没有可用的执行环境");
+        if (env === undefined) return errorResult("No execution environment is available");
         const result = await env.exec(
           args.command,
           {
@@ -313,7 +313,7 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
     replay: "safe",
     execute: async (args, api, ctx) => {
       const env = api.env;
-      if (env === undefined) return errorResult("没有可用的执行环境");
+      if (env === undefined) return errorResult("No execution environment is available");
       const scope = await readWorkDirectoryScope(runtime, api.conversationId);
       if (!scope.ok) return errorResult(scope.message);
       const skill = findBoundSkill(skills, employee.skillIds, args.name);
@@ -322,14 +322,14 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
         return errorResult(
           renderToolResult("skill-missing", {
             name: args.name,
-            bound: bound.map((entry) => entry.name).join(", ") || "(无)",
+            bound: bound.map((entry) => entry.name).join(", ") || "(none)",
           }),
         );
       }
       const resolved = await resolveWithin(env, ctx, skill.filePath, [skill.directory], skill.directory);
       if (!resolved.ok) return errorResult(resolved.message);
       const read = await env.readTextFile(resolved.path, ctx);
-      if (!read.ok) return errorResult(`读取失败 ${resolved.path}: ${read.error.message}`);
+      if (!read.ok) return errorResult(`Read failed for ${resolved.path}: ${read.error.message}`);
       const base = `${renderToolResult("skill-directory", { directory: skill.directory })}\n\n`;
       if (read.value.length > MAX_READ_BYTES) {
         return textResult(`${base}${read.value.slice(0, MAX_READ_BYTES)}\n${renderToolResult("skill-truncated")}`);

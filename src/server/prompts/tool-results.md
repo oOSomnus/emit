@@ -1,64 +1,64 @@
 ## read-too-large
-文件过大（{{size}} 字节，上限 {{max}}）。请先用 run_shell 或分段读取。
+File too large ({{size}} bytes; limit {{max}}). Use run_shell or read it in segments first.
 
 ## read-lines-suffix
-… 共 {{total}} 行
+… {{total}} lines total
 
 ## write-ok
-已写入 {{path}}（{{length}} 字符）
+Written to {{path}} ({{length}} characters)
 
 ## edit-ambiguous
-oldText 出现了 {{count}} 次；请提供更精确的片段或设置 replaceAll
+oldText appears {{count}} times; provide a more precise snippet or set replaceAll.
 
 ## edit-ok
-已更新 {{path}}（替换 {{count}} 处）
+Updated {{path}} (replaced {{count}} occurrences)
 
 ## shell-failed
-命令失败: {{message}}{{spillBlock}}
+Command failed: {{message}}{{spillBlock}}
 
 ## shell-failed-spill
-完整输出: {{spillPath}}
+Full output: {{spillPath}}
 
 ## shell-exit
-退出码 {{exitCode}}{{spillBlock}}
+Exit code {{exitCode}}{{spillBlock}}
 
 ## shell-exit-spill
-完整输出已写入 {{spillPath}}
+Full output written to {{spillPath}}
 
 ## skill-directory
-技能目录：{{directory}}
-配套文件请用相对该目录的路径访问。
+Skill directory: {{directory}}
+Use relative paths to access companion files within that directory.
 
 ## skill-truncated
-… 已截断
+… truncated
 
 ## skill-missing
-没有名为 {{name}} 的技能。已绑定：{{bound}}
+No skill named {{name}}. Bound skills: {{bound}}.
 
 ## send-message-ok
-已发送给 {{name}}，工作 {{workId}} 已开始；对方的回复会出现在你们的私信里。
+Sent to {{name}}; work {{workId}} has started. The other employee's reply will appear in your direct messages.
 
 ## send-channel-ok
-已在频道「{{roomName}}」发送消息；本次唤醒 {{count}} 位员工，他们的回复会出现在该频道。
+Message sent to channel "{{roomName}}"; {{count}} employees were woken for this task, and their replies will appear in that channel.
 
 ## send-channel-nobody
-已在频道「{{roomName}}」发送消息；无人被点名，不会启动员工。
+Message sent to channel "{{roomName}}"; no one was addressed, so no employees were started.
 
 ## invite-ok
-已邀请 {{names}} 加入当前频道（新增 {{count}} 人）；邀请不会唤醒他们，需要回复时请再点名。
+Invited {{names}} to the current channel ({{count}} added); invitations do not wake them. Mention them again if you need a reply.
 
 ## invite-replay
-该邀请已执行过（安全重放，没有重复邀请）。
+This invitation has already been applied (safe replay; no duplicate invitation).
 
 ## note-list
-共享笔记（工作版本 {{version}}，共 {{count}} 条）：
+Shared notes (work version {{version}}, {{count}} entries):
 {{items}}
 
 ## note-saved
-笔记已保存：{{title}}（id={{noteId}}，工作版本 {{version}}）。
+Note saved: {{title}} (id={{noteId}}, work version {{version}}).
 
 ## send-mail-ok
-已发送邮件给 {{name}}，工作 {{workId}} 已开始。
+Email sent to {{name}}; work {{workId}} has started.
 
 ## delegate-ok
-已把任务交办给 {{name}}（工作 {{workId}}）。结果会以消息形式出现在本会话中，你可以继续别的工作或等待。
+Task delegated to {{name}} (work {{workId}}). The result will appear in this conversation as a message; you can continue with other work or wait.

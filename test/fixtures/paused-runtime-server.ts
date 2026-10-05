@@ -54,7 +54,7 @@ async function main(): Promise<void> {
     await installAllExtensions(fixture.resume);
     const app = await readApp(fixture.runtime);
     await invalidateStaleGrants(fixture.runtime, app.policyVersion);
-    process.stdout.write(`Emit 已启动：${fixture.url}\n数据目录：${dataDir}\n`);
+    process.stdout.write(`Emit started: ${fixture.url}\nData directory: ${dataDir}\n`);
     const response = await fetch(gate, { signal: controller.signal });
     if (!response.ok) throw new Error(`Resume gate returned ${response.status}`);
     await response.arrayBuffer();

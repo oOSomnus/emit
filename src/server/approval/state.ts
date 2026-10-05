@@ -312,7 +312,7 @@ export async function gateToolCall(input: GateInput): Promise<GateDecision> {
   const app = await runtime.readSession(AppDoc);
   const binding = await runtime.readConversationDoc(ConversationContextDoc, input.conversationId);
   if (binding === undefined || binding.workId.length === 0) {
-    return { allow: false, message: "该会话没有绑定工作上下文，已阻止工具调用" };
+    return { allow: false, message: "This conversation is not bound to a work context; the tool call was blocked" };
   }
   const scopeResult = await resolveToolDirectoryScope(
     runtime,
@@ -324,7 +324,7 @@ export async function gateToolCall(input: GateInput): Promise<GateDecision> {
   if (!scopeResult.ok) return { allow: false, message: scopeResult.message };
   const { scope } = scopeResult;
   const employee = await runtime.readFamily(EmployeeDoc, binding.employeeId, { id: binding.employeeId });
-  if (employee === undefined) return { allow: false, message: "找不到员工记录，已阻止工具调用" };
+  if (employee === undefined) return { allow: false, message: "The employee record was not found; the tool call was blocked" };
   const work = await runtime.readFamily(WorkDoc, binding.workId, { id: binding.workId });
   const room =
     binding.roomId.length > 0 ? await runtime.readFamily(RoomDoc, binding.roomId, { id: binding.roomId }) : undefined;
@@ -1310,7 +1310,7 @@ export async function verifyGrant(
 ): Promise<GrantDecision> {
   const id = approvalId(request, employee.configVersion, app.policyVersion);
   if ((await findApproval(runtime, id)) === undefined) {
-    return { allow: false, message: "没有找到本次调用的批准记录，已阻止执行" };
+    return { allow: false, message: "No approval record was found for this call; execution was blocked" };
   }
   const liveContext = liveWorkContext(
     await runtime.readFamily(WorkContextDoc, request.directoryWorkContextId, { id: request.directoryWorkContextId }),
@@ -1322,7 +1322,7 @@ export async function verifyGrant(
   const claim = await runtime.harness.commit(async (tx) => {
     const record = await tx.doc(ApprovalDoc, id, { id });
     if (record.createdAt === 0) {
-      return { decision: { allow: false, message: "没有找到本次调用的批准记录，已阻止执行" } as GrantDecision };
+      return { decision: { allow: false, message: "No approval record was found for this call; execution was blocked" } as GrantDecision };
     }
     if (
       record.argsHash !== hashArguments(request.arguments) ||
@@ -1338,7 +1338,7 @@ export async function verifyGrant(
       return {
         decision: {
           allow: false,
-          message: "批准记录与当前参数或会话目录不一致，已阻止执行",
+          message: "The approval record does not match the current arguments or session directories; execution was blocked",
         } as GrantDecision,
       };
     }
@@ -1349,7 +1349,7 @@ export async function verifyGrant(
       return {
         decision: {
           allow: false,
-          message: `本次调用的批准已被使用（状态 ${record.executionState}）；如确需重试，请重新发起请求`,
+          message: `This call's approval was already used (state ${record.executionState}); start a new request to retry`,
         } as GrantDecision,
       };
     }

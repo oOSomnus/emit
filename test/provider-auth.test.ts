@@ -477,12 +477,12 @@ describe("native login flows", () => {
     const endpointMode = requirePrompt(next);
     expect(endpointMode.id.length).toBeGreaterThan(0);
     expect(endpointMode.type).toBe("select");
-    expect(endpointMode.messageLocalized?.["zh-CN"]).toBe(endpointMode.message);
+    expect(endpointMode.messageLocalized?.en).toBe(endpointMode.message);
     expect(endpointMode.options?.map((option) => option.id)).toEqual(["base-url", "resource-name"]);
     expect(endpointMode.options?.map((option) => option.label)).toEqual(["Base URL", "Resource name"]);
     expect(
       endpointMode.options?.every(
-        (option) => option.descriptionLocalized?.["zh-CN"] === option.description,
+        (option) => option.descriptionLocalized?.en === option.description,
       ),
     ).toBe(true);
     sessions.respond(started.id, endpointMode.id, "base-url");
@@ -498,7 +498,7 @@ describe("native login flows", () => {
     expect(apiVersion.id.length).toBeGreaterThan(0);
     expect(apiVersion.type).toBe("text");
     expect(apiVersion.options).toBeUndefined();
-    expect(apiVersion.messageLocalized?.["zh-CN"]).toBe(apiVersion.message);
+    expect(apiVersion.messageLocalized?.en).toBe(apiVersion.message);
     sessions.respond(started.id, apiVersion.id, "");
 
     next = await waitForPrompt(sessions, started.id);
@@ -506,7 +506,7 @@ describe("native login flows", () => {
     expect(deploymentMap.id.length).toBeGreaterThan(0);
     expect(deploymentMap.type).toBe("text");
     expect(deploymentMap.options).toBeUndefined();
-    expect(deploymentMap.messageLocalized?.["zh-CN"]).toBe(deploymentMap.message);
+    expect(deploymentMap.messageLocalized?.en).toBe(deploymentMap.message);
     sessions.respond(started.id, deploymentMap.id, "gpt-4o=deploy-a");
 
     const done = await waitForStatus(sessions, started.id, "succeeded");

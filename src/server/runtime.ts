@@ -102,8 +102,8 @@ export class EmitRuntime {
       });
     } catch (error) {
       throw new Error(
-        `数据目录已被另一个 Emit 进程占用（${lockPath}）。请先停止它；如果确认没有其他 Emit 在运行` +
-          `（例如上次是被强制结束的），删除该目录后重试。${error instanceof Error ? ` (${error.message})` : ""}`,
+        `The data directory is locked by another Emit process (${lockPath}). Stop it first; if you are sure no other Emit process is running` +
+          ` (for example, because it was forcefully terminated last time), remove the lock directory and try again.${error instanceof Error ? ` (${error.message})` : ""}`,
       );
     }
 

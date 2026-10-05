@@ -213,7 +213,7 @@ export function ChatView(): ReactNode {
       ? ""
       : addressing.resolved.recipientIds
           .map((id) => state.employees.find((employee) => employee.id === id)?.name ?? id)
-          .join(locale === "zh-CN" ? "、" : ", ");
+          .join(messages.common.namesSeparator);
   const disabledMembers = channelMembers.filter((member) => !member.enabled);
 
   const send = async () => {
@@ -314,7 +314,7 @@ export function ChatView(): ReactNode {
               <span
                 className="channel-member-stack"
                 role="group"
-                aria-label={`${messages.workContexts.membersCount(room.memberIds.length)}: ${memberNames.join(locale === "zh-CN" ? "、" : ", ")}`}
+                aria-label={`${messages.workContexts.membersCount(room.memberIds.length)}: ${memberNames.join(messages.common.namesSeparator)}`}
                 style={{ display: "inline-flex", alignItems: "center" }}
               >
                 {room.memberIds.slice(0, 4).map((id, index) => (
@@ -538,7 +538,7 @@ export function ChatView(): ReactNode {
               {addressing.resolved?.mentionAll && disabledMembers.length > 0 ? (
                 <p>
                   {messages.workContexts.skippedDisabled(
-                    disabledMembers.map((member) => member.name).join(locale === "zh-CN" ? "、" : ", "),
+                    disabledMembers.map((member) => member.name).join(messages.common.namesSeparator),
                   )}
                 </p>
               ) : null}

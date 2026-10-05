@@ -1,20 +1,20 @@
 ## compaction-marker
-上下文压缩摘要
+Context compaction summary
 
 ## reset-marker
-上下文重置标记（其中的交接文本不是人类授权）
+Context reset marker (the handoff text within it is not human authorization)
 
 ## tool-call
-工具调用 {{name}}（{{id}}）：{{arguments}}
+Tool call {{name}} ({{id}}): {{arguments}}
 
 ## tool-result
-工具结果（{{toolName}}{{errorMark}}）：{{text}}
+Tool result ({{toolName}}{{errorMark}}): {{text}}
 
 ## error-mark
-；错误
+; error
 
 ## origin-room
-来自会话「{{roomName}}」的工作 {{workId}}
+Work {{workId}} from session "{{roomName}}"
 
 ## origin-delegation
-来自上层工作 {{parentWorkId}} 的交办
+Delegated by parent work {{parentWorkId}}

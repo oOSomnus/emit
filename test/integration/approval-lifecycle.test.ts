@@ -312,10 +312,10 @@ describe("real-runtime approval lifecycle", () => {
       expect(approval.autoDecisionSource).toBe("policy");
       expect(approval.evidence?.kind).toBe("policy");
       if (mode === "http-error") {
-        expect(approval.autoDecisionReason).toContain("模型请求失败");
+        expect(approval.autoDecisionReason).toContain("model request failed");
         if (approval.evidence?.kind === "policy") expect(approval.evidence.rationale).toContain("provider");
       } else {
-        expect(approval.autoDecisionReason).toContain("模型响应无效");
+        expect(approval.autoDecisionReason).toContain("invalid model response");
         if (approval.evidence?.kind === "policy") expect(approval.evidence.rationale).toContain("invalid-output");
       }
     }
@@ -369,8 +369,8 @@ describe("real-runtime approval lifecycle", () => {
       expect(approval.evidence?.kind).toBe("policy");
       if (approval.evidence?.kind === "policy") expect(approval.evidence.rationale).toContain("invalid-output");
       for (const expected of diagnostics[marker]!) expect(approval.autoDecisionReason).toContain(expected);
-      expect(approval.autoDecisionReason).toContain("模型响应无效");
-      expect(approval.autoDecisionReason).not.toContain("配置审批判断模型");
+      expect(approval.autoDecisionReason).toContain("invalid model response");
+      expect(approval.autoDecisionReason).not.toContain("configure an approval judge model");
       expect(approval.autoDecisionReason).not.toContain("REVIEW_THINKING_CANARY");
     }
 
@@ -440,14 +440,14 @@ describe("real-runtime approval lifecycle", () => {
     const streams = await runShellWork("SHELL_STREAMS", "succeeded");
     expect(streams.toolText).toContain("SHELL_STDOUT");
     expect(streams.toolText).toContain("SHELL_STDERR");
-    expect(streams.toolText).toContain("退出码 0");
+    expect(streams.toolText).toContain("Exit code 0");
     expect(streams.result).toMatchObject({ isError: false });
     expect(streams.result?.text).toContain("SHELL_STDOUT");
     expect(streams.result?.text).toContain("SHELL_STDERR");
 
     const exit3 = await runShellWork("SHELL_EXIT3", "failed");
     expect(exit3.toolText).toContain("SHELL_BEFORE_ERROR");
-    expect(exit3.toolText).toContain("退出码 3");
+    expect(exit3.toolText).toContain("Exit code 3");
     expect(exit3.result).toMatchObject({ isError: true });
 
     const timeoutStarted = Date.now();
@@ -466,7 +466,7 @@ describe("real-runtime approval lifecycle", () => {
     expect(bigVisible).toContain("SHELL_TAIL");
     expect(bigVisible).not.toContain("SHELL_HEAD");
     expect(Buffer.byteLength(bigVisible, "utf8")).toBeLessThanOrEqual(65_536);
-    const spill = /完整输出已写入 (\S+)/.exec(big.toolText);
+    const spill = /Full output written to (\S+)/.exec(big.toolText);
     expect(spill).not.toBeNull();
     const spilled = readFileSync(spill![1]!, "utf8");
     expect(spilled).toContain("SHELL_HEAD");
@@ -480,7 +480,7 @@ describe("real-runtime approval lifecycle", () => {
     expect(linesVisible).not.toContain("\n1\n");
 
     const silent = await runShellWork("SHELL_SILENT", "succeeded");
-    expect(silent.toolText).toContain("退出码 0");
+    expect(silent.toolText).toContain("Exit code 0");
     expect(silent.toolText.slice(0, silent.toolText.indexOf("<harness>"))).toBe("");
   }, 60_000);
 

@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const binaryName = process.platform === "win32" ? "emit.exe" : "emit";
 const binarySource = path.join(repoRoot, "dist", binaryName);
-if (!existsSync(binarySource)) throw new Error(`缺少发布物 ${binarySource}，先运行 make binary`);
+if (!existsSync(binarySource)) throw new Error(`Missing release artifact ${binarySource}; run make binary first`);
 
 const startupTimeoutMs = 20_000;
 const requestTimeoutMs = 10_000;
@@ -58,9 +58,9 @@ function startEmit(label, { args = [], env = {}, dataDir } = {}) {
     output += chunk;
   });
   const url = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label}: ${startupTimeoutMs}ms 内未启动\n${output}`)), startupTimeoutMs);
+    const timer = setTimeout(() => reject(new Error(`${label}: did not start within ${startupTimeoutMs}ms\n${output}`)), startupTimeoutMs);
     const scan = () => {
-      const match = /Emit 已启动：(\S+)/.exec(output);
+      const match = /Emit started: (\S+)/.exec(output);
       if (match !== null) {
         clearTimeout(timer);
         resolve(match[1]);
@@ -70,7 +70,7 @@ function startEmit(label, { args = [], env = {}, dataDir } = {}) {
     proc.stderr.on("data", scan);
     proc.once("exit", (code) => {
       clearTimeout(timer);
-      reject(new Error(`${label}: 进程提前退出 code=${String(code)}\n${output}`));
+      reject(new Error(`${label}: process exited early with code=${String(code)}\n${output}`));
     });
   });
   url.catch(() => {});
@@ -172,18 +172,18 @@ try {
   // 1. --help from an empty directory, with no source tree anywhere near it.
   {
     const help = spawnSync(binaryPath, ["--help"], { cwd: scratch, env: childEnv(), encoding: "utf8", timeout: requestTimeoutMs });
-    assert.equal(help.status, 0, `--help 退出码 ${String(help.status)}：${help.stderr}`);
-    assert.match(help.stdout, /--port <端口>\s+监听端口（默认自动分配，0 表示自动）/);
+    assert.equal(help.status, 0, `--help exit code ${String(help.status)}: ${help.stderr}`);
+    assert.match(help.stdout, /--port <port>\s+Listen port \(default auto-assigned; 0 means auto\)/);
     assert.deepEqual(readdirSync(binDir), [binaryName]);
-    assert.ok(!existsSync(path.join(scratch, "package.json")), "scratch 不应有 package.json");
-    assert.ok(!existsSync(path.join(scratch, "node_modules")), "scratch 不应有 node_modules");
-    assert.ok(!existsSync(path.join(scratch, "dist")), "scratch 不应有 dist");
-    reportPass("isolated help", "1. 隔离目录中的 --help 正常");
+    assert.ok(!existsSync(path.join(scratch, "package.json")), "scratch must not contain package.json");
+    assert.ok(!existsSync(path.join(scratch, "node_modules")), "scratch must not contain node_modules");
+    assert.ok(!existsSync(path.join(scratch, "dist")), "scratch must not contain dist");
+    reportPass("isolated help", "1. --help works from an isolated directory");
   }
 
   // 2. With 8787 taken, two default-port children pick distinct real ports.
   const occupied8787 = await holdPort(8787).catch((error) => {
-    throw new Error(`无法占用 127.0.0.1:8787（隔离 network namespace 未生效？）：${error.message}`);
+    throw new Error(`Could not occupy 127.0.0.1:8787 (isolated network namespace not in effect?): ${error.message}`);
   });
   const childA = startEmit("A", { dataDir: path.join(scratch, "data-a") });
   const childB = startEmit("B", { dataDir: path.join(scratch, "data-b") });
@@ -192,13 +192,13 @@ try {
   {
     const portA = Number(new URL(urlA).port);
     const portB = Number(new URL(urlB).port);
-    assert.ok(portA > 0 && portA !== 8787, `A 端口 ${String(portA)}`);
-    assert.ok(portB > 0 && portB !== 8787, `B 端口 ${String(portB)}`);
+    assert.ok(portA > 0 && portA !== 8787, `A port ${String(portA)}`);
+    assert.ok(portB > 0 && portB !== 8787, `B port ${String(portB)}`);
     assert.notEqual(portA, portB);
     assert.equal(childA.proc.exitCode, null);
     assert.equal(childB.proc.exitCode, null);
     for (const url of [urlA, urlB]) assert.equal((await jsonRequest(`${url}/api/app`)).status, 200);
-    reportPass("default port allocation", `2. 默认端口自动分配：${String(portA)} / ${String(portB)}（8787 被占用）`);
+    reportPass("default port allocation", `2. default port auto-assignment: ${String(portA)} / ${String(portB)} (8787 occupied)`);
   }
 
   // 3. Port semantics: 0 means auto, an explicit busy port fails, CLI wins over env.
@@ -214,7 +214,7 @@ try {
     const busy = await holdPort(0);
     const busyChild = startEmit("busy", { dataDir: path.join(scratch, "data-busy"), args: ["--port", String(busy.port)] });
     const busyCode = await new Promise((resolve) => busyChild.proc.once("exit", resolve));
-    assert.ok(typeof busyCode === "number" && busyCode !== 0, `占用端口应导致非零退出，实际 ${String(busyCode)}`);
+    assert.ok(typeof busyCode === "number" && busyCode !== 0, `a busy port must exit nonzero; got ${String(busyCode)}`);
     assert.match(busyChild.output(), /EADDRINUSE/);
     await busy.close();
 
@@ -235,7 +235,7 @@ try {
     });
     assert.equal(Number(new URL(await precedence.url).port), cliPort);
     await stopEmit(precedence.proc);
-    reportPass("port precedence and occupied port", "3. 端口：0 自动、显式占用失败、CLI 优先于环境变量");
+    reportPass("port precedence and occupied port", "3. ports: 0 auto-assigns, an explicit busy port fails, CLI wins over env");
   }
 
   // 4. The embedded frontend is served as real static assets with SPA fallback.
@@ -249,8 +249,8 @@ try {
 
     const script = /src="(\/assets\/[^"]+\.js)"/.exec(indexHtml);
     const style = /href="(\/assets\/[^"]+\.css)"/.exec(indexHtml);
-    assert.ok(script !== null, "index.html 应引用打包脚本");
-    assert.ok(style !== null, "index.html 应引用打包样式");
+    assert.ok(script !== null, "index.html must reference the bundled script");
+    assert.ok(style !== null, "index.html must reference the bundled style");
     const scriptFile = await textRequest(`${urlA}${script[1]}`);
     assert.equal(scriptFile.status, 200);
     assert.match(scriptFile.contentType, /javascript/);
@@ -264,8 +264,8 @@ try {
     const missing = await jsonRequest(`${urlA}/api/nope`);
     assert.equal(missing.status, 404);
     assert.match(missing.contentType, /application\/json/);
-    assert.ok(!existsSync(path.join(scratch, "dist")), "运行期不应出现源码前端目录");
-    reportPass("embedded frontend and SPA fallback", "4. 内嵌前端：资源 200、SPA 回退、API 404 为 JSON");
+    assert.ok(!existsSync(path.join(scratch, "dist")), "the source frontend directory must not appear at runtime");
+    reportPass("embedded frontend and SPA fallback", "4. embedded frontend: assets 200, SPA fallback, API 404 as JSON");
   }
 
   // 5. Persistence across restarts, plus cache repair after corruption.
@@ -278,7 +278,7 @@ try {
     assert.equal(patch.status, 200);
     assert.equal(patch.body.workspace.name, "native-smoke");
     assert.equal(await stopEmit(childA.proc), 0);
-    assert.ok(existsSync(path.join(scratch, "data-a", "emit.sqlite")), "应创建 emit.sqlite");
+    assert.ok(existsSync(path.join(scratch, "data-a", "emit.sqlite")), "emit.sqlite must be created");
 
     const restarted = startEmit("A2", { dataDir: path.join(scratch, "data-a") });
     const restartedUrl = await restarted.url;
@@ -292,7 +292,7 @@ try {
     const repairedIndex = await textRequest(`${repairedUrl}/`);
     assert.equal(repairedIndex.text, indexHtml);
     assert.ok(!repairedIndex.text.includes("corrupt"));
-    reportPass("persistence and cache repair", "5. 持久化重启保持数据，损坏的前端缓存被重新恢复");
+    reportPass("persistence and cache repair", "5. persistence survives restart; a corrupt frontend cache is restored");
     childA.proc = repaired.proc;
     childA.url = repaired.url;
   }
@@ -313,9 +313,9 @@ try {
     });
     assert.equal(imported.status, 200);
     const skill = imported.body.imported.find((entry) => entry.name === "native-smoke");
-    assert.ok(skill !== undefined, `导入结果缺少 native-smoke：${JSON.stringify(imported.body)}`);
+    assert.ok(skill !== undefined, `import result is missing native-smoke: ${JSON.stringify(imported.body)}`);
     assert.equal(skill.description, "Native binary smoke fixture");
-    reportPass("bundled skill loader", "6. 打包的 Pi skill loader 可导入 SKILL.md");
+    reportPass("bundled skill loader", "6. the bundled Pi skill loader imports SKILL.md");
   }
 
   // 7. An open SSE stream closes and the process exits promptly on SIGTERM.
@@ -346,14 +346,14 @@ try {
     const code = await stopEmit(childA.proc, 5_000);
     const elapsed = Date.now() - started;
     assert.equal(code, 0);
-    assert.ok(elapsed < 5_000, `SIGTERM 后退出耗时 ${String(elapsed)}ms`);
+    assert.ok(elapsed < 5_000, `exit after SIGTERM took ${String(elapsed)}ms`);
     await withTimeout(streamEnd, 5_000, "SSE shutdown");
     assert.ok(streamClosed);
 
     const afterSse = startEmit("A4", { dataDir: path.join(scratch, "data-a") });
     assert.equal((await jsonRequest(`${await afterSse.url}/api/app`)).status, 200);
     assert.equal(await stopEmit(afterSse.proc), 0);
-    reportPass("SSE shutdown and restart", `7. SSE 连接随关闭断开，进程 ${String(elapsed)}ms 内退出并可立即重启`);
+    reportPass("SSE shutdown and restart", `7. SSE connections close on shutdown; the process exits within ${String(elapsed)}ms and restarts immediately`);
   }
 
   // 8. An explicit --web-root overrides the embedded UI without being modified.
@@ -371,7 +371,7 @@ try {
     assert.deepEqual(readdirSync(overrideDir), ["index.html"]);
     assert.equal(readFileSync(path.join(overrideDir, "index.html"), "utf8"), overrideIndex);
     assert.equal(await stopEmit(override.proc), 0);
-    reportPass("explicit web root override", "8. --web-root 覆盖内嵌前端且文件未被改动");
+    reportPass("explicit web root override", "8. --web-root overrides the embedded frontend and leaves files untouched");
   }
 
   // Startup failures are independent regressions; exercise every reachable case.
@@ -427,7 +427,7 @@ try {
   if (failures.length > 0) throw new AggregateError(failures, `${failures.length} native startup regressions failed`);
 
   await occupied8787.close();
-  console.log("native binary smoke 全部通过");
+  console.log("native binary smoke passed");
 } catch (error) {
   if (!results.some((result) => result.status === "failed")) {
     results.push({ name: "native smoke prerequisite or scenario", status: "failed", error: error instanceof Error ? error.message : String(error) });

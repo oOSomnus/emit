@@ -38,7 +38,7 @@ function restoreEmbeddedWeb(dataDir: string): string {
   const assets = manifest.map((relativePath) => ({ relativePath, bytes: readAssetBytes(relativePath) }));
   const previous = readCachedManifest(join(cacheRoot, CACHE_MANIFEST_NAME));
 
-  assertNotSymlink(cacheRoot, `内嵌前端缓存目录 ${cacheRoot}`);
+  assertNotSymlink(cacheRoot, `Embedded web cache directory ${cacheRoot}`);
   mkdirSync(cacheRoot, { recursive: true });
   for (const { relativePath, bytes } of assets) {
     const target = join(cacheRoot, relativePath);
@@ -63,11 +63,13 @@ function readEmbeddedManifest(): string[] {
   try {
     raw = getAsset(MANIFEST_ASSET, "utf8");
   } catch (error) {
-    throw new Error(`内嵌前端清单缺失：${MANIFEST_ASSET}（${error instanceof Error ? error.message : String(error)}）`);
+    throw new Error(
+      `Embedded web manifest is missing: ${MANIFEST_ASSET} (${error instanceof Error ? error.message : String(error)})`,
+    );
   }
   const manifest = validateManifest(parseManifest(raw, MANIFEST_ASSET), MANIFEST_ASSET);
   if (!manifest.includes("index.html")) {
-    throw new Error(`内嵌前端清单 ${MANIFEST_ASSET} 缺少 index.html`);
+    throw new Error(`Embedded web manifest ${MANIFEST_ASSET} is missing index.html`);
   }
   return manifest;
 }
@@ -91,24 +93,26 @@ function parseManifest(raw: string, label: string): unknown {
   try {
     return JSON.parse(raw);
   } catch (error) {
-    throw new Error(`前端清单 ${label} 不是合法 JSON：${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `Web manifest ${label} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
 /** Validate manifest entries as safe, unique, relative paths. */
 function validateManifest(value: unknown, label: string): string[] {
-  if (!Array.isArray(value)) throw new Error(`前端清单 ${label} 必须是字符串数组`);
+  if (!Array.isArray(value)) throw new Error(`Web manifest ${label} must be an array of strings`);
   const seen = new Set<string>();
   for (const entry of value) {
     if (typeof entry !== "string" || entry.length === 0) {
-      throw new Error(`前端清单 ${label} 含有空路径或非字符串项`);
+      throw new Error(`Web manifest ${label} contains an empty path or non-string entry`);
     }
-    if (isAbsolute(entry)) throw new Error(`前端清单 ${label} 含有绝对路径：${entry}`);
+    if (isAbsolute(entry)) throw new Error(`Web manifest ${label} contains an absolute path: ${entry}`);
     const segments = entry.split("/");
     if (segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
-      throw new Error(`前端清单 ${label} 含有非法路径：${entry}`);
+      throw new Error(`Web manifest ${label} contains an invalid path: ${entry}`);
     }
-    if (seen.has(entry)) throw new Error(`前端清单 ${label} 含有重复路径：${entry}`);
+    if (seen.has(entry)) throw new Error(`Web manifest ${label} contains a duplicate path: ${entry}`);
     seen.add(entry);
   }
   return value as string[];
@@ -119,7 +123,9 @@ function readAssetBytes(relativePath: string): Buffer {
   try {
     return Buffer.from(getRawAsset(`web/${relativePath}`));
   } catch (error) {
-    throw new Error(`内嵌前端资源缺失：web/${relativePath}（${error instanceof Error ? error.message : String(error)}）`);
+    throw new Error(
+      `Embedded web asset is missing: web/${relativePath} (${error instanceof Error ? error.message : String(error)})`,
+    );
   }
 }
 
@@ -160,14 +166,14 @@ function assertNotSymlinkedComponents(cacheRoot: string, relativePath: string): 
   let current = cacheRoot;
   for (const segment of relativePath.split("/")) {
     current = join(current, segment);
-    assertNotSymlink(current, `内嵌前端缓存路径 ${current}`);
+    assertNotSymlink(current, `Embedded web cache path ${current}`);
   }
 }
 
 function assertNotSymlink(path: string, label: string): void {
   const info = lstatOrUndefined(path);
   if (info !== undefined && info.isSymbolicLink()) {
-    throw new Error(`${label} 是符号链接，拒绝写入`);
+    throw new Error(`${label} is a symbolic link; refusing to write`);
   }
 }
 

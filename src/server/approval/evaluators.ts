@@ -95,10 +95,10 @@ export function redactApprovalText(value: string): string {
   return value
     .replace(
       /((?:["']?)(?:api[_-]?key|access[_-]?key|private[_-]?key|token|password|passphrase|passwd|secret|credential|authorization|cookie)(?:["']?\s*[:=]\s*))("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|Bearer\s+[^\s,;}\]]+|[^\s,;}\]]+)/gi,
-      "$1[已隐去]",
+      "$1[REDACTED]",
     )
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [已隐去]")
-    .replace(/\b(?:sk|ghp|github_pat|xox[baprs])-[A-Za-z0-9_-]{8,}\b/gi, "[已隐去]");
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
+    .replace(/\b(?:sk|ghp|github_pat|xox[baprs])-[A-Za-z0-9_-]{8,}\b/gi, "[REDACTED]");
 }
 
 /** Full redacted JSON for review. This deliberately does not truncate any action argument. */
@@ -107,13 +107,13 @@ export function redactArguments(value: unknown): string {
   const walk = (input: unknown): unknown => {
     if (typeof input === "string") return redactApprovalText(input);
     if (typeof input !== "object" || input === null) return input;
-    if (seen.has(input)) return "[循环]";
+    if (seen.has(input)) return "[CIRCULAR]";
     seen.add(input);
     if (Array.isArray(input)) return input.map(walk);
     const output: Record<string, unknown> = Object.create(null);
     for (const [key, entry] of Object.entries(input)) {
       output[key] = /(secret|token|password|passphrase|passwd|private[_-]?key|credential|access[_-]?key|api[_-]?key|authorization|cookie)/i.test(key)
-        ? "[已隐去]"
+        ? "[REDACTED]"
         : walk(entry);
     }
     return output;
@@ -124,7 +124,7 @@ export function redactArguments(value: unknown): string {
 /** Human-only preview; it never substitutes for the full action sent to review. */
 export function argumentsPreview(value: unknown): string {
   const full = redactArguments(value);
-  return full.length <= 8_000 ? full : `${full.slice(0, 4_000)}\n[…中间内容已省略…]\n${full.slice(-4_000)}`;
+  return full.length <= 8_000 ? full : `${full.slice(0, 4_000)}\n[…middle content omitted…]\n${full.slice(-4_000)}`;
 }
 
 function takeUtf8Prefix(value: string, maxBytes: number): string {
@@ -167,7 +167,7 @@ function boundHistoryEntry(entry: ApprovalContextEntry): ApprovalContextEntry {
   const omitted = Buffer.byteLength(entry.text, "utf8") - Buffer.byteLength(prefix + suffix, "utf8");
   return {
     ...entry,
-    text: `${prefix}\n[…省略 ${omitted} UTF-8 字节…]\n${suffix}`,
+    text: `${prefix}\n[…${omitted} UTF-8 bytes omitted…]\n${suffix}`,
     truncated: true,
   };
 }

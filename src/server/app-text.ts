@@ -5,20 +5,30 @@
  * the modules that consume them both import from here, so the catalog assembly
  * in `./messages.ts` never sits in an import cycle.
  *
- * Every message is an `AppText`: `text` keeps the original string that model
- * context, persisted records, and existing callers have always used, and
- * `localized` is the pair the browser renders. Messages composed with a raw
- * reason (a native error, a provider string) embed that reason unchanged in
- * both languages.
+ * Every message is an `AppText`: `text` is the canonical English string that
+ * model context, persisted records, and existing callers use, and `localized`
+ * is the pair the browser renders. Messages composed with a raw reason (a
+ * native error, a provider string) embed that reason unchanged in every
+ * language.
  */
 
-import { isLocalizedText, type LocalizedText } from "../shared/i18n.ts";
+import { CANONICAL_LOCALE, formatText, isLocalizedText, type Locale, type LocalizedText } from "../shared/i18n.ts";
 
 export type AppText = { text: string; localized?: LocalizedText };
 
-/** Build an application message from its translation pair; `text` stays Chinese. */
+/** Build an application message from its translation pair; `text` stays canonical English. */
 export function appText(value: LocalizedText): AppText {
-  return { text: value["zh-CN"], localized: value };
+  return { text: value[CANONICAL_LOCALE], localized: value };
+}
+
+/** The display pair of an application message; text without a pair is raw in both languages. */
+export function pairOf(value: AppText): LocalizedText {
+  return value.localized ?? { en: value.text, "zh-CN": value.text };
+}
+
+/** Render an application message in one locale; text without a pair is raw. */
+export function appTextIn(value: AppText, locale: Locale): string {
+  return value.localized === undefined ? value.text : formatText(value.localized, locale);
 }
 
 /** Original text with no translation pair. */
@@ -30,7 +40,9 @@ export function rawText(text: string): AppText {
 export function fromError(error: unknown): AppText {
   if (error instanceof Error) {
     const localized = (error as Error & { messageLocalized?: unknown }).messageLocalized;
-    return isLocalizedText(localized) ? { text: error.message, localized } : { text: error.message };
+    return isLocalizedText(localized)
+      ? { text: localized[CANONICAL_LOCALE], localized }
+      : { text: error.message };
   }
   return { text: String(error) };
 }

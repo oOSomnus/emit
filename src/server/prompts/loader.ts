@@ -32,7 +32,7 @@ export function resourceFragments(file: string): ReadonlyMap<string, string> {
   let buffer: string[] = [];
   const flush = () => {
     if (current === undefined) return;
-    if (fragments.has(current)) throw new Error(`提示词资源 ${file} 的片段 ${current} 重复`);
+    if (fragments.has(current)) throw new Error(`Prompt resource ${file} contains duplicate fragment ${current}`);
     fragments.set(current, buffer.join("\n").replace(/^\n+/, "").replace(/\n+$/, ""));
     buffer = [];
   };
@@ -65,7 +65,7 @@ export function fill(
     const value = vars[key];
     if (value === undefined) {
       const at = source.fragment === undefined ? source.file : `${source.file}#${source.fragment}`;
-      throw new Error(`提示词模板 ${at} 缺少变量 ${key}`);
+      throw new Error(`Prompt template ${at} is missing variable ${key}`);
     }
     return String(value);
   });

@@ -281,7 +281,7 @@ describe("real-process crash recovery and data-directory ownership", () => {
       finally { await unexpected?.stop(); }
       expect(Date.now() - began).toBeLessThan(45_000);
       expect(startupError).toBeInstanceOf(Error);
-      expect(String(startupError)).toContain("数据目录已被另一个 Emit 进程占用");
+      expect(String(startupError)).toContain("The data directory is locked by another Emit process");
       expect((await request<WorkDTO[]>(fixture, "/api/works"))).toEqual([]);
       const accepted = await request<Sent>(fixture, `/api/rooms/${fixture.workspace.channelId}/messages`, "POST", { body: "First owner still writes" });
       expect(accepted.workIds).toEqual([]);

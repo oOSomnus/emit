@@ -84,6 +84,7 @@ import {
   toolTextResources,
 } from "./prompts/index.ts";
 import type { MessageDTO } from "../shared/contracts.ts";
+import { CANONICAL_LOCALE } from "../shared/i18n.ts";
 import { AppError, rawText, type AppText } from "./app-text.ts";
 import { appMessages } from "./messages.ts";
 import { noticeOf } from "./messages/work.ts";
@@ -627,7 +628,7 @@ async function replyEnvelope(
   const author: MailAddress =
     source !== undefined && source.address.length > 0
       ? { name: source.authorName, address: source.address }
-      : { name: app.userName.length > 0 ? app.userName : "你", address: app.userAddress };
+      : { name: app.userName.length > 0 ? app.userName : appMessages.rooms.userFallbackAuthorName[CANONICAL_LOCALE], address: app.userAddress };
   // Everyone else who was addressed on the message being answered stays in the
   // loop: that is what makes "reply all" on an answer reach the other
   // recipients instead of only the person who wrote it.
@@ -791,7 +792,7 @@ export async function stopWork(resume0: Resume, workId: string): Promise<WorkRec
         runtime,
         room,
         messageData({
-          author: { type: "system", id: "system", name: "系统" },
+          author: { type: "system", id: "system", name: appMessages.rooms.systemAuthorName[CANONICAL_LOCALE] },
           body: stopBody.text,
           bodyLocalized: stopBody.localized,
           workId,
@@ -1008,7 +1009,7 @@ export async function markFailed(resume0: Resume, work: WorkRecord, reason: AppT
     runtime,
     room,
     messageData({
-      author: { type: "system", id: "system", name: "系统" },
+      author: { type: "system", id: "system", name: appMessages.rooms.systemAuthorName[CANONICAL_LOCALE] },
       body: failBody.text,
       bodyLocalized: failBody.localized,
       workId: work.id,
@@ -1052,21 +1053,21 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
         );
       }
       const target = await resolveTarget(runtime, args.to);
-      if (target === undefined) return toolError(`找不到员工 ${args.to}`);
+      if (target === undefined) return toolError(`Employee not found: ${args.to}`);
       const callerId = await workOf(runtime, api, context);
       const caller = await findWork(runtime, callerId);
-      if (caller === undefined) return toolError("找不到当前工作");
+      if (caller === undefined) return toolError("The current work was not found");
       const awaiting = args.awaitReply === true;
       if (awaiting) {
         // Waiting is a dependency, so it obeys the same loop and depth rules
         // as a delegation; the wake and layer budget are spent with the send.
-        if (target.id === employee.id) return toolError("不能等待自己给自己发信");
+        if (target.id === employee.id) return toolError("You cannot wait for a reply from yourself");
         if (await isAncestor(runtime, caller.id, target.id)) {
-          return toolError(`不能向本任务的上级 ${target.name} 求助回信，这会形成循环`);
+          return toolError(`Cannot ask ${target.name} for a reply: they are an ancestor of this task and it would form a loop`);
         }
         const app = await runtime.readSession(AppDoc);
         if (caller.depth + 1 > app.collaboration.maxDepth) {
-          return toolError(`求助层数会超过上限（${app.collaboration.maxDepth} 层）`);
+          return toolError(`Asking would exceed the depth limit (${app.collaboration.maxDepth} levels)`);
         }
       }
       const sourceRoom = await findRoom(runtime, caller.directoryScope.roomId);
@@ -1076,12 +1077,12 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
         return toolError(appMessages.work.directoryChanged().text);
       }
       const continuation = sourceRoom.kind === "mail" && args.newSession !== true;
-      if (!continuation && args.inReplyTo) return toolError("新邮件会话不能引用旧会话的 inReplyTo");
+      if (!continuation && args.inReplyTo) return toolError("A new mail conversation cannot reference an old conversation's inReplyTo");
       let inReplyTo = "";
       if (continuation) {
         inReplyTo = args.inReplyTo ?? await mailParent(runtime, caller, sourceRoom);
         if (!(await isSentMailEntry(runtime, sourceRoom, inReplyTo))) {
-          return toolError("无法确定当前邮件父节点，请指定当前会话内的 inReplyTo");
+          return toolError("The current mail parent could not be determined; specify an inReplyTo from the current conversation");
         }
       }
       const cc: { name: string; address: string }[] = [];
@@ -1123,7 +1124,7 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
               inReplyTo,
             }),
           }),
-          intent: `主题：${args.subject}\n\n${args.body}`,
+          intent: `Subject: ${args.subject}\n\n${args.body}`,
           parentWorkId: caller.id,
           toolTaskId,
           ...(awaiting ? { awaitReply: true } : {}),
@@ -1149,12 +1150,12 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
     }),
     execute: async (args, api, context) => {
       const target = await resolveTarget(runtime, args.employee);
-      if (target === undefined) return toolError(`找不到员工 ${args.employee}`);
-      if (target.id === employee.id) return toolError("不能把任务交办给自己");
+      if (target === undefined) return toolError(`Employee not found: ${args.employee}`);
+      if (target.id === employee.id) return toolError("You cannot delegate a task to yourself");
       const app = await runtime.readSession(AppDoc);
       const depth = (await depthOf(runtime, api, context)) + 1;
       if (depth > app.collaboration.maxDepth) {
-        return toolError(`交办层数会超过上限（${app.collaboration.maxDepth} 层）`);
+        return toolError(`Delegation would exceed the depth limit (${app.collaboration.maxDepth} levels)`);
       }
       const rootWorkId = await rootOf(runtime, api, context);
       const currentWork = await workOf(runtime, api, context);
@@ -1162,7 +1163,7 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
       // ping-pong until the depth or wake limit ran out, so it is refused here
       // where the reason is still clear.
       if (await isAncestor(runtime, currentWork, target.id)) {
-        return toolError(`不能把任务交办给本任务的上级 ${target.name}，这会形成循环`);
+        return toolError(`Cannot delegate to ${target.name}: they are an ancestor of this task and it would form a loop`);
       }
       if (!(await reserveWake(runtime, rootWorkId, app.collaboration.maxCrossEmployeeWakes))) {
         return toolError(appMessages.work.wakeLimit(app.collaboration.maxCrossEmployeeWakes).text);

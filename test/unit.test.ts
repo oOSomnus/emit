@@ -250,7 +250,7 @@ describe("path containment", () => {
     const relative = await resolveWithin(env, context, "../outside.txt", [root], root);
     expect(relative).toMatchObject({
       ok: false,
-      message: expect.stringContaining("超出该会话允许的目录"),
+      message: expect.stringContaining("is outside the directories allowed for this conversation"),
     });
     expect(relative.ok).toBe(false);
     const outside = join(mkdtempSync(join(tmpdir(), "emit-outside-")), "sentinel.txt");
