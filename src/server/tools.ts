@@ -245,6 +245,9 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
   const runShell = defineTool({
     name: "run_shell",
     description: toolTextResources.run_shell.description,
+    // The harness retains the tail of the streamed output as the tool result
+    // when execute() omits `content`; the spill file preserves everything.
+    outputLimits: { maxBytes: SHELL_SPILL_BYTES, maxLines: 2_000, retain: "tail" },
     parameters: Type.Object({
       command: Type.String({ description: toolTextResources.run_shell.parameters.command }),
       cwd: Type.Optional(Type.String({ description: toolTextResources.run_shell.parameters.cwd })),
@@ -259,34 +262,46 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
           args.command,
           {
             cwd: directory.cwd,
-            timeout: args.timeoutMs !== undefined && args.timeoutMs > 0 ? args.timeoutMs : SHELL_TIMEOUT_MS,
+            // `ExecutionEnv.exec` counts its timeout in seconds; the tool
+            // parameter is milliseconds.
+            timeout:
+              (args.timeoutMs !== undefined && args.timeoutMs > 0 ? args.timeoutMs : SHELL_TIMEOUT_MS) / 1000,
             onOutput: (chunk) => api.output(chunk),
             spill: { afterBytes: SHELL_SPILL_BYTES, afterLines: 2_000 },
           },
           ctx,
         );
         if (!result.ok) {
-          const spill =
-            result.error.spillPath !== undefined
-              ? `\n${renderToolResult("shell-failed-spill", { spillPath: result.error.spillPath })}`
-              : "";
-          return errorResult(
-            renderToolResult("shell-failed", { message: result.error.message, spillBlock: spill }),
-          );
+          api.diagnostic({
+            severity: "error",
+            code: "shell_failed",
+            message: renderToolResult("shell-failed", { message: result.error.message, spillBlock: "" }),
+          });
+          if (result.error.spillPath !== undefined) {
+            api.diagnostic({
+              severity: "info",
+              code: "full_output",
+              message: renderToolResult("shell-failed-spill", { spillPath: result.error.spillPath }),
+            });
+          }
+          return { isError: true };
         }
-        const spill =
-          result.value.spillPath !== undefined
-            ? `\n${renderToolResult("shell-exit-spill", { spillPath: result.value.spillPath })}`
-            : "";
-        if (result.value.exitCode !== 0) {
-          return {
-            isError: true,
-            content: [
-              { type: "text", text: renderToolResult("shell-exit", { exitCode: result.value.exitCode, spillBlock: spill }) },
-            ],
-          };
+        const { exitCode, spillPath } = result.value;
+        // The exit status is a harness diagnostic; the content stays the real
+        // stdout/stderr retained by the harness.
+        api.diagnostic({
+          severity: exitCode === 0 ? "info" : "error",
+          code: "shell_exit",
+          message: renderToolResult("shell-exit", { exitCode, spillBlock: "" }),
+        });
+        if (spillPath !== undefined) {
+          api.diagnostic({
+            severity: "info",
+            code: "full_output",
+            message: renderToolResult("shell-exit-spill", { spillPath }),
+          });
         }
-        return textResult(renderToolResult("shell-exit", { exitCode: 0, spillBlock: spill }));
+        return exitCode === 0 ? {} : { isError: true };
       },
     ),
   });

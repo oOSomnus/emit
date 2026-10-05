@@ -114,6 +114,26 @@ function countToolResults(request: FixtureRequest): number {
   return request.prompt.match(/"role":"tool"/g)?.length ?? 0;
 }
 
+type DirectoryEntry = {
+  id: string;
+  name: string;
+  address: string;
+  enabled: boolean;
+  member: boolean;
+};
+
+/** The current-channel fragment the employee actually received, parsed as data. */
+function contextChannel(request: FixtureRequest): { id: string; name: string } | null {
+  const match = /当前频道（send_message\.roomId 使用 id）：(\{[^\n]*\})/.exec(request.system);
+  return match === null ? null : (JSON.parse(match[1]!) as { id: string; name: string });
+}
+
+/** The employee-directory fragment the employee actually received, parsed as data. */
+function contextDirectory(request: FixtureRequest): DirectoryEntry[] {
+  const match = /工作区员工目录（共 \d+ 人）：(\[[^\n]*\])/.exec(request.system);
+  return match === null ? [] : (JSON.parse(match[1]!) as DirectoryEntry[]);
+}
+
 function toolText(result: ToolExecutionResult): string {
   return (result.content ?? []).map((part) => (part.type === "text" ? part.text : "")).join("\n");
 }
@@ -475,6 +495,239 @@ describe("explicit channel addressing and employee collaboration", () => {
     }
     expect((await listRooms(runtime)).filter((candidate) => candidate.kind === "dm")).toHaveLength(0);
     expect(fixture.requests).toHaveLength(setupRequests + 5);
+  }, 60_000);
+
+  it("takes the current channel and employee ids from injected context, invites, then addresses the new member", async () => {
+    const marker = `CONTEXT-INVITE-${randomUUID()}`;
+    const followUp = `CONTEXT-FOLLOW-${randomUUID()}`;
+    const sendGate = Promise.withResolvers<void>();
+    let secondRound: { channelId: string | null; delta: { enabled: boolean; member: boolean } | undefined } | null = null;
+    const fixture = await startFixture((request) => {
+      if (request.model === "fake-reviewer") return defaultAnswer(request);
+      if (request.prompt.includes(marker)) {
+        const toolResults = countToolResults(request);
+        if (toolResults === 0) {
+          // The invitee id comes only from the injected directory.
+          const delta = contextDirectory(request).find(
+            (entry) => entry.name === "Delta" && entry.enabled && !entry.member,
+          );
+          if (delta === undefined) return { content: "DELTA-MISSING-FROM-INITIAL-DIRECTORY" };
+          return { toolCall: { name: "invite_to_channel", args: { employeeIds: [delta.id] } } };
+        }
+        if (toolResults === 1) {
+          // The re-rendered directory must already mark the new member.
+          const delta = contextDirectory(request).find(
+            (entry) => entry.name === "Delta" && entry.enabled && entry.member,
+          );
+          const channel = contextChannel(request);
+          secondRound = {
+            channelId: channel?.id ?? null,
+            delta: delta === undefined ? undefined : { enabled: delta.enabled, member: delta.member },
+          };
+          if (delta === undefined || channel === null) return { content: "CONTEXT-MISSING-FOR-SEND" };
+          return {
+            toolCall: {
+              name: "send_message",
+              args: { roomId: channel.id, body: followUp, recipientIds: [delta.id] },
+            },
+            gate: sendGate.promise,
+          };
+        }
+        return { content: "The initiating work completed." };
+      }
+      return { content: "The addressed member completed the follow-up." };
+    });
+    cleanup.push(() => fixture.close());
+    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-context-ids-");
+    cleanup.push(() => sendGate.resolve());
+    const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta", "Delta"]);
+    const alpha = employeeNamed(employees, "Alpha");
+    const beta = employeeNamed(employees, "Beta");
+    const delta = employeeNamed(employees, "Delta");
+    const disabled = await createEmployee(runtime, {
+      name: "Disabled",
+      role: "Research",
+      generateAddress: false,
+      executionModel,
+    });
+    const disabledOff = await updateEmployee(runtime, disabled.id, { enabled: false });
+    const context = await createWorkContextFixture(runtime, "Context identity work");
+    const room = await createRoom(runtime, {
+      kind: "channel",
+      name: "Context channel",
+      workContextId: context.id,
+      memberIds: [alpha.id, beta.id],
+    });
+    const initiating = await sendChannelMessage(resume, room, marker, [alpha.id]);
+    runtime.resume();
+
+    await waitForFixture(
+      async () => secondRound !== null,
+      "the initiating employee to re-render context after the invitation",
+    );
+
+    // The first round saw the real channel and the full directory before the invite.
+    const inviteRound = fixture.requests.find(
+      (request) => request.prompt.includes(marker) && countToolResults(request) === 0,
+    );
+    expect(inviteRound).toBeDefined();
+    expect(contextChannel(inviteRound!)).toEqual({ id: room.id, name: room.name });
+    const initialDirectory = contextDirectory(inviteRound!);
+    expect(initialDirectory.find((entry) => entry.id === alpha.id)).toMatchObject({ enabled: true, member: true });
+    expect(initialDirectory.find((entry) => entry.id === delta.id)).toMatchObject({ enabled: true, member: false });
+    expect(initialDirectory.find((entry) => entry.id === disabledOff.id)).toMatchObject({
+      enabled: false,
+      member: false,
+    });
+
+    // The invitation changed membership and never woke the invitee.
+    const afterInvite = await findRoom(runtime, room.id);
+    expect(afterInvite?.membershipVersion).toBe(room.membershipVersion + 1);
+    expect(afterInvite?.memberIds).toEqual([alpha.id, beta.id, delta.id]);
+    const notices = (await readFixtureRoomMessages(runtime, room)).filter(
+      (message) => message.notice && message.author.type === "system",
+    );
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.body).toContain(delta.name);
+    expect((await listWorks(runtime)).filter((work) => work.parentWorkId === initiating.workIds[0])).toHaveLength(0);
+    expect(secondRound).toEqual({ channelId: room.id, delta: { enabled: true, member: true } });
+
+    sendGate.resolve();
+    await waitForFixture(
+      async () => (await listWorks(runtime)).filter((work) => work.parentWorkId === initiating.workIds[0]).length === 1,
+      "the explicitly addressed follow-up work",
+    );
+    const children = (await listWorks(runtime)).filter((work) => work.parentWorkId === initiating.workIds[0]);
+    expect(children.map((work) => work.employeeId)).toEqual([delta.id]);
+    await waitForWorks(resume, [initiating.workIds[0]!, ...children.map((work) => work.id)]);
+
+    const messages = await readFixtureRoomMessages(runtime, room);
+    const sent = messages.find((message) => message.author.id === alpha.id && message.body === followUp);
+    expect(sent).toBeDefined();
+    expect(sent?.addressing?.recipientIds).toEqual([delta.id]);
+    expect(children[0]?.sourceEntryId).toBe(sent?.id);
+    const deltaReply = messages.find((message) => message.workId === children[0]?.id);
+    expect(deltaReply?.author.id).toBe(delta.id);
+    // Alpha's own send never wakes Alpha.
+    expect(
+      (await listWorks(runtime)).filter(
+        (work) => work.employeeId === alpha.id && work.parentWorkId === initiating.workIds[0],
+      ),
+    ).toHaveLength(0);
+  }, 60_000);
+
+  it("never borrows a channel id across channels, delegations, DMs, or mail", async () => {
+    const roomOneMarker = `CHANNEL-ONE-${randomUUID()}`;
+    const roomTwoMarker = `CHANNEL-TWO-${randomUUID()}`;
+    const plainCanary = `PLAIN-ONLY-IN-TWO-${randomUUID()}`;
+    const delegationMarker = `DELEGATE-${randomUUID()}`;
+    const dmMarker = `DM-TASK-${randomUUID()}`;
+    const mailMarker = `MAIL-TASK-${randomUUID()}`;
+    const seen = new Map<
+      string,
+      { channel: string | null; system: string; directory: DirectoryEntry[] }
+    >();
+    const capture = (key: string, request: FixtureRequest): void => {
+      seen.set(key, {
+        channel: contextChannel(request)?.id ?? null,
+        system: request.system,
+        directory: contextDirectory(request),
+      });
+    };
+    const fixture = await startFixture((request) => {
+      if (request.model === "fake-reviewer") return defaultAnswer(request);
+      if (request.prompt.includes(delegationMarker) && countToolResults(request) === 0) {
+        capture("delegation", request);
+        return { content: "Delegated work completed." };
+      }
+      if (request.prompt.includes(dmMarker) && countToolResults(request) === 0) {
+        capture("dm", request);
+        return { content: "DM work completed." };
+      }
+      if (request.prompt.includes(mailMarker) && countToolResults(request) === 0) {
+        capture("mail", request);
+        return { content: "Mail work completed." };
+      }
+      if (request.prompt.includes(roomTwoMarker)) {
+        if (countToolResults(request) === 0) {
+          capture("roomTwo", request);
+          const channel = contextChannel(request);
+          if (channel === null) return { content: "ROOM-TWO-CHANNEL-MISSING" };
+          return { toolCall: { name: "send_message", args: { roomId: channel.id, body: plainCanary } } };
+        }
+        return { content: "Room two work completed." };
+      }
+      if (request.prompt.includes(roomOneMarker)) {
+        if (countToolResults(request) === 0) {
+          capture("roomOne", request);
+          return { toolCall: { name: "delegate_task", args: { employee: "Delta", task: delegationMarker } } };
+        }
+        return { content: "Room one work completed." };
+      }
+      return { content: "No identity task matched." };
+    });
+    cleanup.push(() => fixture.close());
+    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-channel-identity-");
+    const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta", "Delta"]);
+    const alpha = employeeNamed(employees, "Alpha");
+    const beta = employeeNamed(employees, "Beta");
+    const delta = employeeNamed(employees, "Delta");
+    const context = await createWorkContextFixture(runtime, "Channel identity work");
+    const roomOne = await createRoom(runtime, {
+      kind: "channel",
+      name: "First channel",
+      workContextId: context.id,
+      memberIds: [alpha.id, beta.id, delta.id],
+    });
+    const roomTwo = await createRoom(runtime, {
+      kind: "channel",
+      name: "Second channel",
+      workContextId: context.id,
+      memberIds: [alpha.id, beta.id],
+    });
+
+    const one = await sendChannelMessage(resume, roomOne, roomOneMarker, [alpha.id]);
+    const two = await sendChannelMessage(resume, roomTwo, roomTwoMarker, [alpha.id]);
+    const dm = await ensureEmployeeDm(runtime, {
+      workContextId: context.id,
+      participantIds: ["user", alpha.id],
+      name: "User ↔ Alpha",
+      topic: "Direct",
+      employeeId: alpha.id,
+    });
+    const dmSend = await sendQueuedMessage(resume, { roomId: dm.room.id, author: userAuthor, body: dmMarker });
+    const mailRoom = await createRoom(runtime, { kind: "mail", name: "Alpha mail", workContextId: context.id });
+    const mailSend = await sendQueuedMail(resume, { room: { id: mailRoom.id }, data: mailTo(alpha, mailMarker) });
+    runtime.resume();
+
+    const workIds = [one.workIds[0]!, two.workIds[0]!, dmSend.workIds[0]!, mailSend.workIds[0]!];
+    await waitForWorks(resume, workIds);
+
+    // Every work derived its own channel from its own binding.
+    expect(seen.get("roomOne")?.channel).toBe(roomOne.id);
+    expect(seen.get("roomTwo")?.channel).toBe(roomTwo.id);
+    // A delegation inherits its parent's directory but not its channel.
+    expect(seen.get("delegation")?.channel).toBeNull();
+    expect(seen.get("delegation")?.system).not.toContain("当前频道（send_message.roomId 使用 id）");
+    expect(seen.get("delegation")?.system).not.toContain(roomOne.id);
+    expect(seen.get("delegation")?.directory.every((entry) => !entry.member)).toBe(true);
+    expect(seen.get("dm")?.channel).toBeNull();
+    expect(seen.get("mail")?.channel).toBeNull();
+
+    const delegationWork = (await listWorks(runtime)).find((work) => work.parentWorkId === one.workIds[0]);
+    expect(delegationWork?.employeeId).toBe(delta.id);
+    if (delegationWork !== undefined) await waitForWorks(resume, [delegationWork.id]);
+
+    // The plain message landed only in the second channel and woke nobody.
+    const twoMessages = await readFixtureRoomMessages(runtime, roomTwo);
+    const plain = twoMessages.find((message) => message.body === plainCanary);
+    expect(plain).toBeDefined();
+    expect(plain?.addressing?.recipientIds ?? []).toEqual([]);
+    const oneMessages = await readFixtureRoomMessages(runtime, roomOne);
+    expect(oneMessages.some((message) => message.body === plainCanary)).toBe(false);
+    expect(
+      (await listWorks(runtime)).filter((work) => work.employeeId === beta.id && work.roomId === roomTwo.id),
+    ).toHaveLength(0);
   }, 60_000);
 
   it("replays invite and send receipts once and blocks invalid invite or ancestor actions", async () => {

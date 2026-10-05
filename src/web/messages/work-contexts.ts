@@ -94,7 +94,6 @@ export const englishWorkContexts = {
   close: "Close",
   reloadMembers: "Reload members",
 
-  mentionAll: "Address everyone",
   addressSuggestions: "Members",
   addressLabel: "Reply from",
   addressedTo: (names: string) => `Everyone can read this; only addressed employees reply: ${names}.`,
@@ -192,7 +191,6 @@ export const chineseWorkContexts: WorkContextsMessages = {
   close: "关闭",
   reloadMembers: "重新载入成员",
 
-  mentionAll: "点名全体",
   addressSuggestions: "成员",
   addressLabel: "回复者",
   addressedTo: (names) => `全员可见，只有被点名的员工会回复：${names}。`,

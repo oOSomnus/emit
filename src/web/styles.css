@@ -487,7 +487,8 @@ ul {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
-  padding: var(--space-2);
+  padding: var(--space-3);
+  gap: var(--space-4);
 }
 
 .sidebar-rooms > section {
@@ -514,6 +515,13 @@ ul {
   color: var(--rail-muted);
   margin: var(--space-2) var(--space-1) var(--space-1);
   min-height: 36px;
+}
+
+.sidebar-work-hint {
+  margin: var(--space-2) var(--space-1) 0;
+  line-height: 1.6;
+  white-space: normal;
+  color: var(--rail-muted);
 }
 
 .sidebar .icon-button { color: var(--rail-muted); }
@@ -579,7 +587,7 @@ ul {
 }
 
 .sidebar-mail {
-  padding: var(--space-2);
+  padding: var(--space-3);
   border-top: 1px solid var(--rail-line);
   flex: none;
 }
@@ -605,7 +613,7 @@ ul {
   grid-auto-rows: var(--row-h);
   gap: var(--space-1);
   align-content: start;
-  padding: var(--space-2);
+  padding: var(--space-3);
   border-top: 1px solid var(--rail-line);
 }
 
@@ -736,6 +744,12 @@ ul {
 
 .pane-header > div:first-child { min-width: 0; flex: 1; }
 
+/* The chat header stacks title, work, and topic instead of packing them. */
+.chat-pane .pane-header > div:first-child {
+  display: grid;
+  gap: var(--space-1);
+}
+
 .pane-header h2 {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -744,6 +758,10 @@ ul {
 
 .pane-header .topic {
   margin-top: 2px;
+}
+
+.chat-pane .pane-header .topic {
+  margin-top: 0;
 }
 
 .pane-header-actions {
@@ -875,6 +893,7 @@ ul {
   overflow-wrap: anywhere;
 }
 .message .body {
+  margin-top: var(--space-2);
   font-size: var(--text-body);
   line-height: var(--leading-body);
 }
@@ -890,7 +909,6 @@ ul {
   margin-inline: auto;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-lg);
-  overflow: hidden;
 }
 .composer-box:focus-within {
   border-color: var(--accent);
@@ -898,12 +916,15 @@ ul {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
+.composer-input {
+  position: relative;
+}
 .composer textarea {
   display: block;
   min-height: 80px;
   max-height: 240px;
   border: none;
-  border-radius: 0;
+  border-radius: calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px) 0 0;
   padding: var(--space-3) var(--space-4);
   font-size: var(--text-body);
   line-height: var(--leading-body);
@@ -912,12 +933,33 @@ ul {
   box-shadow: none;
   outline: none;
 }
+.composer-status {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-meta);
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.composer-status .composer-error {
+  color: var(--error);
+}
 .composer-toolbar {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-4);
+}
+.composer-toolbar .mention-trigger {
+  margin-right: auto;
+  min-width: 36px;
+  padding: 0 10px;
+  justify-content: center;
+  color: var(--accent);
+  font-weight: 600;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
 }
 .composer select {
   flex: 1;
@@ -929,8 +971,64 @@ ul {
 }
 .composer-toolbar > button { flex: none; }
 
+/* The mention menu floats above the input instead of growing the composer. */
+.mention-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 10;
+  width: min(360px, 100%);
+  max-height: min(280px, 40dvh);
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--space-1);
+  list-style: none;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+.mention-popover .mention-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 56px;
+  height: auto;
+  padding: var(--space-2);
+  text-align: left;
+  white-space: normal;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius);
+}
+.mention-popover .mention-option[aria-selected="true"],
+.mention-popover .mention-option[aria-selected="true"]:hover {
+  background: var(--selected);
+  color: var(--selected-text);
+}
+.mention-option-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.mention-option-meta {
+  color: var(--text-dim);
+  font-size: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+.mention-option[aria-selected="true"] .mention-option-meta {
+  color: var(--selected-text);
+}
+.mention-empty {
+  padding: var(--space-3);
+  color: var(--text-dim);
+  font-size: var(--text-meta);
+}
+
 .stream {
   max-height: 320px;
+  overflow: auto;
   background: transparent;
   border: none;
   padding: 0;
@@ -960,6 +1058,88 @@ ul {
   display: grid;
   gap: var(--space-2);
   min-width: 0;
+}
+
+/* -------------------------------------------------------------- markdown */
+
+/* The message body keeps chat habits: soft line breaks stay visible, blocks
+   get real spacing, and code/tables scroll locally instead of widening the
+   document. */
+.markdown-body {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body > :last-child { margin-bottom: 0; }
+.markdown-body p {
+  margin: 0 0 var(--space-3);
+  white-space: pre-wrap;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: var(--space-6) 0 var(--space-2);
+  line-height: 1.4;
+}
+.markdown-body h1 { font-size: 22px; }
+.markdown-body h2 { font-size: 20px; }
+.markdown-body h3 { font-size: 18px; }
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 { font-size: 16px; }
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-6);
+}
+.markdown-body li { margin: 0 0 var(--space-1); }
+.markdown-body li > p { margin-bottom: var(--space-1); }
+.markdown-body blockquote {
+  margin: 0 0 var(--space-3);
+  padding: 0 var(--space-3);
+  border-left: 3px solid var(--line-strong);
+  color: var(--text-dim);
+}
+.markdown-body code {
+  background: var(--code-bg);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.markdown-body pre {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-4);
+  white-space: pre;
+  overflow-x: auto;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.markdown-body pre code {
+  background: none;
+  padding: 0;
+}
+.markdown-body .markdown-table-scroll {
+  margin: 0 0 var(--space-3);
+  overflow-x: auto;
+}
+.markdown-body table {
+  border-collapse: collapse;
+}
+.markdown-body th,
+.markdown-body td {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  text-align: left;
+}
+.markdown-body input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0 6px 0 0;
 }
 
 /* ------------------------------------------------------------ approvals */
@@ -1902,7 +2082,14 @@ button.mail-row-open:hover:not(:disabled) { background: transparent; }
   }
 
   .composer { padding: var(--space-3); }
-  .composer textarea { min-height: 64px; }
+  .composer textarea {
+    min-height: 64px;
+    padding-inline: var(--space-3);
+  }
+  .composer-status,
+  .composer-toolbar {
+    padding-inline: var(--space-3);
+  }
 
   .toast {
     left: 16px;
@@ -1966,6 +2153,7 @@ button.mail-row-open:hover:not(:disabled) { background: transparent; }
   padding: 18px 20px;
   background: var(--bg-raise);
   border-bottom: 1px solid var(--line);
+  flex: none;
 }
 
 .directory-editor-head h2 {
@@ -2018,11 +2206,94 @@ button.mail-row-open:hover:not(:disabled) { background: transparent; }
   gap: 8px;
   padding: 12px 20px;
   border-top: 1px solid var(--line);
+  flex: none;
 }
 
 .directory-error {
   margin: 0;
   color: var(--error);
+}
+
+/* Creating a channel: the member list scrolls inside the dialog body while the
+   title and footer stay put. */
+.channel-create .directory-editor-body {
+  gap: var(--space-4);
+  padding: var(--space-6);
+}
+
+.channel-create .directory-editor-foot {
+  padding: var(--space-3) var(--space-6) var(--space-4);
+}
+
+.channel-create .directory-editor-head {
+  padding: var(--space-4) var(--space-6);
+}
+
+.channel-create-field {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.channel-create-members {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.channel-create-members h3 {
+  margin: 0;
+}
+
+.channel-create-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.channel-create-actions .hint {
+  margin-left: auto;
+}
+
+.member-picker {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.member-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 64px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.member-option:hover {
+  background: var(--hover);
+}
+
+.member-option-text {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1;
+}
+
+.member-option-meta {
+  color: var(--text-dim);
+  font-size: var(--text-meta);
+}
+
+.member-option-address {
+  overflow-wrap: anywhere;
+}
+
+.member-option.unavailable {
+  cursor: not-allowed;
 }
 
 .directory-conflict,
@@ -2069,6 +2340,22 @@ button.mail-row-open:hover:not(:disabled) { background: transparent; }
     max-height: none;
     border: none;
     border-radius: 0;
+  }
+
+  .channel-create .directory-editor-body {
+    padding: var(--space-4);
+  }
+
+  .channel-create .directory-editor-head {
+    padding: var(--space-4);
+  }
+
+  .channel-create .directory-editor-foot {
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .channel-create .member-option {
+    min-height: 44px;
   }
 }
 

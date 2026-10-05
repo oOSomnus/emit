@@ -81,12 +81,31 @@ export const approvalMessages = {
     en: "Automatic review is unavailable; configure an approval judge model in Settings",
     "zh-CN": "自动审查不可用，请在设置中配置审批判断模型",
   }),
-  /** Missing or unusable approval judge model, with the raw nested reason. */
-  reviewUnavailableWithReason: (detail: string, detailLocalized?: LocalizedText): AppText =>
-    appText({
-      en: `Automatic review is unavailable; configure an approval judge model in Settings: ${detailLocalized?.en ?? detail}`,
-      "zh-CN": `自动审查不可用，请在设置中配置审批判断模型：${detail}`,
-    }),
+  /**
+   * Missing or unusable approval judge model, with the raw nested reason.
+   * The reason class decides the sentence: a broken configuration, a failed
+   * model request, or an unusable model response. Only the configuration case
+   * points at Settings; the others state that this call was blocked.
+   */
+  reviewUnavailableWithReason: (
+    reason: "configuration" | "provider" | "invalid-output",
+    detail: string,
+    detailLocalized?: LocalizedText,
+  ): AppText =>
+    reason === "configuration"
+      ? appText({
+          en: `Automatic review is unavailable; configure an approval judge model in Settings: ${detailLocalized?.en ?? detail}`,
+          "zh-CN": `自动审查不可用，请在设置中配置审批判断模型：${detail}`,
+        })
+      : reason === "provider"
+        ? appText({
+            en: `Automatic review is unavailable (model request failed); this call was blocked: ${detailLocalized?.en ?? detail}`,
+            "zh-CN": `自动审查不可用（模型请求失败），本次调用已阻止：${detail}`,
+          })
+        : appText({
+            en: `Automatic review is unavailable (invalid model response); this call was blocked: ${detailLocalized?.en ?? detail}`,
+            "zh-CN": `自动审查不可用（模型响应无效），本次调用已阻止：${detail}`,
+          }),
   /** Policy evidence for a blocked evaluation; `reason` is the outcome reason enum. */
   unavailableEvidence: (reason: string, detail: string, detailLocalized?: LocalizedText): AppText =>
     appText({

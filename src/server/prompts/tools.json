@@ -24,7 +24,7 @@
     }
   },
   "run_shell": {
-    "description": "Run a shell command with this session's default directory. Output is streamed and truncated; a long-running command is stopped at the timeout.",
+    "description": "Run a shell command with this session's default directory. Returns bounded combined stdout/stderr (the tail when it exceeds the limit) while also streaming output during the run; when the limit is exceeded, the complete output is written to a temporary file whose path is reported. A long-running command is stopped at timeoutMs (milliseconds).",
     "parameters": {
       "command": "Shell command line",
       "cwd": "Directory to run in; defaults to this session's authorized default directory",
@@ -41,16 +41,16 @@
     "description": "Send an in-app message. Provide exactly one of `to` (a direct message to another employee) or `roomId` (a channel of the current work you are a member of). In a channel, address people with @name or the recipientIds/mentionAll fields; a plain message is visible to everyone and wakes nobody. Your own message never wakes you.",
     "parameters": {
       "to": "Employee name, id, or address; opens or reuses your direct conversation with them",
-      "roomId": "Channel id of the current work",
+      "roomId": "Channel id; for the channel this work runs in, take the exact id from the current-channel context section, never the work ID or the channel name",
       "body": "Message text; @name and @all/@全体 wake the addressed enabled members",
-      "recipientIds": "Explicit employee ids to wake, from list_work_notes-style member ids you can see in your context",
+      "recipientIds": "Explicit employee ids to wake, taken from the employee directory in your context where member=true and enabled=true",
       "mentionAll": "Wake every enabled member of the channel (default false)"
     }
   },
   "invite_to_channel": {
-    "description": "Add employees to the channel this work runs in. Inviting takes effect immediately and never wakes the invited employee; address them explicitly afterwards to start their work.",
+    "description": "Add employees to the channel this work runs in. Inviting changes membership; it is not a member query, takes effect immediately, and never wakes the invited employee; address them explicitly afterwards to start their work.",
     "parameters": {
-      "employeeIds": "Employee ids to add; at most 20 at once"
+      "employeeIds": "Employee ids to add, taken from the employee directory in your context (not names or addresses); at most 20 at once"
     }
   },
   "list_work_notes": {

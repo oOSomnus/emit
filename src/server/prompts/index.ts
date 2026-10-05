@@ -106,6 +106,22 @@ export type EmployeeContextInput = {
     remainingNotes: number;
   } | null;
   work: { kind: "delegation" } | { kind: "room" } | { kind: "none" };
+  /**
+   * The channel this request actually runs in, from the conversation binding;
+   * null for DMs, mail, delegations, and unbound conversations.
+   */
+  currentChannel: { id: string; name: string } | null;
+  /**
+   * The workspace employee index: enough to address and invite by exact id,
+   * with this channel's membership marked. No instructions or model config.
+   */
+  employeeDirectory: readonly {
+    id: string;
+    name: string;
+    address: string;
+    enabled: boolean;
+    member: boolean;
+  }[];
 };
 
 export function renderEmployeeContext(input: EmployeeContextInput): string {
@@ -144,6 +160,17 @@ export function renderEmployeeContext(input: EmployeeContextInput): string {
       }),
     );
   }
+  if (input.currentChannel !== null) {
+    parts.push(
+      filled("context.md", "current-channel", { channel: JSON.stringify(input.currentChannel) }),
+    );
+  }
+  parts.push(
+    filled("context.md", "employee-directory", {
+      total: input.employeeDirectory.length,
+      indexes: JSON.stringify(input.employeeDirectory) ?? "[]",
+    }),
+  );
   if (input.directory.kind === "error") {
     parts.push(input.directory.message);
   } else if (input.directory.kind === "missing-room") {

@@ -8,6 +8,7 @@ import { createRoom } from "../../src/server/rooms.ts";
 import { ensureWorkConversation, findWork, listWorks, stopWork, type Resume } from "../../src/server/work.ts";
 import type { EmitRuntime } from "../../src/server/runtime.ts";
 import { createWorkContext, findWorkContext, updateWorkContext } from "../../src/server/work-contexts.ts";
+import { readWorkExecution } from "../../src/server/work-execution.ts";
 import { readApp, updateAppConfig, updateEmployee } from "../../src/server/workspace.ts";
 import {
   FAKE_KEY_ENV,
@@ -196,6 +197,38 @@ function fixtureAnswers(request: FixtureRequest) {
   return { content: "The request is complete." };
 }
 
+/** Raw OpenAI-completions SSE bytes, so the provider stream decides the ending. */
+function completionChunks(options: {
+  reasoning?: string;
+  content?: string;
+  finishReason: "stop" | "length";
+  outputTokens?: number;
+}): Uint8Array[] {
+  const base = { id: "chatcmpl-fixture", object: "chat.completion.chunk", created: 0, model: "fake-reviewer" };
+  const chunk = (payload: unknown): Uint8Array => Buffer.from(`data: ${JSON.stringify(payload)}\n\n`);
+  const parts: Uint8Array[] = [
+    chunk({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] }),
+  ];
+  if (options.reasoning !== undefined) {
+    parts.push(
+      chunk({ ...base, choices: [{ index: 0, delta: { reasoning_content: options.reasoning }, finish_reason: null }] }),
+    );
+  }
+  if (options.content !== undefined) {
+    parts.push(chunk({ ...base, choices: [{ index: 0, delta: { content: options.content }, finish_reason: null }] }));
+  }
+  const outputTokens = options.outputTokens ?? 8;
+  parts.push(
+    chunk({
+      ...base,
+      choices: [{ index: 0, delta: {}, finish_reason: options.finishReason }],
+      usage: { prompt_tokens: 12, completion_tokens: outputTokens, total_tokens: 12 + outputTokens },
+    }),
+    Buffer.from("data: [DONE]\n\n"),
+  );
+  return parts;
+}
+
 describe("real-runtime approval lifecycle", () => {
   it("executes only an approved write, rejects denied writes, and refuses an approval after stop", async () => {
     const workspace = await openApprovalWorkspace(fixtureAnswers, "emit-approval-decisions-");
@@ -276,7 +309,179 @@ describe("real-runtime approval lifecycle", () => {
       expect(approval.status).toBe("blocked");
       expect(approval.executionState).toBe("not-started");
       expect(existsSync(join(workspace.workRoot, `${marker}.txt`))).toBe(false);
+      expect(approval.autoDecisionSource).toBe("policy");
+      expect(approval.evidence?.kind).toBe("policy");
+      if (mode === "http-error") {
+        expect(approval.autoDecisionReason).toContain("模型请求失败");
+        if (approval.evidence?.kind === "policy") expect(approval.evidence.rationale).toContain("provider");
+      } else {
+        expect(approval.autoDecisionReason).toContain("模型响应无效");
+        if (approval.evidence?.kind === "policy") expect(approval.evidence.rationale).toContain("invalid-output");
+      }
     }
+  }, 60_000);
+
+  it("blocks incomplete or empty reviewer responses with an accurate reason, and still executes a complete low-risk verdict", async () => {
+    const reviewerResponses: Record<string, FixtureAnswer> = {
+      TRUNCATED_REVIEW: {
+        chunks: completionChunks({ reasoning: "REVIEW_THINKING_CANARY", finishReason: "length", outputTokens: 400 }),
+      },
+      EMPTY_REVIEW: { chunks: completionChunks({ finishReason: "stop", outputTokens: 50 }) },
+      LENGTH_JSON_REVIEW: {
+        chunks: completionChunks({ content: lowVerdict, finishReason: "length", outputTokens: 5000 }),
+      },
+    };
+    const workspace = await openApprovalWorkspace((request) => {
+      if (request.model === "fake-reviewer") {
+        for (const [marker, answer] of Object.entries(reviewerResponses)) {
+          // The current call's arguments name its own target file; earlier room
+          // history may mention older markers, so only this call counts.
+          if (request.prompt.includes(`${marker}.txt`)) return answer;
+        }
+        return { content: lowVerdict };
+      }
+      const writeMarkers = ["TRUNCATED_REVIEW", "EMPTY_REVIEW", "LENGTH_JSON_REVIEW", "COMPLETE_REVIEW"];
+      // The current intent is the last message; history may mention older markers.
+      const marker = writeMarkers
+        .map((candidate) => ({ candidate, index: request.prompt.lastIndexOf(candidate) }))
+        .filter((entry) => entry.index >= 0)
+        .sort((left, right) => right.index - left.index)[0]?.candidate;
+      if (marker !== undefined && !request.prompt.includes('"role":"tool"')) {
+        return { toolCall: { name: "write_file", args: { path: `${marker}.txt`, content: marker } } };
+      }
+      return fixtureAnswers(request);
+    }, "emit-approval-incomplete-reviews-");
+    workspace.runtime.resume();
+
+    const diagnostics: Record<string, string[]> = {
+      TRUNCATED_REVIEW: ["length", "400"],
+      EMPTY_REVIEW: ["stop", "50"],
+      LENGTH_JSON_REVIEW: ["length", "5000"],
+    };
+    for (const marker of ["TRUNCATED_REVIEW", "EMPTY_REVIEW", "LENGTH_JSON_REVIEW"]) {
+      const workId = await enqueueWork(workspace.resume, workspace.room, workspace.worker, marker);
+      await waitForWorkTerminal(workspace.runtime, workId);
+      const approval = await approvalForWork(workspace.runtime, workId);
+      expect(approval.status).toBe("blocked");
+      expect(approval.executionState).toBe("not-started");
+      expect(existsSync(join(workspace.workRoot, `${marker}.txt`))).toBe(false);
+      expect(approval.autoDecisionSource).toBe("policy");
+      expect(approval.evidence?.kind).toBe("policy");
+      if (approval.evidence?.kind === "policy") expect(approval.evidence.rationale).toContain("invalid-output");
+      for (const expected of diagnostics[marker]!) expect(approval.autoDecisionReason).toContain(expected);
+      expect(approval.autoDecisionReason).toContain("模型响应无效");
+      expect(approval.autoDecisionReason).not.toContain("配置审批判断模型");
+      expect(approval.autoDecisionReason).not.toContain("REVIEW_THINKING_CANARY");
+    }
+
+    const completeWorkId = await enqueueWork(workspace.resume, workspace.room, workspace.worker, "COMPLETE_REVIEW");
+    await waitForWorkTerminal(workspace.runtime, completeWorkId);
+    const completeApproval = await approvalForWork(workspace.runtime, completeWorkId);
+    expect(completeApproval.status).toBe("approved");
+    expect(completeApproval.executionState).toBe("succeeded");
+    expect(readFileSync(join(workspace.workRoot, "COMPLETE_REVIEW.txt"), "utf8")).toBe("COMPLETE_REVIEW");
+  }, 60_000);
+
+  it("feeds real shell stdout/stderr and a tail-bounded result into the model, with a milliseconds timeout", async () => {
+    type ShellSpec = { command: string; timeoutMs?: number };
+    const shellSpecs: Record<string, ShellSpec> = {
+      SHELL_STREAMS: { command: "printf 'SHELL_STDOUT\\n'; printf 'SHELL_STDERR\\n' >&2" },
+      SHELL_EXIT3: { command: "printf 'SHELL_BEFORE_ERROR\\n'; exit 3" },
+      SHELL_TIMEOUT: {
+        command: "printf 'BEFORE_TIMEOUT\\n'; sleep 10; printf 'AFTER_TIMEOUT\\n'",
+        timeoutMs: 100,
+      },
+      SHELL_BIG: { command: "node -e \"process.stdout.write('SHELL_HEAD' + 'A'.repeat(70000) + 'SHELL_TAIL')\"" },
+      SHELL_LINES: { command: "seq 1 2500" },
+      SHELL_SILENT: { command: "true" },
+    };
+    // The tool result the employee model actually received in its follow-up
+    // round; the durable UI record clamps a step to 8000 bytes, so the model
+    // message is the oracle for output retention.
+    const toolResults: string[] = [];
+    const workspace = await openApprovalWorkspace((request) => {
+      if (request.model === "fake-reviewer") return { content: lowVerdict };
+      const messages = JSON.parse(request.prompt) as { role?: string; content?: unknown }[];
+      const toolMessage = messages.find((message) => message.role === "tool");
+      if (toolMessage !== undefined) {
+        const content = toolMessage.content;
+        toolResults.push(typeof content === "string" ? content : JSON.stringify(content));
+        return { content: "命令已执行。" };
+      }
+      // The current intent is the last message; earlier room history may
+      // mention older markers.
+      const marker = Object.keys(shellSpecs)
+        .map((candidate) => ({ candidate, index: request.prompt.lastIndexOf(candidate) }))
+        .filter((entry) => entry.index >= 0)
+        .sort((left, right) => right.index - left.index)[0]?.candidate;
+      if (marker === undefined) return { content: "没有命令。" };
+      const spec = shellSpecs[marker]!;
+      return {
+        toolCall: {
+          name: "run_shell",
+          args: { command: spec.command, ...(spec.timeoutMs === undefined ? {} : { timeoutMs: spec.timeoutMs }) },
+        },
+      };
+    }, "emit-approval-shell-output-");
+    workspace.runtime.resume();
+
+    const runShellWork = async (marker: string, expectedState: "succeeded" | "failed") => {
+      const workId = await enqueueWork(workspace.resume, workspace.room, workspace.worker, marker);
+      await waitForWorkTerminal(workspace.runtime, workId);
+      const approval = await approvalForWork(workspace.runtime, workId);
+      expect(approval.executionState).toBe(expectedState);
+      const execution = await readWorkExecution(workspace.runtime, workId);
+      const result = execution?.steps.find((step) => step.kind === "tool-result" && step.toolName === "run_shell");
+      const toolText = toolResults.at(-1);
+      expect(toolText).toBeDefined();
+      return { result, toolText: toolText ?? "" };
+    };
+
+    const streams = await runShellWork("SHELL_STREAMS", "succeeded");
+    expect(streams.toolText).toContain("SHELL_STDOUT");
+    expect(streams.toolText).toContain("SHELL_STDERR");
+    expect(streams.toolText).toContain("退出码 0");
+    expect(streams.result).toMatchObject({ isError: false });
+    expect(streams.result?.text).toContain("SHELL_STDOUT");
+    expect(streams.result?.text).toContain("SHELL_STDERR");
+
+    const exit3 = await runShellWork("SHELL_EXIT3", "failed");
+    expect(exit3.toolText).toContain("SHELL_BEFORE_ERROR");
+    expect(exit3.toolText).toContain("退出码 3");
+    expect(exit3.result).toMatchObject({ isError: true });
+
+    const timeoutStarted = Date.now();
+    const timeout = await runShellWork("SHELL_TIMEOUT", "failed");
+    expect(Date.now() - timeoutStarted).toBeLessThan(5_000);
+    expect(timeout.toolText).toContain("BEFORE_TIMEOUT");
+    expect(timeout.toolText).toContain("timeout");
+    expect(timeout.toolText).not.toContain("AFTER_TIMEOUT");
+
+    const big = await runShellWork("SHELL_BIG", "succeeded");
+    const bigHarness = big.toolText.indexOf("<harness>");
+    expect(bigHarness).toBeGreaterThan(-1);
+    // The OpenAI tool message joins content parts with a newline; the retained
+    // output itself is what the harness bounded.
+    const bigVisible = big.toolText.slice(0, bigHarness).replace(/\n$/, "");
+    expect(bigVisible).toContain("SHELL_TAIL");
+    expect(bigVisible).not.toContain("SHELL_HEAD");
+    expect(Buffer.byteLength(bigVisible, "utf8")).toBeLessThanOrEqual(65_536);
+    const spill = /完整输出已写入 (\S+)/.exec(big.toolText);
+    expect(spill).not.toBeNull();
+    const spilled = readFileSync(spill![1]!, "utf8");
+    expect(spilled).toContain("SHELL_HEAD");
+    expect(spilled).toContain("SHELL_TAIL");
+
+    const lines = await runShellWork("SHELL_LINES", "succeeded");
+    const linesHarness = lines.toolText.indexOf("<harness>");
+    expect(linesHarness).toBeGreaterThan(-1);
+    const linesVisible = lines.toolText.slice(0, linesHarness);
+    expect(linesVisible).toContain("\n2500");
+    expect(linesVisible).not.toContain("\n1\n");
+
+    const silent = await runShellWork("SHELL_SILENT", "succeeded");
+    expect(silent.toolText).toContain("退出码 0");
+    expect(silent.toolText.slice(0, silent.toolText.indexOf("<harness>"))).toBe("");
   }, 60_000);
 
   it("claims a grant once and rejects changed arguments, employee configuration, directory, and policy snapshots", async () => {
