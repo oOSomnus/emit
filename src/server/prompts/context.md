@@ -24,6 +24,7 @@ This work was delegated by another employee. When finished, return the result as
 
 ## work-room
 This work is a turn in this conversation.
+Your final text response is delivered automatically to this conversation; do not use send_message just to answer the current message.
 
 ## work-context
 This run is fixed to the work "{{name}}" (work ID {{id}}, not a channel ID).

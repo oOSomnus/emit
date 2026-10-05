@@ -37,6 +37,7 @@ import {
   ConversationContextDoc,
   EmployeeDoc,
   MailSendReceiptDoc,
+  MessageSendReceiptDoc,
   RoomDoc,
   RoomMessageEntry,
   WorkContextDoc,
@@ -443,6 +444,17 @@ async function deliverAnswer(
   const room = await runtime.readFamily(RoomDoc, work.roomId, { id: work.roomId });
   if (room === undefined) return undefined;
 
+  // An employee that already replied into the conversation its work started
+  // from owns that reply; the final answer belongs to the execution record
+  // only. Read before the commit: only a committed send writes this receipt.
+  const replyKey = `reply:${work.id}`;
+  const replyReceipt = await runtime.readFamily(MessageSendReceiptDoc, replyKey, { key: replyKey });
+  const replyAlreadySent =
+    work.kind === "message" &&
+    replyReceipt !== undefined &&
+    replyReceipt.entryId.length > 0 &&
+    replyReceipt.roomId === work.roomId;
+
   const usage = await workUsage(runtime, conversationId, context);
   const mail = room.kind === "mail" ? await replyEnvelope(runtime, room, work, employee) : undefined;
   const parent = work.parentWorkId.length > 0 ? await findWork(runtime, work.parentWorkId) : undefined;
@@ -459,16 +471,19 @@ async function deliverAnswer(
       doc.answer = text;
       return { waiting: true as const };
     }
-    const appended = await appendRoomMessageIn(
-      tx,
-      room,
-      messageData({
-        author: { type: "employee", id: employee.id, name: employee.name, address: employee.address },
-        body: text,
-        workId: work.id,
-        ...(mail !== undefined ? { mail } : {}),
-      }),
-    );
+    const appended =
+      replyAlreadySent
+        ? undefined
+        : await appendRoomMessageIn(
+            tx,
+            room,
+            messageData({
+              author: { type: "employee", id: employee.id, name: employee.name, address: employee.address },
+              body: text,
+              workId: work.id,
+              ...(mail !== undefined ? { mail } : {}),
+            }),
+          );
     doc.status = "succeeded";
     doc.answer = text;
     doc.finishedAt = Date.now();
@@ -478,7 +493,7 @@ async function deliverAnswer(
     // The parent who asked for this reply is continued from the entry just
     // written; the task is created here, in the same commit as the answer, so
     // a crash cannot leave an answer nobody reads.
-    if (awaitedByParent && parent !== undefined && doc.mailResumeTaskId.length === 0) {
+    if (awaitedByParent && parent !== undefined && appended !== undefined && doc.mailResumeTaskId.length === 0) {
       const taskId = await tx.createTask(
         resume0.mail.resumeTask,
         {
@@ -504,7 +519,7 @@ async function deliverAnswer(
   if (updated !== undefined) {
     runtime.emit({ type: "work", work: toWorkDTO(updated, employee.name, room.name) });
   }
-  if (outcome === undefined || outcome.waiting) return undefined;
+  if (outcome === undefined || outcome.waiting || outcome.entry === undefined) return undefined;
   const dto = toMessageDTO(outcome.entry);
   if (dto !== undefined) {
     dto.roomId = room.id;

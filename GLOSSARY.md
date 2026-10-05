@@ -15,3 +15,6 @@ The per-root-work allowance, set in collaboration settings, that limits how many
 
 **Chat composer**:
 The channel or direct-message editor in which content is written and channel recipients are selected separately. A typed mention is content, not a recipient selection.
+
+**Ordinary reply**:
+The first message an employee sends with `send_message` into the channel its own work started from without addressing anyone. It is linked to that work, and the work's final text becomes its recorded answer instead of a second room message.

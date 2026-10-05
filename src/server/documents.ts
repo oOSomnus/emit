@@ -586,6 +586,11 @@ export const MailSendReceiptDoc = defineDocFamily<MailSendReceiptRecord, { key: 
  * this receipt are one commit, so a replayed tool call returns the recorded
  * outcome instead of sending (and waking) a second time. The key is
  * `tool:<toolTaskId>`.
+ *
+ * The same family carries the work-level key `reply:<workId>`: the first
+ * ordinary reply an employee sent into the channel its own work started from.
+ * `deliverAnswer` reads it to keep that work's final answer out of the room,
+ * while still recording the answer on the work.
  */
 export type MessageSendReceiptRecord = {
   key: string;

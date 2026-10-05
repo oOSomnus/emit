@@ -236,12 +236,25 @@ export async function sendQueuedMessage(
       } else if (doc.kind === "dm" && !doc.dmParticipantIds.includes(input.author.id)) {
         throw new RoomError(400, appMessages.rooms.notParticipant(input.author.name));
       }
+      // The employee's ordinary reply to the conversation that started its
+      // work: nobody is woken, the message belongs to this work, and the final
+      // answer of the same work must not be posted a second time.
+      const repliesToOwnWork =
+        parent !== undefined &&
+        parent.kind === "message" &&
+        isEmployeeAuthor &&
+        input.author.id === parent.employeeId &&
+        doc.kind === "channel" &&
+        doc.id === parent.roomId &&
+        recipients.length === 0;
+      const replyWorkId = repliesToOwnWork && parent !== undefined ? parent.id : undefined;
       const entry = await appendRoomMessageIn(
         tx,
         doc,
         messageData({
           author: input.author,
           body: input.body,
+          workId: replyWorkId,
           addressing: { recipientIds: [...recipients], mentionAll },
         }),
       );
@@ -274,6 +287,20 @@ export async function sendQueuedMessage(
         receipt.roomId = doc.id;
         receipt.entryId = String(entry.id);
         receipt.workIds = [...created];
+      }
+      // The first committed ordinary reply of this work, recorded under the
+      // work-level key `reply:<workId>`. Later explicit sends are deliberate
+      // updates and are never merged into it; the receipt records the entry the
+      // final answer must not duplicate.
+      if (repliesToOwnWork && parent !== undefined) {
+        const replyKey = `reply:${parent.id}`;
+        const reply = await tx.doc(MessageSendReceiptDoc, replyKey, { key: replyKey });
+        if (reply.entryId.length === 0) {
+          reply.key = replyKey;
+          reply.roomId = doc.id;
+          reply.entryId = String(entry.id);
+          reply.workIds = [];
+        }
       }
       return { entry, workIds: created };
     }, runtime.ctx)

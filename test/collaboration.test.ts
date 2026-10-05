@@ -339,19 +339,215 @@ describe("explicit channel addressing and employee collaboration", () => {
     for (const entry of toolEntries) {
       expect(entry.addressing).toEqual({ recipientIds: [], mentionAll: false });
     }
-    const finalReplies = messages.filter(
-      (message) => message.author.type === "employee" && message.body === finalOnlyText,
-    );
-    expect(finalReplies).toHaveLength(2);
-    for (const reply of finalReplies) {
-      expect(reply.addressing).toBeUndefined();
-      expect(reply.workId).toBeDefined();
-      expect(broadcast.workIds).toContain(reply.workId!);
+    // The ordinary reply is the work's own message and the final summary is
+    // not posted a second time: the room keeps one body-only entry per work.
+    for (const entry of toolEntries) {
+      expect(broadcast.workIds).toContain(entry.workId ?? "");
+    }
+    expect(messages.filter((message) => message.body === finalOnlyText)).toHaveLength(0);
+    for (const workId of broadcast.workIds) {
+      const work = await findWork(runtime, workId);
+      expect(work?.status).toBe("succeeded");
+      expect(work?.answer).toBe(finalOnlyText);
     }
     for (const work of works) {
       expect(toolEntries.some((entry) => entry.id === work.sourceEntryId)).toBe(false);
-      expect(finalReplies.some((entry) => entry.id === work.sourceEntryId)).toBe(false);
     }
+  }, 60_000);
+
+  it("cross-channel sends preserve the final reply in the originating channel", async () => {
+    const rootMarker = `cross-channel-root-${randomUUID()}`;
+    const crossBody = "CROSS_ROOM_BODY";
+    const crossFinal = "CROSS_ROOM_FINAL";
+    let targetChannelId = "";
+    const fixture = await startFixture((request) => {
+      if (request.model === "fake-reviewer") return defaultAnswer(request);
+      if (!request.prompt.includes(rootMarker)) return defaultAnswer(request);
+      if (countToolResults(request) === 0) {
+        return { toolCall: { name: "send_message", args: { roomId: targetChannelId, body: crossBody } } };
+      }
+      return { content: crossFinal };
+    });
+    cleanup.push(() => fixture.close());
+    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-cross-channel-");
+    const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta"]);
+    const alpha = employeeNamed(employees, "Alpha");
+    const context = await createWorkContextFixture(runtime, "Cross-channel work");
+    const source = await createRoom(runtime, {
+      kind: "channel",
+      name: "Cross source",
+      workContextId: context.id,
+      memberIds: [alpha.id],
+    });
+    const target = await createRoom(runtime, {
+      kind: "channel",
+      name: "Cross target",
+      workContextId: context.id,
+      memberIds: [alpha.id],
+    });
+    targetChannelId = target.id;
+    runtime.resume();
+
+    const root = await sendChannelMessage(resume, source, rootMarker, [alpha.id]);
+    const rootWorkId = root.workIds[0]!;
+    await waitForWorks(resume, [rootWorkId]);
+
+    // The cross-channel message is an explicit send, not the work's ordinary
+    // reply: it stays as sent and does not consume the final delivery.
+    const targetMessages = await readFixtureRoomMessages(runtime, target);
+    expect(targetMessages.filter((message) => message.body === crossBody)).toHaveLength(1);
+    expect(targetMessages.some((message) => message.body === crossFinal)).toBe(false);
+    const sourceMessages = await readFixtureRoomMessages(runtime, source);
+    const finals = sourceMessages.filter((message) => message.body === crossFinal);
+    expect(finals).toHaveLength(1);
+    expect(finals[0]?.workId).toBe(rootWorkId);
+    expect((await findWork(runtime, rootWorkId))?.status).toBe("succeeded");
+    expect((await listWorks(runtime)).filter((work) => work.id !== rootWorkId)).toHaveLength(0);
+  }, 60_000);
+
+  it("addressed collaboration sends preserve the final reply", async () => {
+    const rootMarker = `addressed-root-${randomUUID()}`;
+    const wakeBody = "WAKE_BETA_BODY";
+    const wakeFinal = "WAKE_BETA_FINAL";
+    const childResult = "BETA_CHILD_RESULT";
+    let channelId = "";
+    let betaId = "";
+    const fixture = await startFixture((request) => {
+      if (request.model === "fake-reviewer") return defaultAnswer(request);
+      if (request.system.includes("Your name is Beta")) return { content: childResult };
+      if (channelId.length === 0) return defaultAnswer(request);
+      if (countToolResults(request) === 0) {
+        return { toolCall: { name: "send_message", args: { roomId: channelId, body: wakeBody, recipientIds: [betaId] } } };
+      }
+      return { content: wakeFinal };
+    });
+    cleanup.push(() => fixture.close());
+    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-addressed-");
+    const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta"]);
+    const alpha = employeeNamed(employees, "Alpha");
+    const beta = employeeNamed(employees, "Beta");
+    const context = await createWorkContextFixture(runtime, "Addressed work");
+    const room = await createRoom(runtime, {
+      kind: "channel",
+      name: "Addressed channel",
+      workContextId: context.id,
+      memberIds: [alpha.id, beta.id],
+    });
+    channelId = room.id;
+    betaId = beta.id;
+    runtime.resume();
+
+    const root = await sendChannelMessage(resume, room, rootMarker, [alpha.id]);
+    const rootWorkId = root.workIds[0]!;
+    await waitForWorks(resume, [rootWorkId]);
+    const children = (await listWorks(runtime)).filter((work) => work.parentWorkId === rootWorkId);
+    expect(children).toHaveLength(1);
+    expect(children[0]?.employeeId).toBe(beta.id);
+    expect(children[0]?.rootWorkId).toBe(rootWorkId);
+    await waitForWorks(resume, [children[0]!.id]);
+
+    const messages = await readFixtureRoomMessages(runtime, room);
+    // A message that wakes a colleague is collaboration; the final answer of
+    // the sender is still delivered to its own conversation.
+    const explicit = messages.filter((message) => message.author.id === alpha.id && message.body === wakeBody);
+    expect(explicit).toHaveLength(1);
+    expect(explicit[0]?.addressing).toEqual({ recipientIds: [beta.id], mentionAll: false });
+    const finals = messages.filter((message) => message.author.id === alpha.id && message.body === wakeFinal);
+    expect(finals).toHaveLength(1);
+    expect(finals[0]?.workId).toBe(rootWorkId);
+    const replies = messages.filter((message) => message.author.id === beta.id);
+    expect(replies.map((message) => message.body)).toEqual([childResult]);
+    expect(replies[0]?.workId).toBe(children[0]!.id);
+  }, 60_000);
+
+  it("failed sends do not consume automatic reply delivery", async () => {
+    const rootMarker = `failed-send-root-${randomUUID()}`;
+    const failedBody = "FAILED_BODY";
+    const failedFinal = "SEND_FAILED_FINAL";
+    const fixture = await startFixture((request) => {
+      if (request.model === "fake-reviewer") return defaultAnswer(request);
+      if (!request.prompt.includes(rootMarker)) return defaultAnswer(request);
+      if (countToolResults(request) === 0) {
+        return { toolCall: { name: "send_message", args: { roomId: "missing-channel", body: failedBody } } };
+      }
+      return { content: failedFinal };
+    });
+    cleanup.push(() => fixture.close());
+    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-failed-send-");
+    const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta"]);
+    const alpha = employeeNamed(employees, "Alpha");
+    const context = await createWorkContextFixture(runtime, "Failed send work");
+    const room = await createRoom(runtime, {
+      kind: "channel",
+      name: "Failed send channel",
+      workContextId: context.id,
+      memberIds: [alpha.id],
+    });
+    runtime.resume();
+
+    const root = await sendChannelMessage(resume, room, rootMarker, [alpha.id]);
+    const rootWorkId = root.workIds[0]!;
+    await waitForWorks(resume, [rootWorkId]);
+
+    // The tool really failed, so the final answer is still posted.
+    expect(fixture.requests.some((request) => request.prompt.includes("Channel not found: missing-channel"))).toBe(true);
+    const messages = await readFixtureRoomMessages(runtime, room);
+    expect(messages.some((message) => message.body === failedBody)).toBe(false);
+    const finals = messages.filter((message) => message.body === failedFinal);
+    expect(finals).toHaveLength(1);
+    expect(finals[0]?.workId).toBe(rootWorkId);
+    expect((await findWork(runtime, rootWorkId))?.status).toBe("succeeded");
+    expect((await listWorks(runtime)).filter((work) => work.parentWorkId.length > 0)).toHaveLength(0);
+  }, 60_000);
+
+  it("explicit multiple updates are preserved without an automatic summary", async () => {
+    const firstUpdate = "FIRST_UPDATE";
+    const secondUpdate = "SECOND_UPDATE";
+    const internalSummary = "INTERNAL_SUMMARY";
+    let channelId = "";
+    const fixture = await startFixture((request) => {
+      if (request.model === "fake-reviewer") return defaultAnswer(request);
+      if (channelId.length === 0) return defaultAnswer(request);
+      const results = countToolResults(request);
+      if (results === 0) {
+        return { toolCall: { name: "send_message", args: { roomId: channelId, body: firstUpdate } } };
+      }
+      if (results === 1) {
+        return { toolCall: { name: "send_message", args: { roomId: channelId, body: secondUpdate } } };
+      }
+      return { content: internalSummary };
+    });
+    cleanup.push(() => fixture.close());
+    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-multi-update-");
+    const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta"]);
+    const alpha = employeeNamed(employees, "Alpha");
+    const context = await createWorkContextFixture(runtime, "Multi update work");
+    const room = await createRoom(runtime, {
+      kind: "channel",
+      name: "Multi update channel",
+      workContextId: context.id,
+      memberIds: [alpha.id],
+    });
+    channelId = room.id;
+    runtime.resume();
+
+    const root = await sendChannelMessage(resume, room, `multi-update-root-${randomUUID()}`, [alpha.id]);
+    const rootWorkId = root.workIds[0]!;
+    await waitForWorks(resume, [rootWorkId]);
+
+    // Two deliberate updates are two messages, never merged or blocked; only
+    // the automatic summary of the same work is kept out of the room.
+    const messages = await readFixtureRoomMessages(runtime, room);
+    const updates = messages.filter((message) => message.body === firstUpdate || message.body === secondUpdate);
+    expect(updates.map((message) => message.body).sort()).toEqual([firstUpdate, secondUpdate].sort());
+    for (const update of updates) {
+      expect(update.workId).toBe(rootWorkId);
+      expect(update.addressing).toEqual({ recipientIds: [], mentionAll: false });
+    }
+    expect(messages.some((message) => message.body === internalSummary)).toBe(false);
+    const work = await findWork(runtime, rootWorkId);
+    expect(work?.status).toBe("succeeded");
+    expect(work?.answer).toBe(internalSummary);
   }, 60_000);
 
   it("explicit employee broadcast wakes other enabled members", async () => {
@@ -826,6 +1022,11 @@ describe("explicit channel addressing and employee collaboration", () => {
     const plain = twoMessages.find((message) => message.body === plainCanary);
     expect(plain).toBeDefined();
     expect(plain?.addressing?.recipientIds ?? []).toEqual([]);
+    // It is the room-two work's own ordinary reply: it carries that work, and
+    // the work's final summary stays in the execution record.
+    expect(plain?.workId).toBe(two.workIds[0]!);
+    expect(twoMessages.some((message) => message.body === "Room two work completed.")).toBe(false);
+    expect((await findWork(runtime, two.workIds[0]!))?.answer).toBe("Room two work completed.");
     const oneMessages = await readFixtureRoomMessages(runtime, roomOne);
     expect(oneMessages.some((message) => message.body === plainCanary)).toBe(false);
     expect(

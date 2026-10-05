@@ -263,6 +263,15 @@ export function renderWorkInput(
       "",
     );
   }
+  if (kind === "message") {
+    parts.push(
+      fragment("work-input.md", "message-rules-header"),
+      fragment("work-input.md", "message-auto-reply"),
+      fragment("work-input.md", "message-send-message-use"),
+      fragment("work-input.md", "message-enough-info"),
+      "",
+    );
+  }
   parts.push(
     kind === "mail"
       ? fragment("work-input.md", "request-mail")

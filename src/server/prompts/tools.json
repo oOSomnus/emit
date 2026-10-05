@@ -38,7 +38,7 @@
     }
   },
   "send_message": {
-    "description": "Send an in-app message. Provide exactly one of `to` (a direct message to another employee) or `roomId` (a channel of the current work you are a member of). In a channel, only the `recipientIds` and `mentionAll` fields decide who is woken: omit them and no employee is woken. Mentions, names, and @all inside `body` are message text only and never select recipients. Your own message never wakes you.",
+    "description": "Send an in-app message. Provide exactly one of `to` (a direct message to another employee) or `roomId` (a channel of the current work you are a member of). In a channel, only the `recipientIds` and `mentionAll` fields decide who is woken: omit them and no employee is woken. Mentions, names, and @all inside `body` are message text only and never select recipients. Your own message never wakes you. For an ordinary reply to the current conversation, return final text instead; Emit posts it automatically. If an unaddressed current-channel message has already been sent, the final summary stays in the execution record.",
     "parameters": {
       "to": "Employee name, id, or address; opens or reuses your direct conversation with them",
       "roomId": "Channel id; for the channel this work runs in, take the exact id from the current-channel context section, never the work ID or the channel name",
