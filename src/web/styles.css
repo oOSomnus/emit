@@ -486,7 +486,8 @@ ul {
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: var(--space-3);
   gap: var(--space-4);
 }
@@ -494,14 +495,29 @@ ul {
 .sidebar-rooms > section {
   display: flex;
   flex-direction: column;
-  flex: 0 1 auto;
-  min-height: 0;
+  flex: 0 0 auto;
 }
 
 .room-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
+  flex: none;
+  overflow: visible;
+}
+
+/*
+ * A window too short for the whole rail scrolls the rail itself. The room
+ * navigation keeps its natural height so its sections cannot overlap; every
+ * entry stays reachable by scrolling the sidebar.
+ */
+@media (max-height: 600px) {
+  .sidebar {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .sidebar-rooms {
+    flex: none;
+    overflow: visible;
+  }
 }
 
 .sidebar section h3 {
