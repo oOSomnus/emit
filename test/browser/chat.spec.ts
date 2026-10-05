@@ -13,8 +13,13 @@ async function api<T>(app: BrowserE2eFixture, path: string, method = "GET", body
 }
 
 async function revealNavigation(page: Page): Promise<void> {
-  const open = page.getByRole("button", { name: "Open navigation", exact: true });
-  if (await open.isVisible()) await open.click();
+  for (const name of ["Open navigation", "打开导航"]) {
+    const open = page.getByRole("button", { name, exact: true });
+    if (await open.isVisible()) {
+      await open.click();
+      return;
+    }
+  }
 }
 
 async function openChannel(page: Page, app: BrowserE2eFixture): Promise<void> {
@@ -401,6 +406,96 @@ test("a channel message wakes exactly the employees mentioned in its text", asyn
   await expect(page.getByRole("heading", { name: /General/ })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("");
   await expect(page.getByRole("listbox", { name: "Members", exact: true })).toHaveCount(0);
+});
+
+test("mention suggestions align member and @all rows and insert without posting", async ({ app, page }) => {
+  await openChannel(page, app);
+  const composer = page.getByRole("textbox", { name: "Message" });
+  let posted = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === `/api/rooms/${app.workspace.channelId}/messages`) {
+      posted += 1;
+    }
+  });
+
+  type RowGeometry = { id: string; avatarLeft: number; nameLeft: number; nameRight: number };
+  async function measureMenu(): Promise<{ rows: RowGeometry[]; left: number; right: number; overflow: number }> {
+    const popover = page.locator(".mention-popover");
+    await expect(popover).toBeVisible();
+    return popover.evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      const rows = [...element.querySelectorAll<HTMLElement>(".mention-option")].map((row) => {
+        const avatar = row.querySelector<HTMLElement>(".avatar, .employee-avatar");
+        const name = row.querySelector<HTMLElement>(".mention-option-text > strong");
+        if (avatar === null || name === null) throw new Error(`mention row ${row.id} is missing its avatar or name`);
+        return {
+          id: row.id,
+          avatarLeft: avatar.getBoundingClientRect().left,
+          nameLeft: name.getBoundingClientRect().left,
+          nameRight: name.getBoundingClientRect().right,
+        };
+      });
+      return {
+        rows,
+        left: bounds.left,
+        right: bounds.right,
+        overflow: element.scrollWidth - element.clientWidth,
+      };
+    });
+  }
+
+  function expectAligned(geometry: Awaited<ReturnType<typeof measureMenu>>): void {
+    expect(geometry.rows).toHaveLength(3);
+    expect(geometry.rows.some((row) => row.id === "address-suggestion-all")).toBe(true);
+    for (const edge of ["avatarLeft", "nameLeft"] as const) {
+      const values = geometry.rows.map((row) => row[edge]);
+      expect(Math.max(...values) - Math.min(...values), `${edge} spread across mention options`).toBeLessThanOrEqual(1);
+    }
+    // A long name or address wraps inside the menu instead of widening it.
+    expect(geometry.overflow).toBeLessThanOrEqual(1);
+    for (const row of geometry.rows) {
+      expect(row.nameRight, `${row.id} name stays inside the menu`).toBeLessThanOrEqual(geometry.right - 4);
+    }
+  }
+
+  // Both members and @all share the same avatar and name-column left edge.
+  await composer.fill("@");
+  const english = await measureMenu();
+  expectAligned(english);
+
+  // Clicking @all inserts the text without posting.
+  await page.locator("#address-suggestion-all").click();
+  expect(await composer.inputValue()).toBe("@all ");
+  expect(posted).toBe(0);
+
+  // The keyboard path inserts the same text without posting.
+  await composer.fill("@all");
+  await composer.press("Enter");
+  expect(await composer.inputValue()).toBe("@all ");
+  expect(posted).toBe(0);
+
+  // A long, unbreakable member name still stays inside the menu at this width.
+  const longName = "AlexandertheGreatMemberNameWithoutBreaks0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const renamed = await app.request(`/api/employees/${app.workspace.employeeIds[1]!}`, "PATCH", { name: longName });
+  expect(renamed.status).toBe(200);
+  await page.reload();
+  await openChannel(page, app);
+  await composer.fill("@");
+  const wrapped = await measureMenu();
+  expectAligned(wrapped);
+
+  // Chinese labels keep the same alignment and stay inside the menu.
+  await page.evaluate(() => localStorage.setItem("emit.language", "zh-CN"));
+  await page.reload();
+  await onboarded(page, app);
+  const chineseComposer = page.getByRole("textbox", { name: "消息内容" });
+  await revealNavigation(page);
+  await page.getByRole("button", { name: "General", exact: true }).click();
+  await expect(chineseComposer).toBeVisible();
+  await chineseComposer.fill("@");
+  await expect(page.getByRole("option", { name: "全体成员", exact: true })).toBeVisible();
+  const chinese = await measureMenu();
+  expectAligned(chinese);
 });
 
 test("IME confirmation and duplicate names never mis-address a channel message", async ({ app, page }) => {

@@ -991,6 +991,7 @@ ul {
 .mention-popover .mention-option {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: var(--space-3);
   width: 100%;
   min-height: 56px;
@@ -1011,6 +1012,7 @@ ul {
   display: grid;
   gap: 2px;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 .mention-option-meta {
   color: var(--text-dim);

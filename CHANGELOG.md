@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed the `@` mention menu: the `@all` row's avatar and name now sit on exactly the same columns as the employee rows, because the popover option layout no longer inherits the global centered-button rule.
 - Employee answers render as GitHub-flavored Markdown (headings, emphasis, lists, task items, blockquotes, fenced code, tables, links) through `react-markdown` + `remark-gfm`; raw HTML stays text, remote images become links instead of network requests, links open in a new tab with `rel="noopener noreferrer"`, and wide code blocks and tables scroll inside their own box instead of widening the page. Streaming progress uses the same renderer, so a half-typed answer and its settled form read identically. User messages and system notices stay plain text.
 - Creating a channel opens a dedicated member panel instead of the cramped inline multi-select: channel name, search over name/role/address, `Select all results` and `Clear selection` with a live count, and avatar/role/address rows whose list alone scrolls under a pinned footer. Narrow screens get a full-screen panel, and filtering never drops already-chosen members.
 - Typing `@` in a channel composer (or pressing the `@` button) opens a member menu filtered as you type, with `@all` first, keyboard navigation that wraps and keeps the highlighted row in view, and `No matching channel members` when nothing matches; Escape closes it, Enter never sends an unmatched mention, and the menu floats above the input without growing it or covering Send.
