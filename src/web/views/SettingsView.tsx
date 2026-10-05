@@ -3,7 +3,7 @@
  * providers and credentials, skills, and MCP servers.
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { errorDisplay } from "../../shared/i18n.ts";
 import { api } from "../api.ts";
 import { useApp } from "../state.tsx";
@@ -13,6 +13,19 @@ import { Chip, ConnectionCheckButton, EffortPicker, ModelPicker, modelKey } from
 import { ProviderManager } from "./ProviderManager.tsx";
 import { ThemePicker } from "../theme.tsx";
 import type { ApprovalEvaluatorConfigDTO, ModelInfoDTO } from "../../shared/contracts.ts";
+
+/** The settings sections; each renders one panel at a time. */
+type SettingsSectionId = "workspace" | "providers" | "model" | "approval" | "collaboration" | "skills" | "mcp";
+
+const SETTINGS_SECTIONS: readonly SettingsSectionId[] = [
+  "workspace",
+  "providers",
+  "model",
+  "approval",
+  "collaboration",
+  "skills",
+  "mcp",
+];
 
 /** Move a selection's effort to the first level the new model supports. */
 function effortForModel(models: readonly ModelInfoDTO[], key: string, current: string): string {
@@ -25,6 +38,8 @@ export function SettingsView(): ReactNode {
   const { messages, text } = useI18n();
   const [workspaceName, setWorkspaceName] = useState(state.app?.workspace.name ?? "");
   const [userName, setUserName] = useState(state.app?.user.name ?? "");
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>("workspace");
+  const contentRef = useRef<HTMLDivElement>(null);
   const [skillDir, setSkillDir] = useState("");
   const [skillDiagnostics, setSkillDiagnostics] = useState<{ severity: string; message: string; path: string }[]>([]);
   const [serverDraft, setServerDraft] = useState({
@@ -60,23 +75,82 @@ export function SettingsView(): ReactNode {
     }
   };
 
+  const sectionLabel = (id: SettingsSectionId): string => {
+    switch (id) {
+      case "workspace":
+        return messages.settings.workspace;
+      case "providers":
+        return messages.providers.legend;
+      case "model":
+        return messages.settings.defaultModel;
+      case "approval":
+        return messages.settings.approvalJudge;
+      case "collaboration":
+        return messages.settings.collaboration;
+      case "skills":
+        return messages.settings.skills;
+      case "mcp":
+        return messages.settings.mcp;
+    }
+  };
+
+  // Switching sections only changes what is visible; every panel stays
+  // mounted so drafts and in-progress authentication survive the switch.
+  const selectSection = (id: SettingsSectionId): void => {
+    setActiveSection(id);
+    if (contentRef.current !== null) contentRef.current.scrollTop = 0;
+  };
+
   return (
-    <div className="pane">
+    <div className="pane settings-pane">
       <header className="pane-header">
         <div>
           <h2>{messages.settings.title}</h2>
-          <p className="topic">
-            {messages.settings.dataDirectory}
-            <code>{state.storagePath}</code>
-          </p>
         </div>
       </header>
 
-      <div className="scroll settings">
-        <section>
-          <div className="section-head">
-            <h3>{messages.settings.workspace}</h3>
-          </div>
+      <div className="settings-layout">
+        <nav className="settings-nav" aria-label={messages.settings.sections}>
+          {SETTINGS_SECTIONS.map((id) => (
+            <button
+              key={id}
+              type="button"
+              id={`settings-nav-${id}`}
+              aria-controls={`settings-panel-${id}`}
+              aria-current={activeSection === id ? "page" : undefined}
+              onClick={() => selectSection(id)}
+            >
+              {sectionLabel(id)}
+            </button>
+          ))}
+        </nav>
+
+        <div className="settings-main">
+          <label className="settings-section-picker">
+            {messages.settings.sectionPicker}
+            <select
+              aria-label={messages.settings.sectionPicker}
+              value={activeSection}
+              onChange={(event) => selectSection(event.target.value as SettingsSectionId)}
+            >
+              {SETTINGS_SECTIONS.map((id) => (
+                <option key={id} value={id}>
+                  {sectionLabel(id)}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="scroll settings-content" ref={contentRef}>
+            <section
+              className="settings-panel"
+              id="settings-panel-workspace"
+              aria-labelledby="settings-nav-workspace"
+              hidden={activeSection !== "workspace"}
+            >
+              <div className="section-head">
+                <h3>{messages.settings.workspace}</h3>
+              </div>
           <div className="field-grid">
             <label>
               {messages.settings.workspaceName}
@@ -109,9 +183,21 @@ export function SettingsView(): ReactNode {
               {messages.common.save}
             </button>
           </div>
-        </section>
+          <details>
+            <summary>{messages.settings.localData}</summary>
+            <p className="hint settings-data-path">
+              {messages.settings.dataDirectory}
+              <code>{state.storagePath}</code>
+            </p>
+          </details>
+            </section>
 
-        <section>
+        <section
+          className="settings-panel"
+          id="settings-panel-model"
+          aria-labelledby="settings-nav-model"
+          hidden={activeSection !== "model"}
+        >
           <div className="section-head">
             <h3>{messages.settings.defaultModel}</h3>
           </div>
@@ -159,13 +245,21 @@ export function SettingsView(): ReactNode {
           <p className="hint">{messages.settings.defaultModelHint}</p>
         </section>
 
-        <section>
+        <section
+          className="settings-panel"
+          id="settings-panel-approval"
+          aria-labelledby="settings-nav-approval"
+          hidden={activeSection !== "approval"}
+        >
           <div className="section-head">
             <h3>{messages.settings.approvalJudge}</h3>
           </div>
           <p className="hint">{messages.settings.policyVersionHint(app.policyVersion)}</p>
-          <p className="hint">{messages.settings.riskPolicyHint}</p>
-          <p className="hint">{messages.settings.separateJudgeHint}</p>
+          <details>
+            <summary>{messages.settings.approvalRules}</summary>
+            <p className="hint">{messages.settings.riskPolicyHint}</p>
+            <p className="hint">{messages.settings.separateJudgeHint}</p>
+          </details>
           <div className="row">
             <label className="inline">
               <input
@@ -246,7 +340,12 @@ export function SettingsView(): ReactNode {
           )}
         </section>
 
-        <section>
+        <section
+          className="settings-panel"
+          id="settings-panel-collaboration"
+          aria-labelledby="settings-nav-collaboration"
+          hidden={activeSection !== "collaboration"}
+        >
           <div className="section-head">
             <h3>{messages.settings.collaboration}</h3>
           </div>
@@ -295,9 +394,21 @@ export function SettingsView(): ReactNode {
           </div>
         </section>
 
-        <ProviderManager />
+        <section
+          className="settings-panel"
+          id="settings-panel-providers"
+          aria-labelledby="settings-nav-providers"
+          hidden={activeSection !== "providers"}
+        >
+          <ProviderManager />
+        </section>
 
-        <section>
+        <section
+          className="settings-panel"
+          id="settings-panel-skills"
+          aria-labelledby="settings-nav-skills"
+          hidden={activeSection !== "skills"}
+        >
           <div className="section-head">
             <h3>{messages.settings.skills}</h3>
           </div>
@@ -348,7 +459,12 @@ export function SettingsView(): ReactNode {
           ))}
         </section>
 
-        <section>
+        <section
+          className="settings-panel"
+          id="settings-panel-mcp"
+          aria-labelledby="settings-nav-mcp"
+          hidden={activeSection !== "mcp"}
+        >
           <div className="section-head">
             <h3>{messages.settings.mcp}</h3>
           </div>
@@ -439,7 +555,9 @@ export function SettingsView(): ReactNode {
           >
             {messages.settings.addServer}
           </button>
-        </section>
+            </section>
+          </div>
+        </div>
       </div>
     </div>
   );

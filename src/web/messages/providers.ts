@@ -22,7 +22,9 @@ export const englishProviders = {
   authSourceConfigured: "Configured",
   notConfigured: "Not configured",
   noMatch: "No matching providers.",
-  selectHint: "Select a provider on the left to see details.",
+  selectHint: "Select a provider to see details.",
+  pickerLabel: "Provider",
+  authHelp: "Authentication details",
 
   // Login session status: the keys are the data (`AuthSessionStatusDTO`).
   status: {
@@ -104,7 +106,9 @@ export const chineseProviders: ProvidersMessages = {
   authSourceConfigured: "已配置",
   notConfigured: "未配置",
   noMatch: "没有匹配的 Provider。",
-  selectHint: "选择左侧的 Provider 查看详情。",
+  selectHint: "选择 Provider 查看详情。",
+  pickerLabel: "Provider",
+  authHelp: "认证说明",
 
   status: {
     running: "进行中",

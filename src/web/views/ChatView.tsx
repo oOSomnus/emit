@@ -1,9 +1,10 @@
 /**
  * The synchronous half: a channel or direct message.
  *
- * A message the user sends starts work, and the running work of this room is
- * shown inline — live text, tool activity, and a stop button — so the wait is
- * visible rather than implied.
+ * The pane shows the conversation itself. Work started by a message is not
+ * rendered here: while a run is queued or generating, the room shows who is
+ * typing above the composer, and the run's streamed progress and tool activity
+ * live in its execution record (Runs → View execution).
  *
  * The composer itself is `ChatComposer`; this view lays out the room around it.
  * In a channel, routing comes only from the explicit selection the composer
@@ -12,22 +13,13 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api } from "../api.ts";
 import { useI18n } from "../i18n.tsx";
 import { useSessionExport } from "../session-export.ts";
 import { useApp } from "../state.tsx";
-import { Chip, EmployeeAvatar, IconButton, timeAgo } from "./ui.tsx";
+import { Chip, EmployeeAvatar, Icon, IconButton, timeAgo } from "./ui.tsx";
 import { ChannelMembers } from "./ChannelMembers.tsx";
 import { ChatComposer } from "./ChatComposer.tsx";
 import { MarkdownBody } from "./MarkdownBody.tsx";
-
-/** How a live work's chip is toned; the wording comes from the work statuses. */
-const LIVE_WORK_TONES: Record<string, "info" | "warn" | "muted" | undefined> = {
-  queued: "muted",
-  running: "info",
-  "waiting-approval": "warn",
-  "waiting-mail": "warn",
-};
 
 /** The avatar initial: one grapheme, so a Chinese name does not render half a pair. */
 function initial(name: string): string {
@@ -43,10 +35,31 @@ export function ChatView(): ReactNode {
   const manageMembersRef = useRef<HTMLButtonElement>(null);
   const room = state.rooms.find((entry) => entry.id === state.activeRoomId);
 
-  const roomWork = useMemo(
-    () => state.work.filter((work) => work.roomId === state.activeRoomId && work.status !== "succeeded" && work.status !== "failed" && work.status !== "stopped"),
-    [state.work, state.activeRoomId],
-  );
+  // Typing is a projection of the live work states of this room, not a wire
+  // event: a run that is queued or generating is "typing"; one that waits for
+  // an approval or a reply is not, and reappears if it resumes.
+  const typingNames = useMemo(() => {
+    const active = state.work.filter(
+      (work) => work.roomId === state.activeRoomId && (work.status === "queued" || work.status === "running"),
+    );
+    const ordered = [...active].sort(
+      (left, right) => left.startedAt - right.startedAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+    );
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const work of ordered) {
+      if (seen.has(work.employeeId)) continue;
+      seen.add(work.employeeId);
+      names.push(state.employees.find((employee) => employee.id === work.employeeId)?.name ?? work.employeeName);
+    }
+    return names;
+  }, [state.work, state.activeRoomId, state.employees]);
+  const typingText =
+    typingNames.length === 0
+      ? undefined
+      : typingNames.length === 1
+        ? messages.chat.typingOne(typingNames[0]!)
+        : messages.chat.typingMany(typingNames.join(messages.common.namesSeparator));
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
@@ -62,17 +75,19 @@ export function ChatView(): ReactNode {
   }
 
   const workContext = state.workContexts.find((entry) => entry.id === room.workContextId);
+  const workName = workContext?.name ?? room.workContextId;
   const memberNames = room.kind === "channel"
     ? room.memberIds.map((id) => state.employees.find((employee) => employee.id === id)?.name ?? id)
     : [];
 
   return (
-    <div className="pane chat-pane">
+    <div className="pane chat-pane" data-room-id={room.id}>
       <header className="pane-header">
         <div>
           <h2>{room.kind === "channel" ? `# ${room.name}` : state.employees.find((e) => e.id === room.employeeId)?.name ?? room.name}</h2>
-          <p className="topic">
-            {messages.workContexts.currentWorkLabel}: {workContext?.name ?? room.workContextId}
+          <p className="topic session-work" aria-label={`${messages.chat.sessionWorkLabel}: ${workName}`}>
+            <Icon name="work" size={14} />
+            <span>{workName}</span>
           </p>
           {room.topic.length > 0 ? <p className="topic">{room.topic}</p> : null}
         </div>
@@ -148,37 +163,20 @@ export function ChatView(): ReactNode {
               </article>
             );
           })}
-          {roomWork.map((work) => (
-            <article key={work.id} className="work-live">
-              <div className="meta">
-                <Chip tone="info">{messages.chat.working(work.employeeName)}</Chip>
-                <Chip tone={LIVE_WORK_TONES[work.status] ?? "info"}>{messages.work.status[work.status]}</Chip>
-                <span className="time" />
-                <IconButton icon="close" label={messages.chat.stop} onClick={() => void api.stopWork(work.id)} />
-              </div>
-              {work.tools !== undefined && work.tools.length > 0 ? (
-                <ul className="tools">
-                  {work.tools.map((tool) => (
-                    <li key={tool.callId}>
-                      <Chip tone={tool.status === "done" ? "ok" : "info"}>{messages.chat.toolStatus[tool.status]}</Chip>
-                      <code>{tool.name}</code>
-                      {tool.output !== undefined ? <pre>{tool.output.slice(0, 400)}</pre> : null}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              {work.progressText !== undefined && work.progressText.length > 0 ? (
-                <MarkdownBody body={work.progressText} className="stream" />
-              ) : (
-                <p className="hint">{messages.chat.startedHint}</p>
-              )}
-            </article>
-          ))}
           <div ref={endRef} />
         </div>
       </div>
 
-      <ChatComposer room={room} />
+      <div className="chat-composer-region">
+        {typingText !== undefined ? (
+          <div className="chat-typing-row">
+            <p className="chat-typing" role="status" aria-live="polite" aria-atomic="true" title={typingText}>
+              {typingText}
+            </p>
+          </div>
+        ) : null}
+        <ChatComposer room={room} />
+      </div>
       {managingMembers && room.kind === "channel" ? (
         <ChannelMembers key={room.id} room={room} onClose={() => setManagingMembers(false)} />
       ) : null}

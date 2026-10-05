@@ -174,6 +174,8 @@ export function ProviderManager(): ReactNode {
   const selected =
     state.providers.find((provider) => provider.providerId === selectedId) ?? listed[0] ?? undefined;
   const selectedProviderId = selected?.providerId;
+  const selectedHidden =
+    selected !== undefined && !listed.some((provider) => provider.providerId === selected.providerId);
   const selectedConfig = state.customProviders.find((config) => config.id === selectedProviderId);
   const providerModels = useMemo(
     () => state.models.filter((model) => model.providerId === selectedProviderId),
@@ -340,11 +342,21 @@ export function ProviderManager(): ReactNode {
   );
   const sessionActive = session !== undefined && (session.status === "running" || session.status === "waiting");
 
+  // The list row and the narrow-pane picker share one selection path.
+  const selectProvider = (providerId: string): void => {
+    setSelectedId(providerId);
+    setProviderMessage(undefined);
+  };
+
   return (
     <fieldset className="provider-manager">
-      <legend>{messages.providers.legend}</legend>
-      <p className="hint">{messages.providers.intro(state.providers.length)}</p>
+      <legend>
+        {messages.providers.legend} · {state.providers.length}
+      </legend>
 
+      {/* The container query needs a plain block wrapper: fieldset does not
+          resolve as a query container. */}
+      <div className="provider-manager-inner">
       <div className="row provider-toolbar">
         <input
           type="search"
@@ -366,6 +378,11 @@ export function ProviderManager(): ReactNode {
         </button>
       </div>
 
+      <details>
+        <summary>{messages.providers.authHelp}</summary>
+        <p className="hint">{messages.providers.intro(state.providers.length)}</p>
+      </details>
+
       {sessionActive && sessionProvider !== undefined && sessionProvider.providerId !== selectedProviderId ? (
         <div className="banner warn">
           <span>{messages.providers.activeSession(sessionProvider.name)}</span>
@@ -375,23 +392,47 @@ export function ProviderManager(): ReactNode {
         </div>
       ) : null}
 
+      <label className="provider-picker">
+        {messages.providers.pickerLabel}
+        <select
+          aria-label={messages.providers.pickerLabel}
+          value={selectedProviderId ?? ""}
+          disabled={listed.length === 0}
+          onChange={(event) => selectProvider(event.target.value)}
+        >
+          {listed.map((provider) => (
+            <option key={provider.providerId} value={provider.providerId}>
+              {provider.name}
+            </option>
+          ))}
+          {selectedHidden && selected !== undefined ? (
+            <option value={selected.providerId} disabled>
+              {selected.name}
+            </option>
+          ) : null}
+          {selected === undefined ? (
+            <option value="" disabled>
+              {messages.providers.noMatch}
+            </option>
+          ) : null}
+        </select>
+      </label>
+
       <div className="provider-manager-body">
         <ul className="plain provider-list">
           {listed.map((provider) => (
             <li key={provider.providerId}>
               <button
                 type="button"
+                data-provider-id={provider.providerId}
                 className={provider.providerId === selectedProviderId ? "provider-item active" : "provider-item"}
-                onClick={() => {
-                  setSelectedId(provider.providerId);
-                  setProviderMessage(undefined);
-                }}
+                onClick={() => selectProvider(provider.providerId)}
               >
                 <span className="provider-item-copy">
                   <strong>{provider.name}</strong>
                   <code>{provider.providerId}</code>
                 </span>
-                <span className="provider-item-meta tags">
+                <span className="provider-item-meta">
                   {provider.custom ? <Chip tone="info">{messages.providers.chipCustom}</Chip> : null}
                   {provider.configured ? (
                     <Chip tone="ok">{provider.authSource ?? messages.providers.authSourceConfigured}</Chip>
@@ -440,6 +481,7 @@ export function ProviderManager(): ReactNode {
           onSave={(draft) => void saveCustom(draft)}
         />
       ) : null}
+      </div>
     </fieldset>
   );
 }

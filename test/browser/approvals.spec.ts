@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page, Response } from "@playwright/test";
 import type { ApprovalDTO, MessageDTO, WorkDTO } from "../../src/shared/contracts.ts";
-import { expect, onboarded, test, type BrowserE2eFixture } from "./fixtures.ts";
+import { expect, navigateWorkspace, onboarded, test, type BrowserE2eFixture } from "./fixtures.ts";
 
 type SendReceipt = { message: MessageDTO; workIds: string[] };
 
@@ -26,10 +26,6 @@ async function openChannel(page: Page, app: BrowserE2eFixture): Promise<void> {
   await expect(page.getByRole("heading", { name: /General/ })).toBeVisible();
 }
 
-async function navigate(page: Page, label: string): Promise<void> {
-  await revealNavigation(page);
-  await page.getByRole("button", { name: label, exact: false }).click();
-}
 
 function waitForMessagePost(page: Page, roomId: string): Promise<Response> {
   return page.waitForResponse((response) => {
@@ -86,7 +82,7 @@ async function waitForWorkStatus(app: BrowserE2eFixture, workId: string, status:
 }
 
 async function showPendingApproval(page: Page, fileName: string): Promise<Locator> {
-  await navigate(page, "Approvals");
+  await navigateWorkspace(page, "Approvals");
   await expect(page.getByRole("heading", { name: "Approvals", exact: true })).toBeVisible();
   const card = page.getByRole("article").filter({ hasText: fileName });
   await expect(card).toContainText("Waiting for your decision");
@@ -156,12 +152,72 @@ test("stopping a high-risk run while it waits for approval cancels it before any
   const fileName = "critical-settings.json";
   const { workId } = await startHighRisk(page, app, fileName);
   expect(existsSync(join(app.workRoot, fileName))).toBe(false);
-  const stop = page.getByRole("button", { name: "Stop", exact: true });
-  await expect(stop).toBeVisible();
-  await stop.click();
+
+  // Waiting for a decision is not generating: the room shows no typing, and
+  // the pending reminder stays reachable.
+  await expect(page.locator(".chat-typing")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Pending approvals: 1", exact: true })).toBeVisible();
+
+  // Stopping lives with the run's record now, not in the conversation.
+  await navigateWorkspace(page, "Runs");
+  const row = page.getByRole("row").filter({ hasText: "Alice" });
+  await expect(row).toHaveCount(1);
+  await row.getByRole("button", { name: "Stop", exact: true }).click();
 
   await waitForWorkStatus(app, workId, "stopped");
   const cancelled = await waitForApproval(app, workId, "cancelled");
   expect(cancelled).toMatchObject({ execution: { state: "not-started" } });
   expect(existsSync(join(app.workRoot, fileName))).toBe(false);
+});
+
+test("execution details show an in-flight tool while the run waits for approval", async ({ app, page }) => {
+  test.setTimeout(90_000);
+  const fileName = "critical-settings.json";
+  const { workId, approval } = await startHighRisk(page, app, fileName);
+
+  await navigateWorkspace(page, "Runs");
+  const row = page.getByRole("row").filter({ hasText: "Alice" });
+  await expect(row).toHaveCount(1);
+  await row.getByRole("button", { name: "View execution", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Execution details" });
+  await expect(dialog).toBeVisible();
+  const live = dialog.locator(".execution-live");
+  await expect(live.getByRole("heading", { name: "Live progress", exact: true })).toBeVisible();
+  const tool = live.locator(".execution-live-tools li").filter({ hasText: "write_file" });
+  await expect(tool).toHaveCount(1);
+  await expect(tool).toContainText(/Pending|Running/);
+
+  // Decide through the real API while the modal stays open: the in-flight tool
+  // disappears and the durable record gains the tool result without a reload.
+  const decision = await app.request(`/api/approvals/${approval.id}/decision`, "POST", {
+    decision: "approved",
+    comment: "Execution progress regression",
+  });
+  expect(decision.status).toBe(200);
+  await waitForWorkStatus(app, workId, "succeeded");
+  expect(readFileSync(join(app.workRoot, fileName), "utf8")).toBe("SMOKE-CRITICAL-CONTENT\n");
+  await expect(live).toHaveCount(0);
+  await expect(dialog.locator(".work-step.kind-tool-result")).toHaveCount(1);
+  await expect(dialog.locator(".work-step.kind-assistant")).toHaveCount(1);
+});
+
+test("pending approval reminders stay reachable while the workspace menu is closed", async ({ app, page }) => {
+  const fileName = "critical-settings.json";
+  const { workId, approval } = await startHighRisk(page, app, fileName);
+  const workspaceMenu = page.locator(".workspace-menu");
+  await expect(workspaceMenu).toBeHidden();
+
+  const reminder = page.getByRole("button", { name: "Pending approvals: 1", exact: true });
+  await expect(reminder).toBeVisible();
+  await revealNavigation(page);
+  await reminder.click();
+  await expect(page.getByRole("heading", { name: "Approvals", exact: true })).toBeVisible();
+  const card = page.getByRole("article").filter({ hasText: fileName });
+  await expect(card).toContainText("Waiting for your decision");
+  await expect(card).toContainText("Risk assessment: high");
+
+  await decideInBrowser(page, card, approval.id, "Reject", "Reject from the pending reminder");
+  await waitForApproval(app, workId, "rejected");
+  await expect(page.getByRole("button", { name: /^Pending approvals:/ })).toHaveCount(0);
+  await expect(workspaceMenu).toBeHidden();
 });

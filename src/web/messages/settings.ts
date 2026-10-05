@@ -8,6 +8,9 @@
 export const englishSettings = {
   title: "Settings",
   dataDirectory: "Data directory: ",
+  sections: "Settings sections",
+  sectionPicker: "Settings section",
+  localData: "Local data",
 
   // Workspace: identity, appearance, and interface language.
   workspace: "Workspace",
@@ -19,14 +22,13 @@ export const englishSettings = {
   defaultModel: "Default model",
   defaultExecutionModel: "Default execution model",
   defaultModelEffort: "Default model effort",
-  defaultModelHint:
-    "New employees use this model by default. “Check connection” sends one real request, which may cost money.",
+  defaultModelHint: "Used for new employees; checking the connection may incur charges.",
 
   // Approval judge.
   approvalJudge: "Approval judge",
+  approvalRules: "Approval rules",
   policyVersionHint: (version: number) =>
-    "Changing the approval configuration raises the policy version (currently " +
-    `v${version}); calls approved earlier but not yet executed become invalid and must request approval again.`,
+    `Policy v${version}; changes invalidate approvals that have not executed.`,
   riskPolicyHint:
     "Low and medium risk calls pass automatically, high risk goes to a human decision, forbidden actions are " +
     "rejected automatically, and a failed judgment blocks execution.",
@@ -71,6 +73,9 @@ export type SettingsMessages = typeof englishSettings;
 export const chineseSettings: SettingsMessages = {
   title: "设置",
   dataDirectory: "数据目录：",
+  sections: "设置分区",
+  sectionPicker: "设置分区",
+  localData: "本地数据",
 
   workspace: "工作台",
   workspaceName: "工作区名称",
@@ -80,11 +85,11 @@ export const chineseSettings: SettingsMessages = {
   defaultModel: "默认模型",
   defaultExecutionModel: "默认执行模型",
   defaultModelEffort: "默认模型推理强度",
-  defaultModelHint: "新建员工时默认使用这个模型。「检查连接」会发起一次真实请求，可能产生费用。",
+  defaultModelHint: "新员工默认使用；检查连接可能产生费用。",
 
   approvalJudge: "审批判断者",
-  policyVersionHint: (version) =>
-    `修改审批配置会提升策略版本（当前 v${version}），此前获批但未执行的调用会失效，需要重新请求。`,
+  approvalRules: "审批规则",
+  policyVersionHint: (version) => `策略 v${version}；更改配置会使尚未执行的旧审批失效。`,
   riskPolicyHint: "低/中风险自动通过，高风险转人工裁决，禁止动作自动拒绝，判断失败阻止执行。",
   separateJudgeHint: "审批判断模型单独配置；不会自动沿用员工模型。",
   llmJudge: "LLM 判断",

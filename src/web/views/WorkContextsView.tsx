@@ -330,7 +330,6 @@ export function WorkContextsView(): ReactNode {
       <header className="pane-header">
         <div>
           <h2>{messages.workContexts.title}</h2>
-          <p className="topic">{messages.workContexts.subtitle}</p>
         </div>
         <div className="pane-header-actions">
           <button type="button" className="primary" onClick={startCreating}>
@@ -338,33 +337,45 @@ export function WorkContextsView(): ReactNode {
           </button>
         </div>
       </header>
-      <div
-        className="scroll split"
-        style={{
-          gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))",
-          alignContent: "start",
-          gap: 20,
-        }}
-      >
-        <div className="list">
-          {state.workContexts.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`employee-card${!creating && item.id === state.activeWorkContextId ? " active" : ""}`}
-              aria-pressed={!creating && item.id === state.activeWorkContextId}
-              onClick={() => selectWork(item.id)}
-            >
-              <span className="identity-meta">
-                <strong>{item.name}</strong>
-                <span className="role">{messages.workContexts.updated(timeAgo(item.updatedAt, locale))}</span>
-              </span>
-            </button>
-          ))}
-          {state.workContexts.length === 0 ? <p className="hint">{messages.workContexts.noWorks}</p> : null}
-        </div>
+      {eligibleToEdit ? (
+        <div className="work-context-layout">
+          <div className="work-context-list">
+            {state.workContexts.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`work-context-item${!creating && item.id === state.activeWorkContextId ? " active" : ""}`}
+                aria-pressed={!creating && item.id === state.activeWorkContextId}
+                onClick={() => selectWork(item.id)}
+              >
+                <span className="work-list-name">{item.name}</span>
+                <span className="work-list-meta">{messages.workContexts.updated(timeAgo(item.updatedAt, locale))}</span>
+              </button>
+            ))}
+            {state.workContexts.length === 0 ? <p className="hint">{messages.workContexts.noWorks}</p> : null}
+          </div>
 
-        {eligibleToEdit ? (
+          <div className="work-context-content">
+            <label className="work-picker">
+              {messages.workContexts.workPickerLabel}
+              <select
+                aria-label={messages.workContexts.workPickerLabel}
+                value={creating ? "" : state.activeWorkContextId ?? ""}
+                disabled={!creating && state.workContexts.length === 0}
+                onChange={(event) => {
+                  const id = event.target.value;
+                  if (id.length > 0) selectWork(id);
+                }}
+              >
+                {creating ? <option value="" disabled>{messages.workContexts.createWork}</option> : null}
+                {!creating && state.workContexts.length === 0 ? (
+                  <option value="">{messages.workContexts.noWorks}</option>
+                ) : null}
+                {state.workContexts.map((item) => (
+                  <option key={item.id} value={item.id}>{item.name}</option>
+                ))}
+              </select>
+            </label>
           <div className="settings work-context-editor">
             <section>
               <div className="section-head">
@@ -375,7 +386,7 @@ export function WorkContextsView(): ReactNode {
                   </button>
                 ) : null}
               </div>
-              <p className="hint">{messages.workContexts.switchWorkHint}</p>
+
               {!creating && workContext?.directories.paths.length === 0 ? (
                 <p className="hint">{messages.workContexts.directoriesEmpty}</p>
               ) : null}
@@ -386,6 +397,12 @@ export function WorkContextsView(): ReactNode {
                   void saveWork();
                 }}
               >
+                <details>
+                  <summary>{messages.workContexts.helpTitle}</summary>
+                  <p className="hint">{messages.workContexts.switchWorkHint}</p>
+                  <p className="hint">{messages.workContexts.subtitle}</p>
+                  <p className="hint">{messages.workContexts.notesHint}</p>
+                </details>
                 <label>
                   {messages.workContexts.nameLabel}
                   <input
@@ -545,6 +562,7 @@ export function WorkContextsView(): ReactNode {
                 </div>
               </form>
             </section>
+          </div>
 
             {!creating && workContext !== undefined ? (
               <section>
@@ -554,38 +572,55 @@ export function WorkContextsView(): ReactNode {
                     {messages.workContexts.newNote}
                   </button>
                 </div>
-                <p className="hint">{messages.workContexts.notesHint}</p>
                 <p className="hint">{messages.workContexts.noteSharedWarning}</p>
-                <div
-                  className="scroll split"
-                  style={{
-                    padding: 0,
-                    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))",
-                  }}
-                >
-                  <div className="list">
+                <div className="work-notes-layout">
+                  <div className="work-note-list">
                     {workContext.notes.map((note) => (
                       <button
                         key={note.id}
                         type="button"
-                        className={`employee-card${note.id === activeNoteId ? " active" : ""}`}
+                        className={`work-note-item${note.id === activeNoteId ? " active" : ""}`}
                         aria-pressed={note.id === activeNoteId}
                         onClick={() => void selectNote(note.id)}
                       >
-                        <span className="identity-meta">
-                          <strong>{note.title}</strong>
-                          <span className="role">
-                            {note.authorId === "user"
-                              ? messages.workContexts.noteAuthorYou
-                              : state.employees.find((employee) => employee.id === note.authorId)?.name ?? note.authorId}
-                            {" · "}
-                            {timeAgo(note.updatedAt, locale)}
-                          </span>
+                        <span className="work-list-name">{note.title}</span>
+                        <span className="work-list-meta">
+                          {note.authorId === "user"
+                            ? messages.workContexts.noteAuthorYou
+                            : state.employees.find((employee) => employee.id === note.authorId)?.name ?? note.authorId}
+                          {" · "}
+                          {timeAgo(note.updatedAt, locale)}
                         </span>
                       </button>
                     ))}
                     {workContext.notes.length === 0 ? <p className="hint">{messages.workContexts.notesEmpty}</p> : null}
                   </div>
+                  <label className="work-note-select">
+                    {messages.workContexts.notePickerLabel}
+                    <select
+                      aria-label={messages.workContexts.notePickerLabel}
+                      value={activeNoteId ?? ""}
+                      disabled={workContext.notes.length === 0 && !isNewNote}
+                      onChange={(event) => {
+                        const id = event.target.value;
+                        if (id === "__new__") {
+                          startNewNote();
+                        } else if (id.length > 0) {
+                          void selectNote(id);
+                        }
+                      }}
+                    >
+                      {activeNoteId === undefined ? (
+                        <option value="" disabled>
+                          {workContext.notes.length === 0 ? messages.workContexts.notesEmpty : messages.workContexts.notePick}
+                        </option>
+                      ) : null}
+                      {isNewNote ? <option value="__new__">{messages.workContexts.newNote}</option> : null}
+                      {workContext.notes.map((note) => (
+                        <option key={note.id} value={note.id}>{note.title}</option>
+                      ))}
+                    </select>
+                  </label>
                   <div className="editor">
                     {activeNoteId === undefined ? <p className="hint">{messages.workContexts.notePick}</p> : null}
                     {activeNoteId !== undefined ? (
@@ -647,6 +682,7 @@ export function WorkContextsView(): ReactNode {
               </section>
             ) : null}
           </div>
+        </div>
         ) : (
           <div className="empty">
             <h2>{messages.workContexts.emptyTitle}</h2>
@@ -656,7 +692,6 @@ export function WorkContextsView(): ReactNode {
             </button>
           </div>
         )}
-      </div>
       {editingDirectories && !creating && workContext !== undefined ? (
         <WorkDirectoryEditor
           key={workContext.id}

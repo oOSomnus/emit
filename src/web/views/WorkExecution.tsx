@@ -7,7 +7,7 @@
  * refresh of the newest page, coalesced so a busy run cannot flood the modal.
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api.ts";
 import { mergeExecutionSteps } from "../execution-steps.ts";
 import { errorDisplay, type DisplayText } from "../../shared/i18n.ts";
@@ -15,6 +15,7 @@ import { useI18n } from "../i18n.tsx";
 import { useSessionExport } from "../session-export.ts";
 import { useApp } from "../state.tsx";
 import { Chip, IconButton, WorkStatus, timeAgo } from "./ui.tsx";
+import { MarkdownBody } from "./MarkdownBody.tsx";
 import { ACTIVE_WORK_STATUSES } from "./WorkView.tsx";
 import type { ApprovalDTO, WorkExecutionDTO, WorkExecutionStepDTO } from "../../shared/contracts.ts";
 
@@ -100,8 +101,10 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
   }, [load]);
 
   // Live changes only say "look again"; the modal reads the truth itself, and
-  // the refresh is coalesced so a streaming run cannot spam the server.
-  const workRevision = `${state.work.length}|${work?.status ?? ""}|${work?.progressText?.length ?? 0}|${state.approvals.length}`;
+  // the refresh is coalesced so a streaming run cannot spam the server. Tool
+  // status is part of the fingerprint: a finished tool must refresh the
+  // durable record even when the streamed text did not grow.
+  const workRevision = `${state.work.length}|${work?.status ?? ""}|${work?.progressText?.length ?? 0}|${JSON.stringify(work?.tools?.map((tool) => [tool.callId, tool.status]) ?? [])}|${state.approvals.length}`;
   useEffect(() => {
     clearTimeout(refreshTimer.current);
     refreshTimer.current = setTimeout(() => void load(), REFRESH_INTERVAL_MS);
@@ -135,6 +138,32 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
   };
 
   const shown = execution?.work ?? work;
+
+  // The live half of the record: the newest state of this work, rendered from
+  // the event stream while the run is still owed to somebody. The durable
+  // steps below remain the record; this block is a snapshot of the stream.
+  const liveWork = work ?? execution?.work;
+  const lastAssistant = useMemo(() => {
+    for (let index = steps.length - 1; index >= 0; index -= 1) {
+      const step = steps[index]!;
+      if (step.kind === "assistant") return step;
+    }
+    return undefined;
+  }, [steps]);
+  // A complete, untruncated assistant step already carries this text: showing
+  // it twice in one modal would read as two different answers.
+  const liveText =
+    liveWork !== undefined &&
+    liveWork.progressText !== undefined &&
+    liveWork.progressText.length > 0 &&
+    !(lastAssistant?.text === liveWork.progressText && lastAssistant.truncated !== true)
+      ? liveWork.progressText
+      : undefined;
+  const liveTools = liveWork?.tools?.filter((tool) => tool.status !== "done") ?? [];
+  const showLive =
+    liveWork !== undefined &&
+    ACTIVE_WORK_STATUSES.includes(liveWork.status) &&
+    (liveText !== undefined || liveTools.length > 0);
 
   return (
     <div className="work-execution-backdrop">
@@ -189,6 +218,25 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
           <button type="button" className="link" disabled={loadingOlder} onClick={() => void loadOlder()}>
             {loadingOlder ? messages.common.loading : messages.execution.loadOlder}
           </button>
+        ) : null}
+
+        {showLive ? (
+          <section className="execution-live" aria-label={messages.execution.live}>
+            <h3>{messages.execution.live}</h3>
+            {liveTools.length > 0 ? (
+              <ul className="execution-live-tools">
+                {liveTools.map((tool) => (
+                  <li key={tool.callId}>
+                    <Chip tone={tool.status === "running" ? "info" : "muted"}>
+                      {messages.execution.toolStatus[tool.status]}
+                    </Chip>
+                    <code>{tool.name}</code>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {liveText !== undefined ? <MarkdownBody body={liveText} className="stream" /> : null}
+          </section>
         ) : null}
 
         {execution === undefined && error === "" ? (

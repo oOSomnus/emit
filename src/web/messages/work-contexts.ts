@@ -13,7 +13,9 @@ export const englishWorkContexts = {
   selectWork: "Current work",
   createWork: "New work",
   noWorks: "No work yet",
+  workPickerLabel: "Select work",
   switchWorkHint: "A conversation stays fixed to the work it was created under; switching work only filters what you create next.",
+  helpTitle: "About work",
   title: "Work",
   subtitle:
     "Notes and resources can be shared across conversations in one work; histories from other conversations are never " +
@@ -51,7 +53,7 @@ export const englishWorkContexts = {
   resourcesHint:
     "References only: a file must already exist inside the directories above, and a URL is listed but never " +
     "fetched.",
-  resourceName: "Name",
+  resourceName: "Resource name",
   resourceNamePlaceholder: "Reference name",
   resourceLocation: "Absolute file path or http(s) URL",
   resourceFile: "File",
@@ -67,6 +69,7 @@ export const englishWorkContexts = {
     "never pushed into every prompt.",
   notesEmpty: "No notes yet",
   notePick: "Select a note to read or edit it",
+  notePickerLabel: "Select note",
   noteTitle: "Note title",
   noteBody: "Note body",
   newNote: "New note",
@@ -95,10 +98,6 @@ export const englishWorkContexts = {
   reloadMembers: "Reload members",
 
   addressSuggestions: "Members",
-  addressLabel: "Reply from",
-  addressedTo: (names: string) => `Everyone can read this; only addressed employees reply: ${names}.`,
-  addressedNone: "Everyone can read this; no employee will be started.",
-  addressedSelf: "(you)",
   skippedDisabled: (names: string) => `Disabled members were skipped: ${names}`,
   mentionNotMember: (token: string) => `${token} is not a member of this channel.`,
   mentionDisabled: (token: string) => `${token} is disabled and cannot be addressed.`,
@@ -121,7 +120,9 @@ export const chineseWorkContexts: WorkContextsMessages = {
   selectWork: "当前工作",
   createWork: "新建工作",
   noWorks: "还没有工作",
+  workPickerLabel: "选择工作",
   switchWorkHint: "会话固定属于创建时的工作；切换工作只影响接下来创建的内容。",
+  helpTitle: "工作说明",
   title: "工作",
   subtitle: "同一工作的笔记与资料可跨会话共享；其他会话全文不会自动加载。",
   emptyTitle: "还没有工作",
@@ -150,8 +151,8 @@ export const chineseWorkContexts: WorkContextsMessages = {
 
   resourcesTitle: "资料",
   resourcesHint: "这里只保存引用：文件必须已存在于上方目录内，链接只列出、不会被抓取。",
-  resourceName: "名称",
-  resourceNamePlaceholder: "资料名称",
+  resourceName: "资料名称",
+  resourceNamePlaceholder: "例如：设计简报",
   resourceLocation: "绝对文件路径或 http(s) 链接",
   resourceFile: "文件",
   resourceUrl: "链接",
@@ -163,6 +164,7 @@ export const chineseWorkContexts: WorkContextsMessages = {
   notesHint: "笔记是该工作各会话之间唯一共享的记忆。员工在需要时读取，不会自动塞进每轮提示。",
   notesEmpty: "还没有笔记",
   notePick: "选择一条笔记来阅读或编辑",
+  notePickerLabel: "选择笔记",
   noteTitle: "笔记标题",
   noteBody: "笔记正文",
   newNote: "新建笔记",
@@ -190,10 +192,6 @@ export const chineseWorkContexts: WorkContextsMessages = {
   reloadMembers: "重新载入成员",
 
   addressSuggestions: "成员",
-  addressLabel: "回复者",
-  addressedTo: (names) => `全员可见，只有被点名的员工会回复：${names}。`,
-  addressedNone: "全员可见；无人被点名，不会启动员工。",
-  addressedSelf: "（你）",
   skippedDisabled: (names) => `已跳过停用成员：${names}`,
   mentionNotMember: (token) => `${token} 不是该频道成员。`,
   mentionDisabled: (token) => `${token} 已停用，不能被点名。`,

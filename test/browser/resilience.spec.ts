@@ -1,5 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
-import type { MailboxItemDTO, MessageDTO, RoomDTO, WorkContextDTO } from "../../src/shared/contracts.ts";
+import type { EmployeeDTO, MailboxItemDTO, MessageDTO, RoomDTO, WorkContextDTO } from "../../src/shared/contracts.ts";
 import { startLoopbackProxy } from "../helpers/loopback-proxy.ts";
 import { waitForFixture } from "../helpers/emit-fixture.ts";
 import { expect, onboarded, test, type BrowserE2eFixture } from "./fixtures.ts";
@@ -207,15 +207,47 @@ const sidebarViewports = [
 ] as const;
 
 const sidebarLabels = {
-  en: { openNavigation: "Open navigation", currentWork: "Current work", theme: "Appearance", language: "Language", settings: "Settings" },
-  "zh-CN": { openNavigation: "打开导航", currentWork: "当前工作", theme: "外观", language: "语言", settings: "设置" },
+  en: {
+    openNavigation: "Open navigation",
+    currentWork: "Current work",
+    channels: "Channels",
+    directs: "Direct messages",
+    newChannel: "New channel",
+    newDirect: "Start a direct message",
+    mailbox: "Mailbox",
+    workspace: "Workspace",
+    appearance: "Appearance",
+    language: "Language",
+    approvals: "Approvals",
+    work: "Work",
+    runs: "Runs",
+    employees: "Employees",
+    settings: "Settings",
+  },
+  "zh-CN": {
+    openNavigation: "打开导航",
+    currentWork: "当前工作",
+    channels: "频道",
+    directs: "私信",
+    newChannel: "新建频道",
+    newDirect: "开始私信",
+    mailbox: "邮箱",
+    workspace: "工作台",
+    appearance: "外观",
+    language: "语言",
+    approvals: "审批",
+    work: "工作",
+    runs: "执行记录",
+    employees: "员工",
+    settings: "设置",
+  },
 } as const;
 
-const shortestSidebarHeight = 600;
+const railScrollFallbackHeight = 480;
 
 async function openSidebarDrawer(page: Page, labels: { openNavigation: string }): Promise<void> {
   if (await page.locator(".shell").evaluate((element) => element.classList.contains("nav-open"))) return;
-  const open = page.getByRole("button", { name: labels.openNavigation });
+  const open = page.getByRole("button", { name: labels.openNavigation, exact: true });
   if (!(await open.isVisible())) return;
   await open.click();
   await expect(page.locator(".shell")).toHaveClass(/nav-open/);
@@ -224,34 +256,27 @@ async function openSidebarDrawer(page: Page, labels: { openNavigation: string })
     .toBe("none");
 }
 
-async function scrollSidebar(page: Page, where: "top" | "bottom"): Promise<void> {
-  await page.evaluate((position) => {
-    for (const selector of [".sidebar", ".sidebar-rooms"]) {
-      const element = document.querySelector(selector);
-      if (element === null) continue;
-      element.scrollTop = position === "top" ? 0 : element.scrollHeight;
-    }
+async function scrollSidebarRail(page: Page, where: "top" | "bottom"): Promise<void> {
+  await page.locator(".sidebar").evaluate((element, position) => {
+    element.scrollTop = position === "top" ? 0 : element.scrollHeight;
   }, where);
 }
 
-/** Which elements actually scroll when asked, in preference order. */
-async function sidebarScrollOwners(page: Page): Promise<readonly string[]> {
-  return page.evaluate(() => {
-    const owners: string[] = [];
-    for (const selector of [".sidebar-rooms", ".sidebar"]) {
-      const element = document.querySelector(selector);
-      if (element === null) continue;
-      const before = element.scrollTop;
-      element.scrollTop = before + 2_000;
-      if (element.scrollTop > before + 1) owners.push(selector);
-      element.scrollTop = before;
-    }
-    return owners;
-  });
+async function scrollRoomList(list: Locator, where: "top" | "bottom"): Promise<void> {
+  await list.evaluate((element, position) => {
+    element.scrollTop = position === "top" ? 0 : element.scrollHeight;
+  }, where);
+}
+
+function roomSection(page: Page, heading: string): Locator {
+  return page
+    .locator(".sidebar-rooms section")
+    .filter({ has: page.getByRole("heading", { name: heading }) });
 }
 
 type HitTarget = { ok: boolean; detail: string };
 
+/** A rail target must be inside the rail and receive the pointer at its centre. */
 async function sidebarHitTarget(locator: Locator): Promise<HitTarget> {
   return locator.evaluate((element) => {
     const sidebar = document.querySelector(".sidebar");
@@ -280,119 +305,88 @@ async function sidebarHitTarget(locator: Locator): Promise<HitTarget> {
   });
 }
 
+/** Top-layer menu targets are tested against their own menu, never the rail rectangle. */
+async function workspaceMenuHitTarget(locator: Locator): Promise<HitTarget> {
+  return locator.evaluate((element) => {
+    const menu = document.querySelector(".workspace-menu");
+    if (menu === null) return { ok: false, detail: "the workspace menu is missing" };
+    const rect = element.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const inside =
+      menu.contains(element) &&
+      rect.width > 0 &&
+      rect.height > 0 &&
+      rect.top >= menuRect.top - 1 &&
+      rect.bottom <= menuRect.bottom + 1 &&
+      rect.left >= menuRect.left - 1 &&
+      rect.right <= menuRect.right + 1;
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const receives = hit !== null && (hit === element || element.contains(hit));
+    return {
+      ok: inside && receives,
+      detail: JSON.stringify({
+        rect: { top: Math.round(rect.top), bottom: Math.round(rect.bottom) },
+        menu: { top: Math.round(menuRect.top), bottom: Math.round(menuRect.bottom) },
+        inside,
+        receives,
+        hit: hit === null ? null : hit.tagName.toLowerCase(),
+      }),
+    };
+  });
+}
+
+async function expectSidebarTarget(locator: Locator, label: string, where: string): Promise<void> {
+  await locator.scrollIntoViewIfNeeded();
+  const hit = await sidebarHitTarget(locator);
+  expect(hit.ok, `${where}: ${label} must receive a pointer inside the rail: ${hit.detail}`).toBe(true);
+}
+
+async function expectWorkspaceMenuTarget(locator: Locator, label: string, where: string): Promise<void> {
+  await locator.scrollIntoViewIfNeeded();
+  const hit = await workspaceMenuHitTarget(locator);
+  expect(hit.ok, `${where}: ${label} must receive a pointer inside the menu: ${hit.detail}`).toBe(true);
+}
+
+type SidebarFixedTops = { sidebar: number | null; mailbox: number | null; workspace: number | null };
+
+async function sidebarFixedTops(page: Page): Promise<SidebarFixedTops> {
+  return page.evaluate(() => {
+    const top = (selector: string): number | null => {
+      const element = document.querySelector(selector);
+      return element === null ? null : element.getBoundingClientRect().top;
+    };
+    return {
+      sidebar: top(".sidebar"),
+      mailbox: top(".sidebar-mail"),
+      workspace: top(".footer-nav"),
+    };
+  });
+}
+
+function expectSidebarFixedTopsToStay(before: SidebarFixedTops, after: SidebarFixedTops, where: string): void {
+  for (const key of ["sidebar", "mailbox", "workspace"] as const) {
+    expect(before[key], `${where}: ${key} must exist before room-list scrolling`).not.toBeNull();
+    expect(after[key], `${where}: ${key} must exist after room-list scrolling`).not.toBeNull();
+    expect(Math.abs((after[key] ?? 0) - (before[key] ?? 0)), `${where}: ${key} must stay fixed while a room list scrolls`).toBeLessThanOrEqual(1);
+  }
+}
+
+async function openWorkspaceMenu(page: Page, labels: { openNavigation: string; workspace: string }): Promise<void> {
+  await openSidebarDrawer(page, labels);
+  const trigger = page.locator(".workspace-trigger");
+  await trigger.scrollIntoViewIfNeeded();
+  const menu = page.locator(".workspace-menu");
+  if (!(await menu.isVisible())) await trigger.click();
+  await expect(menu).toBeVisible();
+}
+
 test.describe("sidebar navigation reachability", () => {
   for (const locale of sidebarLocales) {
-    test(`keeps work and room selection reachable at 100% zoom (${locale})`, async ({ app, page }) => {
+    test(`keeps work, room and workspace-menu navigation reachable at 100% zoom (${locale})`, async ({ app, page }) => {
       test.slow();
       const labels = sidebarLabels[locale];
-      const development = await app.request<RoomDTO>("/api/rooms", "POST", {
-        kind: "channel",
-        name: "Development discussion",
-        topic: "Development and testing collaboration",
-        workContextId: app.workspace.workContextId,
-        memberIds: app.workspace.employeeIds,
-      });
-      expect(development.status).toBe(200);
-      const alternate = await app.request<WorkContextDTO>("/api/work-contexts", "POST", { name: "Alternate work" });
-      expect(alternate.status).toBe(200);
-
-      await page.addInitScript((value: string) => {
-        localStorage.setItem("emit.language", value);
-        localStorage.setItem("emit.theme", "light");
-      }, locale);
-      await onboarded(page, app);
-
-      for (const viewport of sidebarViewports) {
-        const where = `${locale} ${viewport.width}x${viewport.height}`;
-        await page.setViewportSize({ width: viewport.width, height: viewport.height });
-        await openSidebarDrawer(page, labels);
-        await scrollSidebar(page, "top");
-
-        const coarsePointer = await page.evaluate(() => window.matchMedia("(pointer: coarse)").matches);
-        const geometry = await page.evaluate(() => {
-          const sidebar = document.querySelector(".sidebar");
-          const nav = document.querySelector(".sidebar-rooms");
-          if (sidebar === null || nav === null) throw new Error("the sidebar is missing");
-          const sections = [...nav.children].filter((child): child is HTMLElement => child instanceof HTMLElement);
-          const select = sections[0]?.querySelector("select");
-          const hint = sections[0]?.querySelector(".sidebar-work-hint");
-          const channelsHeading = sections[1]?.querySelector("h3");
-          if (
-            select === null ||
-            select === undefined ||
-            hint === null ||
-            hint === undefined ||
-            channelsHeading === null ||
-            channelsHeading === undefined
-          ) {
-            throw new Error("the sidebar work section is incomplete");
-          }
-          return {
-            zoom: getComputedStyle(document.documentElement).zoom,
-            sidebarTransform: getComputedStyle(sidebar).transform,
-            selectHeight: select.getBoundingClientRect().height,
-            hintBottom: hint.getBoundingClientRect().bottom,
-            channelsTop: channelsHeading.getBoundingClientRect().top,
-            sections: sections.map((section) => {
-              const box = section.getBoundingClientRect();
-              return { top: box.top, bottom: box.bottom };
-            }),
-          };
-        });
-
-        expect(geometry.zoom, `${where}: the page must stay at 100% zoom`).toBe("1");
-        if (viewport.width <= 760) {
-          expect(geometry.sidebarTransform, `${where}: the navigation drawer must be fully open`).toBe("none");
-        }
-        const minimumRowHeight = coarsePointer ? 44 : 40;
-        expect(geometry.selectHeight, `${where}: the work selector must keep its native height`).toBeGreaterThanOrEqual(minimumRowHeight);
-        expect(
-          geometry.hintBottom,
-          `${where}: the work hint must not overlap the Channels heading`,
-        ).toBeLessThanOrEqual(geometry.channelsTop + 0.5);
-        for (let index = 0; index + 1 < geometry.sections.length; index += 1) {
-          expect(
-            geometry.sections[index]!.bottom,
-            `${where}: sidebar sections ${index} and ${index + 1} must not overlap`,
-          ).toBeLessThanOrEqual(geometry.sections[index + 1]!.top + 0.5);
-        }
-
-        const developmentButton = page.getByRole("button", { name: "Development discussion" });
-        await developmentButton.scrollIntoViewIfNeeded();
-        const developmentHit = await sidebarHitTarget(developmentButton);
-        expect(developmentHit.ok, `${where}: the second channel must be clickable: ${developmentHit.detail}`).toBe(true);
-        const messagesLoaded = page.waitForResponse((response) => {
-          const url = new URL(response.url());
-          return url.pathname === `/api/rooms/${development.body.id}/messages` && response.status() === 200;
-        });
-        await developmentButton.click();
-        expect((await messagesLoaded).status()).toBe(200);
-        await expect(page.getByRole("heading", { name: "# Development discussion" })).toBeVisible();
-
-        await openSidebarDrawer(page, labels);
-        await scrollSidebar(page, "top");
-        const generalButton = page.getByRole("button", { name: "General", exact: true });
-        await generalButton.scrollIntoViewIfNeeded();
-        const generalHit = await sidebarHitTarget(generalButton);
-        expect(generalHit.ok, `${where}: the first channel must stay clickable: ${generalHit.detail}`).toBe(true);
-        await generalButton.click();
-        await expect(page.getByRole("heading", { name: "# General" })).toBeVisible();
-
-        await openSidebarDrawer(page, labels);
-        await scrollSidebar(page, "top");
-        const workSelect = page.getByLabel(labels.currentWork);
-        await workSelect.scrollIntoViewIfNeeded();
-        const workSelectHit = await sidebarHitTarget(workSelect);
-        expect(workSelectHit.ok, `${where}: the work selector must be clickable: ${workSelectHit.detail}`).toBe(true);
-        await workSelect.selectOption(alternate.body.id);
-        expect(await workSelect.inputValue()).toBe(alternate.body.id);
-        await workSelect.selectOption(app.workspace.workContextId);
-        expect(await workSelect.inputValue()).toBe(app.workspace.workContextId);
-
-        await assertNoHorizontalOverflow(page);
-      }
-
       const overflowNames = Array.from({ length: 12 }, (_, index) => `Overflow channel ${String(index + 1).padStart(2, "0")}`);
+
       for (const name of overflowNames) {
         const created = await app.request<RoomDTO>("/api/rooms", "POST", {
           kind: "channel",
@@ -401,82 +395,239 @@ test.describe("sidebar navigation reachability", () => {
           workContextId: app.workspace.workContextId,
           memberIds: [],
         });
-        expect(created.status).toBe(200);
+        expect(created.status, `creating ${name}`).toBe(200);
       }
 
+      const bootstrap = await app.request<{ employees: EmployeeDTO[] }>("/api/bootstrap");
+      expect(bootstrap.status).toBe(200);
+      const seededEmployees = app.workspace.employeeIds.map((id) => {
+        const employee = bootstrap.body.employees.find((entry) => entry.id === id);
+        expect(employee, `seeded employee ${id} must exist`).toBeDefined();
+        return employee!;
+      });
+      const extraEmployees: EmployeeDTO[] = [];
+      for (let index = 1; index <= 4; index += 1) {
+        const created = await app.request<EmployeeDTO>("/api/employees", "POST", {
+          name: `Overflow assistant ${String(index).padStart(2, "0")}`,
+          role: "Assistant",
+          executionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
+          generateAddress: true,
+        });
+        expect(created.status, `creating overflow assistant ${index}`).toBe(200);
+        extraEmployees.push(created.body);
+      }
+      for (const employee of [...seededEmployees, ...extraEmployees]) {
+        const created = await app.request<RoomDTO>("/api/rooms", "POST", {
+          kind: "dm",
+          name: employee.name,
+          workContextId: app.workspace.workContextId,
+          memberIds: [],
+          employeeId: employee.id,
+        });
+        expect(created.status, `creating a DM for ${employee.name}`).toBe(200);
+      }
+
+      const alternate = await app.request<WorkContextDTO>("/api/work-contexts", "POST", { name: "Alternate work" });
+      expect(alternate.status).toBe(200);
+      await page.addInitScript((value: string) => {
+        if (localStorage.getItem("emit.language") === null) localStorage.setItem("emit.language", value);
+        if (localStorage.getItem("emit.theme") === null) localStorage.setItem("emit.theme", "light");
+      }, locale);
+      await onboarded(page, app);
+      const workspaceMenu = page.locator(".workspace-menu");
+      await expect(workspaceMenu, "workspace menu must be closed by default").toBeHidden();
+
       for (const viewport of sidebarViewports) {
-        const where = `${locale} ${viewport.width}x${viewport.height} (overflow)`;
+        const where = `${locale} ${viewport.width}x${viewport.height}`;
         await page.setViewportSize({ width: viewport.width, height: viewport.height });
-        await page.reload();
-        await expect(page.getByRole("button", { name: "General", exact: true })).toBeAttached();
         await openSidebarDrawer(page, labels);
+        await scrollSidebarRail(page, "top");
 
-        if (viewport.height > shortestSidebarHeight) {
-          const owners = await sidebarScrollOwners(page);
-          expect(owners, `${where}: the room navigation must own the scrolling`).toContain(".sidebar-rooms");
-          const before = await page.evaluate(() => ({
-            mail: document.querySelector(".sidebar-mail")?.getBoundingClientRect().top ?? null,
-            footer: document.querySelector(".footer-nav")?.getBoundingClientRect().top ?? null,
-          }));
-          expect(before.mail, `${where}: the mailbox entry must exist`).not.toBeNull();
-          expect(before.footer, `${where}: the footer navigation must exist`).not.toBeNull();
-          await scrollSidebar(page, "bottom");
-          const after = await page.evaluate(() => ({
-            mail: document.querySelector(".sidebar-mail")?.getBoundingClientRect().top ?? null,
-            footer: document.querySelector(".footer-nav")?.getBoundingClientRect().top ?? null,
-          }));
-          expect(Math.abs((after.mail ?? 0) - (before.mail ?? 0)), `${where}: the mailbox entry must stay fixed`).toBeLessThanOrEqual(1);
-          expect(Math.abs((after.footer ?? 0) - (before.footer ?? 0)), `${where}: the footer navigation must stay fixed`).toBeLessThanOrEqual(1);
-
-          const settings = page.getByRole("button", { name: labels.settings, exact: true });
-          await settings.scrollIntoViewIfNeeded();
-          const settingsHit = await sidebarHitTarget(settings);
-          expect(settingsHit.ok, `${where}: the settings entry must be clickable: ${settingsHit.detail}`).toBe(true);
-          await settings.click();
-          await expect(settings).toHaveAttribute("aria-current", "page");
-        } else {
-          await scrollSidebar(page, "bottom");
-
-          const themeSelect = page.getByLabel(labels.theme);
-          await themeSelect.scrollIntoViewIfNeeded();
-          const themeHit = await sidebarHitTarget(themeSelect);
-          expect(themeHit.ok, `${where}: the appearance control must be clickable: ${themeHit.detail}`).toBe(true);
-          await themeSelect.selectOption("dark");
-          await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-          await themeSelect.selectOption("light");
-          await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-
-          const languageSelect = page.locator(".footer-nav .language-picker select");
-          await languageSelect.scrollIntoViewIfNeeded();
-          const languageHit = await sidebarHitTarget(languageSelect);
-          expect(languageHit.ok, `${where}: the language control must be clickable: ${languageHit.detail}`).toBe(true);
-          const originalLanguage = await languageSelect.inputValue();
-          const otherLanguage = originalLanguage === "en" ? "zh-CN" : "en";
-          await languageSelect.selectOption(otherLanguage);
-          await expect(page.locator("html")).toHaveAttribute("lang", otherLanguage);
-          await languageSelect.selectOption(originalLanguage);
-          await expect(page.locator("html")).toHaveAttribute("lang", originalLanguage);
-
-          const settings = page.getByRole("button", { name: labels.settings, exact: true });
-          await settings.scrollIntoViewIfNeeded();
-          const settingsHit = await sidebarHitTarget(settings);
-          expect(settingsHit.ok, `${where}: the settings entry must be clickable: ${settingsHit.detail}`).toBe(true);
-          await settings.click();
-          await expect(settings).toHaveAttribute("aria-current", "page");
+        const viewportState = await page.evaluate(() => {
+          const sidebar = document.querySelector(".sidebar");
+          if (sidebar === null) throw new Error("the sidebar is missing");
+          return {
+            zoom: getComputedStyle(document.documentElement).zoom,
+            sidebarTransform: getComputedStyle(sidebar).transform,
+          };
+        });
+        expect(viewportState.zoom, `${where}: the page must stay at 100% zoom`).toBe("1");
+        if (viewport.width <= 760) {
+          expect(viewportState.sidebarTransform, `${where}: the open drawer must have no translation`).toBe("none");
         }
 
-        for (const name of [overflowNames[0]!, overflowNames[11]!]) {
+        const workSelect = page.getByLabel(labels.currentWork, { exact: true });
+        const channels = roomSection(page, labels.channels);
+        const directs = roomSection(page, labels.directs);
+        const channelHeading = channels.getByRole("heading", { name: labels.channels });
+        const directHeading = directs.getByRole("heading", { name: labels.directs });
+        const channelPlus = channels.getByRole("button", { name: labels.newChannel, exact: true });
+        const directPlus = directs.getByRole("button", { name: labels.newDirect, exact: true });
+        const channelList = channels.locator(".room-list");
+        const directList = directs.locator(".room-list");
+        const firstDirect = directList.getByRole("button").first();
+        const mailbox = page.getByRole("button", { name: labels.mailbox, exact: true });
+        const workspaceTrigger = page.locator(".workspace-trigger");
+
+        await scrollRoomList(channelList, "top");
+        await scrollRoomList(directList, "top");
+        await expectSidebarTarget(workSelect, labels.currentWork, where);
+        await expectSidebarTarget(channelHeading, labels.channels, where);
+        await expectSidebarTarget(channelPlus, labels.newChannel, where);
+        await expectSidebarTarget(directHeading, labels.directs, where);
+        await expectSidebarTarget(directPlus, labels.newDirect, where);
+        await expectSidebarTarget(mailbox, labels.mailbox, where);
+        await expectSidebarTarget(workspaceTrigger, labels.workspace, where);
+
+        await workSelect.selectOption(alternate.body.id);
+        await expect(workSelect).toHaveValue(alternate.body.id);
+        await workSelect.selectOption(app.workspace.workContextId);
+        await expect(workSelect).toHaveValue(app.workspace.workContextId);
+
+        if (viewport.height > railScrollFallbackHeight) {
+          const channelSize = await channelList.evaluate((element) => ({
+            scrollHeight: element.scrollHeight,
+            clientHeight: element.clientHeight,
+          }));
+          const directSize = await directList.evaluate((element) => ({
+            scrollHeight: element.scrollHeight,
+            clientHeight: element.clientHeight,
+          }));
+          expect(channelSize.scrollHeight, `${where}: the channel list must own its overflow`).toBeGreaterThan(channelSize.clientHeight);
+          expect(directSize.scrollHeight, `${where}: the DM list must own its overflow`).toBeGreaterThan(directSize.clientHeight);
+          const railSize = await page.locator(".sidebar").evaluate((element) => ({
+            scrollTop: element.scrollTop,
+            scrollHeight: element.scrollHeight,
+            clientHeight: element.clientHeight,
+          }));
+          expect(railSize.scrollTop, `${where}: the rail must not scroll while its room lists own overflow`).toBe(0);
+          expect(railSize.scrollHeight, `${where}: the rail must not have vertical overflow`).toBeLessThanOrEqual(railSize.clientHeight);
+
+          const beforeChannels = await sidebarFixedTops(page);
+          await scrollRoomList(channelList, "bottom");
+          expect(await channelList.evaluate((element) => element.scrollTop), `${where}: the channel list must scroll itself`).toBeGreaterThan(0);
+          await expectSidebarTarget(firstDirect, "the first direct-message entry", where);
+          await expectSidebarTarget(workSelect, labels.currentWork, where);
+          expectSidebarFixedTopsToStay(beforeChannels, await sidebarFixedTops(page), where);
+
+          await scrollRoomList(channelList, "top");
+          const beforeDirects = await sidebarFixedTops(page);
+          await scrollRoomList(directList, "bottom");
+          expect(await directList.evaluate((element) => element.scrollTop), `${where}: the DM list must scroll itself`).toBeGreaterThan(0);
+          await expectSidebarTarget(channelList.getByRole("button").first(), "the first channel entry", where);
+          expectSidebarFixedTopsToStay(beforeDirects, await sidebarFixedTops(page), where);
+        } else {
+          const railSize = await page.locator(".sidebar").evaluate((element) => ({
+            scrollHeight: element.scrollHeight,
+            clientHeight: element.clientHeight,
+          }));
+          expect(railSize.scrollHeight, `${where}: the short rail must be scrollable`).toBeGreaterThan(railSize.clientHeight);
+          await scrollSidebarRail(page, "top");
+          await expectSidebarTarget(workSelect, labels.currentWork, where);
+          await expectSidebarTarget(channelHeading, labels.channels, where);
+          await expectSidebarTarget(channelPlus, labels.newChannel, where);
+          await expectSidebarTarget(directHeading, labels.directs, where);
+          await expectSidebarTarget(directPlus, labels.newDirect, where);
+          await expectSidebarTarget(firstDirect, "the first direct-message entry", where);
+          await expectSidebarTarget(mailbox, labels.mailbox, where);
+          await expectSidebarTarget(workspaceTrigger, labels.workspace, where);
+        }
+
+        for (const name of [overflowNames[0]!, overflowNames[overflowNames.length - 1]!]) {
           await openSidebarDrawer(page, labels);
-          const button = page.getByRole("button", { name });
-          await button.scrollIntoViewIfNeeded();
-          const hit = await sidebarHitTarget(button);
-          expect(hit.ok, `${where}: ${name} must be clickable: ${hit.detail}`).toBe(true);
+          const button = channelList.getByRole("button", { name, exact: true });
+          await expect(button).toBeAttached();
+          await expectSidebarTarget(button, name, where);
           await button.click();
-          await expect(page.getByRole("heading", { name: `# ${name}` })).toBeVisible();
+          await expect(page.getByRole("heading", { name: `# ${name}`, exact: true })).toBeVisible();
+        }
+
+        await openWorkspaceMenu(page, labels);
+        await expect(workspaceMenu).toBeVisible();
+        const firstMenuItem = workspaceMenu.getByRole("button", { name: labels.approvals, exact: true });
+        await expect(firstMenuItem).toBeFocused();
+        for (const label of [labels.approvals, labels.work, labels.runs, labels.employees, labels.settings]) {
+          const item = workspaceMenu.getByRole("button", { name: label, exact: true });
+          await expectWorkspaceMenuTarget(item, label, where);
+        }
+        await page.keyboard.press("Escape");
+        await expect(workspaceMenu).toBeHidden();
+        await expect(workspaceTrigger).toBeFocused();
+        if (viewport.width <= 760) {
+          await page.keyboard.press("Escape");
+          await expect(page.locator(".shell")).not.toHaveClass(/nav-open/);
+          await expect(page.getByRole("button", { name: labels.openNavigation, exact: true })).toBeFocused();
+        }
+
+        await openWorkspaceMenu(page, labels);
+        const settingsItem = workspaceMenu.getByRole("button", { name: labels.settings, exact: true });
+        await expectWorkspaceMenuTarget(settingsItem, labels.settings, where);
+        await settingsItem.click();
+        await expect(page.getByRole("heading", { name: labels.settings, exact: true })).toBeVisible();
+        await expect(workspaceTrigger.locator(".label")).toHaveText(labels.settings);
+        await expect(workspaceMenu).toBeHidden();
+        if (viewport.width <= 760) await expect(page.locator(".shell")).not.toHaveClass(/nav-open/);
+        await openWorkspaceMenu(page, labels);
+        await expect(settingsItem).toHaveAttribute("aria-current", "page");
+
+        await openWorkspaceMenu(page, labels);
+        const appearance = workspaceMenu.getByLabel(labels.appearance, { exact: true });
+        await expectWorkspaceMenuTarget(appearance, labels.appearance, where);
+        await appearance.selectOption("dark");
+        await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+        await appearance.selectOption("light");
+        await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+
+        const language = workspaceMenu.getByLabel(labels.language, { exact: true });
+        await expectWorkspaceMenuTarget(language, labels.language, where);
+        const otherLocale = locale === "en" ? "zh-CN" : "en";
+        await language.selectOption(otherLocale);
+        await expect(page.locator("html")).toHaveAttribute("lang", otherLocale);
+        const otherLabels = sidebarLabels[otherLocale];
+        await workspaceMenu.getByLabel(otherLabels.language, { exact: true }).selectOption(locale);
+        await expect(page.locator("html")).toHaveAttribute("lang", locale);
+
+        if (await workspaceMenu.isVisible()) {
+          await page.keyboard.press("Escape");
+          await expect(workspaceMenu).toBeHidden();
+        }
+        if (viewport.width <= 760 && await page.locator(".shell").evaluate((element) => element.classList.contains("nav-open"))) {
+          await page.keyboard.press("Escape");
+          await expect(page.locator(".shell")).not.toHaveClass(/nav-open/);
         }
 
         await assertNoHorizontalOverflow(page);
       }
+
+      const otherLocale = locale === "en" ? "zh-CN" : "en";
+      await openWorkspaceMenu(page, labels);
+      await workspaceMenu.getByLabel(labels.language, { exact: true }).selectOption(otherLocale);
+      await expect(page.locator("html")).toHaveAttribute("lang", otherLocale);
+      await page.reload();
+      await expect(page.locator("html")).toHaveAttribute("lang", otherLocale);
+      await expect(workspaceMenu).toBeHidden();
+      const otherLabels = sidebarLabels[otherLocale];
+      await openWorkspaceMenu(page, otherLabels);
+      await workspaceMenu.getByLabel(otherLabels.language, { exact: true }).selectOption(locale);
+      await expect(page.locator("html")).toHaveAttribute("lang", locale);
+      await page.keyboard.press("Escape");
+      await expect(workspaceMenu).toBeHidden();
+      await assertNoHorizontalOverflow(page);
+
+      await page.setViewportSize({ width: 844, height: 300 });
+      await openSidebarDrawer(page, labels);
+      await scrollSidebarRail(page, "top");
+      const shortRailTargets = [
+        [page.getByLabel(labels.currentWork, { exact: true }), labels.currentWork],
+        [roomSection(page, labels.channels).getByRole("heading", { name: labels.channels }), labels.channels],
+        [roomSection(page, labels.channels).getByRole("button", { name: labels.newChannel, exact: true }), labels.newChannel],
+        [roomSection(page, labels.directs).getByRole("heading", { name: labels.directs }), labels.directs],
+        [roomSection(page, labels.directs).getByRole("button", { name: labels.newDirect, exact: true }), labels.newDirect],
+        [roomSection(page, labels.directs).locator(".room-list").getByRole("button").first(), "the first direct-message entry"],
+        [page.getByRole("button", { name: labels.mailbox, exact: true }), labels.mailbox],
+        [page.locator(".workspace-trigger"), labels.workspace],
+      ] as const;
+      for (const [target, label] of shortRailTargets) await expectSidebarTarget(target, label, `${locale} 844x300`);
     });
   }
 });

@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { createBrowserApp, createOAuthBrowserApp, expect, test } from "./fixtures.ts";
+import { createBrowserApp, createOAuthBrowserApp, expect, navigateWorkspace, selectProviderInUi, test } from "./fixtures.ts";
 
 const browserModel = "browser-chat";
 const browserProvider = "browser-fixture";
@@ -20,11 +20,6 @@ async function expectSecretsAbsent(page: Page, secrets: readonly string[]): Prom
     sessionStorage: Object.entries(sessionStorage),
   }));
   for (const secret of secrets) expect(browserState).not.toContain(secret);
-}
-
-async function revealNavigation(page: Page): Promise<void> {
-  const open = page.getByRole("button", { name: "Open navigation", exact: true });
-  if (await open.isVisible()) await open.click();
 }
 
 test("a first-run workspace connects a local provider and creates its first employee through the UI", async ({ app, page }) => {
@@ -70,16 +65,14 @@ test("a first-run workspace connects a local provider and creates its first empl
     await expect(page.locator(".workspace-name")).toHaveText("Local Company");
     await expect(page.locator(".workspace-user")).toContainText("@");
 
-    await revealNavigation(page);
-    const sidebar = page.locator("aside.sidebar");
-    await sidebar.getByRole("button", { name: "Employees", exact: true }).click();
+    await navigateWorkspace(page, "Employees");
     await expect(page.getByRole("heading", { name: "Employees", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "New employee", exact: true }).click();
     await page.getByLabel("Name", { exact: true }).fill("Local Teammate");
     await page.getByLabel("Role", { exact: true }).fill("Research and writing assistant");
     await expect(page.getByLabel("Employee model", { exact: true })).toHaveValue(browserModelKey);
     await page.getByRole("button", { name: "Save", exact: true }).click();
-    const employee = page.getByRole("button").filter({ hasText: "Local Teammate" });
+    const employee = page.getByRole("article", { name: "Local Teammate" });
     await expect(employee).toContainText("Research and writing assistant");
     await expectSecretsAbsent(page, [apiKey]);
   } finally {
@@ -95,9 +88,7 @@ test("OAuth login waits for a manual code, saves locally, and cancels without ex
     await setDeterministicPreferences(page);
     await page.goto(oauthApp.emit.url);
     const providers = page.locator(".provider-manager");
-    const search = providers.getByRole("searchbox", { name: "Search providers" });
-    await search.fill("fixture-oauth");
-    await providers.getByRole("button", { name: /Fixture OAuth/ }).click();
+    await selectProviderInUi(page, "fixture-oauth");
 
     const login = providers.getByRole("button", { name: /Sign-in.*Local OAuth/i });
     await login.click();

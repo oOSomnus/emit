@@ -8,36 +8,37 @@
  */
 
 :root {
-  --bg: #f5f3f8;
-  --bg-soft: #ffffff;
-  --bg-raise: #f0ecf4;
-  --raise-hover: #e7e0ed;
-  --line: #e7e1eb;
-  --line-strong: #c9bdcf;
-  --text: #28212f;
-  --text-dim: #6d6475;
-  --accent: #6f4596;
-  --accent-text: #ffffff;
-  --accent-soft: #f0e7f8;
-  --selected: #ede3f7;
-  --selected-text: #542c78;
-  --hover: #f4eff8;
+  --bg: #f9f8f6;
+  --bg-soft: #f9f8f6;
+  --bg-raise: #efe9e3;
+  --raise-hover: #e5dcd3;
+  --line: #d9cfc7;
+  --line-strong: #8b7b6d;
+  --text: #452829;
+  --text-dim: #57595b;
+  --accent: #452829;
+  --accent-text: #f3e8df;
+  --accent-soft: #efe9e3;
+  --selected: #e8dccd;
+  --selected-text: #452829;
+  --hover: #efe9e3;
   --ok: #27624c;
   --ok-bg: #e8f3ed;
   --warn: #875718;
   --warn-bg: #fbf0dc;
   --error: #aa3644;
   --error-bg: #fbeaee;
-  --code-bg: #f4f1f6;
-  --rail-bg: #33253e;
-  --rail-text: #f6f0fb;
-  --rail-muted: #c5b8d0;
-  --rail-hover: #44314f;
-  --rail-selected: #543a64;
-  --rail-line: #594366;
-  --scrim: rgba(28, 17, 38, .42);
-  --shadow: 0 16px 48px rgba(28, 17, 38, .16);
-  --shadow-soft: 0 1px 2px rgba(28, 17, 38, .06);
+  --code-bg: #efe9e3;
+  --rail-bg: #efe9e3;
+  --rail-text: #452829;
+  --rail-muted: #57595b;
+  --rail-hover: #e5dcd3;
+  --rail-selected: #d9cfc7;
+  --rail-line: #d9cfc7;
+  --rail-marker: #c9b59c;
+  --scrim: rgba(69, 40, 41, .36);
+  --shadow: 0 16px 48px rgba(69, 40, 41, .16);
+  --shadow-soft: 0 1px 2px rgba(69, 40, 41, .06);
   --font-ui: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   --text-ui: 14px;
   --text-meta: 13px;
@@ -57,7 +58,7 @@
   --radius: 8px;
   --radius-lg: 12px;
   --sidebar-w: 248px;
-  --header-h: 72px;
+  --header-h: 64px;
   --row-h: 40px;
   color-scheme: light;
   font-family: var(--font-ui);
@@ -67,33 +68,37 @@
 }
 
 :root[data-theme="dark"] {
-  --bg: #17131d;
-  --bg-soft: #1f1b25;
-  --bg-raise: #2a2432;
-  --raise-hover: #382e41;
-  --line: #3a3043;
-  --line-strong: #675574;
-  --text: #eee8f4;
-  --text-dim: #b5aabb;
-  --accent: #c5a0e8;
-  --accent-text: #281535;
-  --accent-soft: #35283f;
-  --selected: #463354;
-  --selected-text: #f2e7fc;
-  --hover: #31273b;
+  --bg: #232425;
+  --bg-soft: #2c2d2f;
+  --bg-raise: #383a3c;
+  --raise-hover: #434548;
+  --line: #57595b;
+  --line-strong: #8e8983;
+  --text: #f3e8df;
+  --text-dim: #c9bdb4;
+  --accent: #e8d1c5;
+  --accent-text: #452829;
+  --accent-soft: #452829;
+  --selected: #452829;
+  --selected-text: #f3e8df;
+  --hover: #383a3c;
   --ok: #a0d5b7;
   --ok-bg: #20382d;
   --warn: #eac88b;
   --warn-bg: #3b3020;
   --error: #f2adb8;
   --error-bg: #40252d;
-  --code-bg: #26202d;
-  --rail-bg: #21182b;
-  --rail-hover: #34243f;
-  --rail-selected: #503660;
-  --rail-line: #493254;
+  --code-bg: #242526;
+  --rail-bg: #202122;
+  --rail-text: #f3e8df;
+  --rail-muted: #c9bdb4;
+  --rail-hover: #383a3c;
+  --rail-selected: #452829;
+  --rail-line: #57595b;
+  --rail-marker: #e8d1c5;
   --scrim: rgba(0, 0, 0, .56);
   --shadow: 0 16px 48px rgba(0, 0, 0, .38);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, .18);
   color-scheme: dark;
 }
 
@@ -153,22 +158,6 @@ a {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
   border-radius: 4px;
-}
-
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--line-strong);
-  border-radius: 999px;
-  border: 2px solid transparent;
-  background-clip: content-box;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
 }
 
 /* ------------------------------------------------------------- controls */
@@ -262,7 +251,7 @@ textarea {
   font: inherit;
   color: var(--text);
   background: var(--bg-soft);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   padding: 0 10px;
   height: 40px;
@@ -370,6 +359,20 @@ ul {
   font-size: var(--text-meta);
 }
 
+/* Available to assistive technology without taking visual space. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .time {
   color: var(--text-dim);
   font-size: var(--text-meta);
@@ -449,6 +452,7 @@ ul {
   min-width: 0;
   background: var(--rail-bg);
   color: var(--rail-text);
+  border-right: 1px solid var(--rail-line);
   overflow: hidden;
 }
 
@@ -481,41 +485,115 @@ ul {
   white-space: nowrap;
 }
 
+/* Current work stays pinned under the header; only the room lists scroll. */
+.sidebar-work {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-3) 0;
+  flex: none;
+}
+
+.sidebar-work-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
+  min-height: 36px;
+  margin: 0 var(--space-1);
+}
+
+.sidebar-work-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* The select owns the row: a work name is never clipped by icon buttons. */
+.sidebar-work select {
+  width: 100%;
+  min-width: 0;
+  color: var(--rail-text);
+  background: var(--rail-hover);
+  border-color: var(--rail-line);
+}
+
+.sidebar-work select:focus {
+  border-color: var(--rail-muted);
+  box-shadow: none;
+}
+
+.sidebar-work-label {
+  display: block;
+  font-size: var(--text-meta);
+  color: var(--rail-muted);
+}
+
+.sidebar-work-hint {
+  margin: 0;
+  line-height: 1.6;
+  white-space: normal;
+  color: var(--rail-muted);
+}
+
 .sidebar-rooms {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: var(--space-3);
-  gap: var(--space-4);
+  overflow: hidden;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  gap: var(--space-2);
 }
 
 .sidebar-rooms > section {
   display: flex;
   flex-direction: column;
-  flex: 0 0 auto;
+  min-height: 0;
+}
+
+/* A populated list shares the free height; an empty section keeps its header. */
+.sidebar-rooms > section.has-rooms {
+  flex: 1 1 0;
+}
+
+.room-section-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .room-list {
-  flex: none;
-  overflow: visible;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 /*
- * A window too short for the whole rail scrolls the rail itself. The room
- * navigation keeps its natural height so its sections cannot overlap; every
- * entry stays reachable by scrolling the sidebar.
+ * A window too short for the fixed controls scrolls the rail itself; the room
+ * lists stop scrolling so every entry stays reachable. Below ~490px of height
+ * the pinned work selector, two section headers, mailbox, and workspace menu
+ * cannot leave a usable row for both lists, so the rail becomes the scroller.
  */
-@media (max-height: 600px) {
+@media (max-height: 480px) {
   .sidebar {
     overflow-x: hidden;
     overflow-y: auto;
   }
 
-  .sidebar-rooms {
-    flex: none;
+  .sidebar-work,
+  .sidebar-rooms,
+  .sidebar-rooms > section,
+  .sidebar-rooms > section.has-rooms,
+  .sidebar-mail,
+  .footer-nav {
+    flex: 0 0 auto;
+  }
+
+  .sidebar-rooms,
+  .room-list {
     overflow: visible;
   }
 }
@@ -533,13 +611,6 @@ ul {
   min-height: 36px;
 }
 
-.sidebar-work-hint {
-  margin: var(--space-2) var(--space-1) 0;
-  line-height: 1.6;
-  white-space: normal;
-  color: var(--rail-muted);
-}
-
 .sidebar .icon-button { color: var(--rail-muted); }
 .sidebar .icon-button:hover:not(:disabled) {
   background: var(--rail-hover);
@@ -553,24 +624,25 @@ ul {
   gap: var(--space-2);
   width: 100%;
   min-width: 0;
-  height: var(--row-h);
+  height: auto;
+  min-height: var(--row-h);
   text-align: left;
   background: transparent;
   border: none;
   border-radius: var(--radius);
-  padding: 0 var(--space-2);
+  padding: var(--space-1) var(--space-2);
   color: var(--rail-text);
   font-weight: 400;
 }
 
-.room.room-dm { height: 56px; }
+.room.room-dm { min-height: 48px; }
 .room:hover:not(:disabled) { background: var(--rail-hover); }
 .room.active,
 .room.active:hover {
   background: var(--rail-selected);
   color: var(--rail-text);
-  box-shadow: inset 2px 0 var(--rail-muted);
   font-weight: 600;
+  box-shadow: inset 2px 0 var(--rail-marker);
 }
 
 .room-label {
@@ -595,11 +667,10 @@ ul {
 }
 
 .room-topic {
-  max-width: 72px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: none;
 }
 
 .sidebar-mail {
@@ -612,33 +683,25 @@ ul {
   color: var(--rail-text);
 }
 
-.creator {
-  margin: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--rail-line);
-  border-radius: var(--radius-lg);
-  background: var(--rail-hover);
-  display: grid;
-  gap: var(--space-2);
-  flex: none;
-}
-
+/* The footer keeps one entry: the workspace menu. */
 .footer-nav {
   flex: none;
-  display: grid;
-  grid-auto-rows: var(--row-h);
-  gap: var(--space-1);
-  align-content: start;
-  padding: var(--space-3);
+  padding: var(--space-2) var(--space-3) var(--space-3);
   border-top: 1px solid var(--rail-line);
 }
 
-.footer-nav button {
+.workspace-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.workspace-trigger {
   display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 10px;
-  width: 100%;
+  flex: 1;
   min-width: 0;
   height: var(--row-h);
   padding: 0 var(--space-2);
@@ -649,20 +712,103 @@ ul {
   font-weight: 400;
 }
 
-.footer-nav button:hover:not(:disabled) { background: var(--rail-hover); }
-.footer-nav button.active {
+.workspace-trigger:hover:not(:disabled) { background: var(--rail-hover); }
+.workspace-trigger[aria-expanded="true"] {
   background: var(--rail-selected);
-  color: var(--rail-text);
-  box-shadow: inset 2px 0 var(--rail-muted);
   font-weight: 600;
 }
 
-.footer-nav .label {
+.workspace-trigger .label {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-pending {
+  flex: none;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 999px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.workspace-pending:hover:not(:disabled) { filter: brightness(1.05); }
+
+/* Opened from the top layer so no scrolling box can clip the menu. */
+.workspace-menu {
+  position: fixed;
+  inset: auto;
+  left: 12px;
+  bottom: 64px;
+  width: min(224px, calc(100vw - 24px));
+  max-height: calc(100dvh - 88px);
+  overflow: auto;
+  overflow-x: hidden;
+  margin: 0;
+  padding: var(--space-2);
+  background: var(--bg-soft);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+
+.workspace-menu:popover-open {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.workspace-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  height: var(--row-h);
+  padding: 0 var(--space-2);
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-weight: 400;
+}
+
+.workspace-menu button:hover:not(:disabled) { background: var(--hover); }
+
+.workspace-menu button[aria-current="page"] {
+  background: var(--selected);
+  color: var(--selected-text);
+  font-weight: 600;
+}
+
+.workspace-menu .label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-menu hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: var(--space-1) 0;
+  width: 100%;
+}
+
+.sidebar .workspace-menu .theme-picker { color: var(--text-dim); }
+.sidebar .workspace-menu .theme-picker select {
+  color: var(--text);
+  background: var(--bg-soft);
+  border-color: var(--line);
 }
 
 .theme-picker {
@@ -710,8 +856,6 @@ ul {
   flex-wrap: wrap;
   gap: var(--space-2);
   min-width: 0;
-  border-left: 1px solid var(--accent);
-  padding-left: var(--space-2);
   font-size: var(--text-meta);
   color: var(--text-dim);
   overflow-wrap: anywhere;
@@ -780,6 +924,12 @@ ul {
   margin-top: 0;
 }
 
+.session-work {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .pane-header-actions {
   display: flex;
   align-items: center;
@@ -797,13 +947,6 @@ ul {
   min-height: 0;
   overflow-y: auto;
   padding: 24px;
-}
-
-.scroll.split {
-  display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  gap: 20px;
-  align-items: start;
 }
 
 .banner {
@@ -915,9 +1058,31 @@ ul {
 }
 
 .composer {
-  padding: var(--space-3) var(--space-6) var(--space-6);
+  padding: var(--space-2) var(--space-6) var(--space-3);
   flex: none;
   background: var(--bg-soft);
+}
+
+/* The typing line is a projection of live work, not a message: it sits
+   directly above the composer, aligned with the composer's own column. */
+.chat-composer-region {
+  flex: none;
+  min-width: 0;
+  background: var(--bg-soft);
+}
+.chat-typing-row {
+  padding: var(--space-1) var(--space-6) 0;
+}
+.chat-typing {
+  width: 100%;
+  max-width: 840px;
+  margin: 0 auto;
+  color: var(--text-dim);
+  font-size: var(--text-meta);
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .composer-box {
   width: 100%;
@@ -935,33 +1100,33 @@ ul {
 .composer-input {
   position: relative;
 }
+/* Two lines by default; the textarea grows with its content and scrolls
+   internally at the cap. Only the chat textarea is compact. */
 .composer textarea {
   display: block;
-  min-height: 80px;
-  max-height: 240px;
+  height: auto;
+  min-height: 64px;
+  max-height: min(160px, 24dvh);
   border: none;
   border-radius: calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px) 0 0;
-  padding: var(--space-3) var(--space-4);
-  font-size: var(--text-body);
-  line-height: var(--leading-body);
+  padding: 8px 12px;
+  font-size: 16px;
+  line-height: 1.5;
+  resize: none;
+  overflow-y: auto;
 }
 .composer textarea:focus {
   box-shadow: none;
   outline: none;
 }
-.composer-status {
-  display: grid;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
-  font-size: var(--text-meta);
-  line-height: 1.6;
-  color: var(--text-dim);
-}
-.composer-status .composer-error {
-  color: var(--error);
-}
-.composer-status .composer-recipients {
-  padding: 0;
+.composer-recipients {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  align-items: center;
+  max-height: 96px;
+  overflow-y: auto;
+  padding: 4px 12px 0;
 }
 .composer-recipients .chip-toggle {
   gap: 4px;
@@ -971,12 +1136,22 @@ ul {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+.composer-error {
+  padding: 4px 12px 0;
+  color: var(--error);
+  font-size: var(--text-meta);
+}
+.composer-notice {
+  padding: 4px 12px 0;
+  color: var(--text-dim);
+  font-size: var(--text-meta);
+}
 .composer-toolbar {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-4);
+  gap: var(--space-2);
+  padding: 4px 12px 8px;
 }
 .composer-toolbar .mention-trigger {
   margin-right: auto;
@@ -997,15 +1172,14 @@ ul {
   text-overflow: ellipsis;
 }
 .composer-toolbar > button { flex: none; }
-
-/* The mention menu floats above the input instead of growing the composer. */
+/* Touch targets stay at least 44px on coarse pointers. */
+@media (pointer: coarse) {
+  .composer-toolbar > button { min-height: 44px; }
+  .composer-recipients .chip-toggle { height: 44px; }
+}
+/* The mention menu floats in the top layer: the pane clips overflow, so it is
+   positioned against the visual viewport by `placeComposerPopover`. */
 .mention-popover {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
-  z-index: 10;
-  width: min(360px, 100%);
-  max-height: min(280px, 40dvh);
   overflow-y: auto;
   margin: 0;
   padding: var(--space-1);
@@ -1064,29 +1238,6 @@ ul {
   font-family: var(--font-ui);
   font-size: var(--text-body);
   line-height: var(--leading-body);
-}
-.tools {
-  list-style: none;
-  padding: 0;
-  margin: var(--space-2) 0 0;
-  display: grid;
-  gap: var(--space-2);
-}
-.tools li {
-  display: flex;
-  gap: var(--space-2);
-  align-items: baseline;
-  flex-wrap: wrap;
-}
-.tools pre { max-height: 160px; max-width: 100%; }
-.work-live {
-  background: var(--hover);
-  border-left: 2px solid var(--accent);
-  border-radius: 0 var(--radius) var(--radius) 0;
-  padding: var(--space-3) var(--space-4);
-  display: grid;
-  gap: var(--space-2);
-  min-width: 0;
 }
 
 /* -------------------------------------------------------------- markdown */
@@ -1261,66 +1412,247 @@ label.inline {
   align-items: center;
   gap: 6px;
   flex: none;
+  flex-wrap: wrap;
+  max-width: 100%;
   font-size: 13px;
   color: var(--text);
 }
 
 fieldset {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 12px 14px;
+  border: none;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  padding: var(--space-4) 0 0;
   margin: 0;
   display: grid;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 legend {
   font-size: var(--text-meta);
   font-weight: 600;
-  color: var(--text-dim);
-  padding: 0 6px;
+  color: var(--text);
+  padding: 0 var(--space-2) 0 0;
 }
 
 /* ------------------------------------------------------- lists & tables */
 
-.list {
+/* Work: a narrow, flat work list beside the wide work content. */
+.work-context-layout {
   display: grid;
-  gap: 4px;
+  grid-template-columns: 224px minmax(0, 1fr);
+  gap: 20px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--space-6);
+  overflow: hidden;
+}
+
+.work-context-list {
+  display: grid;
+  gap: 2px;
   align-content: start;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.work-context-item,
+.work-note-item {
+  display: grid;
+  gap: 2px;
+  justify-content: start;
+  justify-items: start;
+  width: 100%;
+  height: auto;
+  min-height: 48px;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  white-space: normal;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius);
+}
+
+.work-context-item:hover:not(:disabled),
+.work-note-item:hover:not(:disabled) { background: var(--hover); }
+
+.work-context-item.active,
+.work-note-item.active {
+  background: var(--selected);
+  color: var(--selected-text);
+  font-weight: 600;
+}
+
+.work-list-name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.work-list-meta {
+  font-size: var(--text-meta);
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.work-context-item.active .work-list-meta,
+.work-note-item.active .work-list-meta { color: inherit; }
+
+.work-context-content {
+  display: grid;
+  gap: var(--space-6);
+  align-content: start;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* The notes editor is the last block: keep its bottom edge inside the
+     scrollport instead of flush against the clip. */
+  padding-bottom: var(--space-2);
+  container-type: inline-size;
+  container-name: work-content;
+}
+
+/* The compact work selector only exists while the work list is hidden. */
+.work-picker { display: none; }
+
+.work-notes-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
   min-width: 0;
 }
 
-.employee-card {
-  display: grid;
-  gap: var(--space-3);
-  text-align: left;
-  justify-items: stretch;
-  height: auto;
-  padding: var(--space-4);
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-.employee-card:hover:not(:disabled) { background: var(--hover); }
-.employee-card.active {
-  background: var(--selected);
-  color: var(--selected-text);
+/* The notes editor is the last block of the scrolling work page, so its frame
+   is the edge the user actually reads. Keep the border legible and, in the
+   empty state, give the lone hint an integer line box so the bottom edge does
+   not land on a half-pixel at 100% zoom. */
+.work-notes-layout > .editor {
   border-color: var(--line-strong);
 }
-.employee-card .identity-meta { flex-direction: column; gap: var(--space-1); }
-.employee-card .address,
-.employee-card .role { color: var(--text-dim); font-size: var(--text-meta); }
-.employee-card.active .address,
-.employee-card.active .role { color: var(--selected-text); }
 
-.tags {
+.work-notes-layout > .editor > .hint:only-child {
+  line-height: 20px;
+}
+
+.work-note-list { display: none; }
+.work-note-select { display: grid; gap: var(--space-1); }
+
+@container work-content (min-width: 700px) {
+  .work-notes-layout { grid-template-columns: 200px minmax(0, 1fr); }
+  .work-note-list { display: grid; gap: 2px; align-content: start; }
+  .work-note-select { display: none; }
+}
+
+@supports not (container-type: inline-size) {
+  @media (min-width: 1240px) {
+    .work-notes-layout { grid-template-columns: 200px minmax(0, 1fr); }
+    .work-note-list { display: grid; gap: 2px; align-content: start; }
+    .work-note-select { display: none; }
+  }
+}
+
+@media (max-width: 1100px) {
+  .work-context-layout {
+    grid-template-columns: minmax(0, 1fr);
+    padding: var(--space-4);
+  }
+
+  .work-context-list { display: none; }
+  .work-picker { display: grid; }
+}
+
+/* The employee directory: one card per person, configuration behind an action. */
+.employee-directory {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: var(--space-4);
+  align-content: start;
+}
+
+.employee-directory-card {
+  display: grid;
+  gap: var(--space-3);
+  align-content: start;
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+.employee-card-head {
   display: flex;
-  gap: 4px;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.employee-card-title {
+  display: grid;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.employee-card-title h3 {
+  font-size: var(--text-body);
+  overflow-wrap: anywhere;
+}
+
+.employee-card-role {
+  color: var(--text-dim);
+  font-size: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+
+.employee-card-facts {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  font-size: var(--text-meta);
+  min-width: 0;
+}
+
+.employee-card-facts > div {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.employee-card-facts dt {
+  flex: none;
+  color: var(--text-dim);
+}
+
+.employee-card-facts dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.employee-card-meta { margin: 0; }
+
+.employee-card-actions {
+  display: flex;
   flex-wrap: wrap;
-  margin-top: 6px;
+  gap: var(--space-2);
+  margin-top: auto;
+}
+
+.employee-editor {
+  max-width: 880px;
+  margin-inline: auto;
+}
+
+.employee-search {
+  max-width: 320px;
 }
 
 .editor {
@@ -1333,10 +1665,8 @@ legend {
   min-width: 0;
 }
 
-.employees-layout > .editor {
-  max-width: 880px;
-}
-
+/* The work editor's long page: stacked sections with tail rules. The
+   Settings page uses its own `.settings-*` layout below. */
 .settings {
   display: grid;
   gap: var(--space-8);
@@ -1371,6 +1701,161 @@ legend {
   border-radius: 0;
   padding: var(--space-4) 0;
 }
+
+/* The settings page switches one section at a time: a fixed directory on
+   wide panes, a picker above the content on narrow ones. */
+.settings-pane {
+  container: settings-pane / inline-size;
+}
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
+  padding: var(--space-4);
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settings-nav {
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  min-height: 0;
+  align-content: start;
+}
+
+.settings-nav button {
+  justify-content: flex-start;
+  text-align: left;
+  height: auto;
+  min-height: 36px;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--text-dim);
+  font-weight: 400;
+  white-space: normal;
+}
+
+.settings-nav button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.settings-nav button[aria-current="page"],
+.settings-nav button[aria-current="page"]:hover {
+  background: var(--selected);
+  color: var(--selected-text);
+  font-weight: 600;
+}
+
+.settings-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.settings-section-picker {
+  display: grid;
+  gap: var(--space-1);
+  flex: none;
+  padding-bottom: var(--space-3);
+  font-size: var(--text-meta);
+  color: var(--text-dim);
+}
+
+/* Overrides `.scroll`'s page padding and the old centred settings column. */
+.settings-main .settings-content {
+  padding: 0;
+  margin: 0;
+  width: 100%;
+  overflow-y: auto;
+}
+
+.settings-panel {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+  max-width: 1120px;
+}
+
+/* The browser default for [hidden] loses to `.settings-panel`'s display. */
+.settings-panel[hidden] {
+  display: none !important;
+}
+
+.settings-panel .row {
+  align-items: flex-end;
+}
+
+.settings-panel .row > button {
+  flex: none;
+}
+
+.settings-panel .row > .model-picker {
+  flex: 2 1 320px;
+}
+
+.settings-panel .editor {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: var(--space-4) 0;
+}
+
+/* The appearance and language pickers share the field grid's cell rhythm so
+   two adjacent selects do not end at unrelated widths. */
+.settings-panel .row .theme-picker {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.settings-panel .row .theme-picker select {
+  width: 100%;
+  min-width: 0;
+}
+
+.settings-data-path code {
+  overflow-wrap: anywhere;
+}
+
+@container settings-pane (min-width: 700px) {
+  .settings-layout {
+    grid-template-columns: 160px minmax(0, 1fr);
+    padding: var(--space-6);
+  }
+
+  .settings-nav {
+    display: flex;
+  }
+
+  .settings-section-picker {
+    display: none;
+  }
+}
+
+/* Without container queries the two-column layout falls back to the pane
+   width the shell leaves at a 948px viewport (948 − 248px rail). */
+@supports not (container-type: inline-size) {
+  @media (min-width: 948px) {
+    .settings-layout {
+      grid-template-columns: 160px minmax(0, 1fr);
+      padding: var(--space-6);
+    }
+
+    .settings-nav {
+      display: flex;
+    }
+
+    .settings-section-picker {
+      display: none;
+    }
+  }
+}
 .section-head {
   display: flex;
   align-items: baseline;
@@ -1393,7 +1878,7 @@ legend {
 }
 .editor-actions { border-top: 1px solid var(--line); padding-top: var(--space-4); }
 
-.settings .section-title {
+.settings-panel .section-title {
   margin: 0;
 }
 
@@ -1906,24 +2391,48 @@ button.mail-row-open:hover:not(:disabled) { background: transparent; }
   min-width: 0;
 }
 
+/* Fieldset does not resolve as a query container in Chromium, so the named
+   container lives on a plain wrapper. */
+.provider-manager-inner {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  container: provider-manager / inline-size;
+}
+
 .provider-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.provider-picker {
+  display: grid;
+  gap: var(--space-1);
+  font-size: var(--text-meta);
+  color: var(--text-dim);
+}
 .provider-item-copy { display: grid; min-width: 0; gap: var(--space-1); text-align: left; }
-.provider-item-copy > .hint { font-size: var(--text-meta); }
-.provider-item-meta { display: flex; flex-wrap: wrap; gap: var(--space-1); justify-content: flex-end; }
+.provider-item-copy > strong,
+.provider-item-copy > code {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.provider-item-meta { display: flex; flex-wrap: wrap; gap: var(--space-1); justify-content: flex-start; min-width: 0; }
 
 .provider-manager-body {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   align-items: start;
   min-width: 0;
 }
 
-.provider-list {
-  display: grid;
+/* `ul.plain` sets display:grid; this list is hidden until the pane is wide. */
+ul.provider-list {
+  display: none;
   gap: 2px;
-  max-height: 420px;
+  min-width: 0;
+  max-height: min(420px, 60dvh);
   overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
   list-style: none;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -1931,20 +2440,26 @@ button.mail-row-open:hover:not(:disabled) { background: transparent; }
   background: transparent;
 }
 
+.provider-list > li {
+  display: block;
+  min-width: 0;
+}
+
 .provider-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-1);
   width: 100%;
   min-width: 0;
-  min-height: 56px;
-  padding: 0 10px;
+  height: auto;
+  padding: 12px 10px;
   text-align: left;
   background: transparent;
   border: none;
   border-radius: var(--radius);
   font-weight: 400;
+  white-space: normal;
 }
 
 .provider-item:hover:not(:disabled) {
@@ -1957,20 +2472,78 @@ button.mail-row-open:hover:not(:disabled) { background: transparent; }
   font-weight: 600;
 }
 
-.provider-item { height: auto; padding-block: var(--space-3); align-items: flex-start; }
-.provider-item-copy > span { overflow-wrap: anywhere; white-space: normal; }
-.provider-item-meta .chip { white-space: normal; height: auto; min-height: 24px; overflow-wrap: anywhere; }
+.provider-item-meta .chip {
+  white-space: normal;
+  height: auto;
+  min-height: 24px;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
 
 .provider-detail {
   max-width: 840px;
+  min-width: 0;
 }
-.provider-detail ul.plain { max-height: 320px; overflow-y: auto; }
+.provider-detail h3,
+.provider-detail h4 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.provider-detail ul.plain {
+  max-height: 320px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-width: 0;
+}
+.provider-detail ul.plain li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+.provider-detail ul.plain li code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+/* Long credential labels wrap instead of forcing the row wider. */
+.provider-detail .row > button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  height: auto;
+  min-height: 40px;
+  max-width: 100%;
+}
 .provider-toolbar input[type="search"] { flex: 1; min-width: 160px; max-width: 320px; width: auto; }
 
 .provider-detail h4 {
   margin: 4px 0;
   font-size: 13px;
   color: var(--text-dim);
+}
+
+/* Wide panes show the provider list; narrow panes keep the picker above the
+   detail. The list must be hidden only after its rows wrap. */
+@container provider-manager (min-width: 720px) {
+  .provider-manager-body {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+
+  ul.provider-list {
+    display: grid;
+  }
+
+  .provider-picker {
+    display: none;
+  }
+}
+
+/* The settings 1100px rule stacks every row; the provider toolbar stays a
+   single wrapping row because its controls read as one unit. */
+.settings-panel .row.provider-toolbar {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .connection-check {
@@ -1993,15 +2566,6 @@ button.mail-row-open:hover:not(:disabled) { background: transparent; }
 /* ----------------------------------------------------------- responsive */
 
 @media (max-width: 1100px) {
-  .provider-manager-body {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .provider-detail {
-    max-width: none;
-  }
-
-
   .settings .row {
     flex-direction: column;
     align-items: stretch;
@@ -2011,10 +2575,19 @@ button.mail-row-open:hover:not(:disabled) { background: transparent; }
   .settings .row > button {
     align-self: flex-start;
   }
-}
 
-@media (max-width: 900px) {
-  .scroll.employees-layout { grid-template-columns: minmax(0, 1fr); }
+  .settings-panel .row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .settings-panel .row > .model-picker { flex: initial; align-content: start; }
+
+  /* The stacked row is a column: the picker basis must not become a height. */
+  .settings-panel .row > .theme-picker { flex: initial; }
+
+  .settings-panel .row > button {
+    align-self: flex-start;
+  }
 }
 
 @media (max-width: 760px) {
@@ -2110,12 +2683,12 @@ button.mail-row-open:hover:not(:disabled) { background: transparent; }
     padding: 16px;
   }
 
-  .composer { padding: var(--space-3); }
+  .composer { padding: var(--space-2) var(--space-3) var(--space-3); }
+  .chat-typing-row { padding-inline: var(--space-3); }
   .composer textarea {
     min-height: 64px;
     padding-inline: var(--space-3);
   }
-  .composer-status,
   .composer-toolbar {
     padding-inline: var(--space-3);
   }
@@ -2325,6 +2898,42 @@ button.mail-row-open:hover:not(:disabled) { background: transparent; }
   cursor: not-allowed;
 }
 
+/* Starting a direct message: one row per person, and picking the row opens
+   the conversation — there is no checkbox, selection state, or submit step. */
+.direct-create {
+  width: min(560px, 100%);
+}
+
+/* The picker's rows are the only place a person is chosen; a long name, role,
+   or address wraps inside the row instead of widening the dialog. */
+.direct-picker {
+  min-width: 0;
+}
+
+.direct-picker .member-option-text {
+  overflow-wrap: anywhere;
+}
+
+.direct-picker .direct-person {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-3);
+  width: 100%;
+  height: auto;
+  min-height: 64px;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  white-space: normal;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius);
+}
+
+.direct-picker .direct-person:hover:not(:disabled) {
+  background: var(--hover);
+}
+
 .directory-conflict,
 .directory-close-confirm {
   display: flex;
@@ -2482,6 +3091,41 @@ button.mail-row-open:hover:not(:disabled) { background: transparent; }
   word-break: break-word;
 }
 
+/* The live half of the execution record: streamed text and in-flight tools,
+   rendered from the event stream until the run settles. */
+.execution-live {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--bg-raise);
+  border-radius: var(--radius-lg);
+  min-width: 0;
+}
+
+.execution-live h3 {
+  margin: 0;
+}
+
+.execution-live-tools {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.execution-live-tools li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.execution-live-tools code {
+  overflow-wrap: anywhere;
+}
+
 .work-approvals ul {
   list-style: none;
   margin: 6px 0 0;
@@ -2515,12 +3159,12 @@ button.mail-row-open:hover:not(:disabled) { background: transparent; }
   input:not([type="checkbox"]):not([type="radio"]),
   select,
   .icon-button,
-  .sidebar section h3 .icon-button,
-  .footer-nav button {
+  .workspace-trigger,
+  .workspace-menu button {
     min-height: 44px;
   }
   .icon-button { min-width: 44px; }
-  .footer-nav { grid-auto-rows: minmax(44px, auto); }
+  .workspace-pending { min-width: 44px; }
   label.inline,
   .directory-default { min-height: 44px; }
   .mail-row .actions { opacity: 1; }

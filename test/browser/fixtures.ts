@@ -214,4 +214,53 @@ export async function onboarded(page: Page, app: BrowserE2eFixture): Promise<voi
   await expect(page.getByRole("button", { name: "General", exact: true })).toBeAttached();
 }
 
+/**
+ * Reach a workspace destination from the rail.
+ *
+ * The mailbox keeps a fixed entry; every management destination lives behind
+ * the workspace menu, which is closed by default. The label is the visible
+ * destination text in the current interface language, matching what the test
+ * asserts on screen.
+ */
+export async function navigateWorkspace(page: Page, label: string): Promise<void> {
+  const language = await page.locator("html").getAttribute("lang");
+  const drawerOpen = await page.locator(".shell").evaluate((element) => element.classList.contains("nav-open"));
+  if (!drawerOpen) {
+    const open = page.getByRole("button", { name: /^(Open navigation|打开导航)$/ });
+    if (await open.isVisible()) await open.click();
+  }
+  if (label === "Mailbox" || label === "邮箱") {
+    await page.getByRole("button", { name: label, exact: true }).click();
+    return;
+  }
+  await page.locator(".workspace-trigger").click();
+  await page.locator(".workspace-menu").getByRole("button", { name: label, exact: true }).click();
+}
+
+/**
+ * Switch the settings section through whichever control the pane shows: the
+ * fixed directory on wide panes, the picker on narrow ones.
+ */
+export async function selectSettingsSection(page: Page, section: string): Promise<void> {
+  await expect(page.locator(".settings-layout")).toBeVisible();
+  const picker = page.locator(".settings-section-picker select");
+  if (await picker.isVisible()) {
+    await picker.selectOption(section);
+  } else {
+    await page.locator(`.settings-nav button[aria-controls="settings-panel-${section}"]`).click();
+  }
+  await expect(page.locator(`#settings-panel-${section}`)).toBeVisible();
+}
+
+/** Select a provider through the list row or the narrow-pane picker. */
+export async function selectProviderInUi(page: Page, providerId: string): Promise<void> {
+  await expect(page.locator(".provider-manager")).toBeVisible();
+  const picker = page.locator(".provider-picker select");
+  if (await picker.isVisible()) {
+    await picker.selectOption(providerId);
+  } else {
+    await page.locator(`.provider-item[data-provider-id="${providerId}"]`).click();
+  }
+}
+
 export { expect };

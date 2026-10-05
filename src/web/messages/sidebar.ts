@@ -23,7 +23,11 @@ export const englishSidebar = {
   noMatchingMembers: "No matching employees",
   unavailableSelectedMembers: "Some selected employees are disabled or removed. Deselect them to continue.",
   noWorkSelected: "Create or select a work before opening a conversation.",
+  noDirectEmployees: "No employees available for direct messages",
   noEmployees: "(No employees yet)",
+  workspaceMenu: "Workspace",
+  newConversations: "New conversations",
+  pendingApprovalLabel: (count: number) => `Pending approvals: ${count}`,
 };
 
 export type SidebarMessages = typeof englishSidebar;
@@ -46,5 +50,9 @@ export const chineseSidebar: SidebarMessages = {
   noMatchingMembers: "没有匹配的员工",
   unavailableSelectedMembers: "部分已选员工已停用或删除，请取消选择后重试。",
   noWorkSelected: "请先创建或选择一个工作，再新建会话。",
+  noDirectEmployees: "没有可私信的员工",
   noEmployees: "（还没有员工）",
+  workspaceMenu: "工作台",
+  newConversations: "新会话",
+  pendingApprovalLabel: (count) => `待审批：${count}`,
 };

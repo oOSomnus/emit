@@ -1,13 +1,26 @@
 /**
  * The chat composer: the channel or direct-message editor.
  *
- * The message text is content. In a channel, who gets woken comes only from the
- * explicit selection — the @ picker inserts text and records the picked
- * employee, and the recipient row above the toolbar shows and removes that
- * selection. Accepting a suggestion never sends the message.
+ * The message text is content. In a channel, who gets woken comes only from
+ * the explicit selection — the reply control and the @ suggestions record
+ * employees, and the recipient chips above the toolbar show and remove that
+ * selection. Accepting a suggestion never sends the message, and plain text
+ * never selects anyone.
+ *
+ * The suggestion list is a top-layer popover: the pane clips its overflow, so
+ * it is positioned against the visible viewport.
  */
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import type { RoomDTO } from "../../shared/contracts.ts";
 import { errorDisplay } from "../../shared/i18n.ts";
 import { MessageAddressingError, resolveMessageAddressing } from "../../shared/message-addressing.ts";
@@ -37,6 +50,41 @@ function mentionRange(value: string, caret: number): MentionRange | undefined {
   return { start, end: delimiter < 0 ? value.length : caret + delimiter, query };
 }
 
+/**
+ * Position a top-layer popover against its anchor inside the visible
+ * viewport: above the anchor when it fits, otherwise below, clamped to the
+ * visual viewport so the on-screen keyboard cannot hide it.
+ */
+function placeComposerPopover(popover: HTMLElement, anchor: HTMLElement): void {
+  const viewport = window.visualViewport;
+  const viewLeft = viewport?.offsetLeft ?? 0;
+  const viewTop = viewport?.offsetTop ?? 0;
+  const viewWidth = viewport?.width ?? window.innerWidth;
+  const viewHeight = viewport?.height ?? window.innerHeight;
+  const rect = anchor.getBoundingClientRect();
+  const margin = 12;
+  const gap = 8;
+  const width = Math.max(0, Math.min(360, rect.width, viewWidth - margin * 2));
+  const left = Math.min(Math.max(rect.left, viewLeft + margin), viewLeft + viewWidth - margin - width);
+  const spaceAbove = rect.top - gap - (viewTop + margin);
+  const spaceBelow = viewTop + viewHeight - margin - gap - rect.bottom;
+  const below = spaceAbove < 280 && spaceBelow > spaceAbove;
+  const space = Math.max(0, below ? spaceBelow : spaceAbove);
+  const maxHeight = Math.min(Math.max(96, Math.min(280, space)), Math.max(0, viewHeight - margin * 2));
+  popover.style.position = "fixed";
+  popover.style.inset = "auto";
+  popover.style.margin = "0";
+  popover.style.left = `${left}px`;
+  popover.style.width = `${width}px`;
+  popover.style.maxHeight = `${maxHeight}px`;
+  const height = popover.getBoundingClientRect().height;
+  const top = below
+    ? Math.min(rect.bottom + gap, viewTop + viewHeight - margin - height)
+    : Math.max(viewTop + margin, rect.top - gap - height);
+  popover.style.top = `${Math.max(viewTop + margin, top)}px`;
+  popover.style.bottom = "auto";
+}
+
 export type ChatComposerProps = {
   /** The room being edited; only the fields composing itself reads. */
   room: Pick<RoomDTO, "id" | "kind" | "memberIds">;
@@ -49,13 +97,16 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
   const [recipientIds, setRecipientIds] = useState<string[]>([]);
   const [mentionAll, setMentionAll] = useState(false);
   const [mentionInput, setMentionInput] = useState<MentionRange | undefined>(undefined);
+  const [manualPickerOpen, setManualPickerOpen] = useState(false);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [sending, setSending] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
   const inputAreaRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const composingRef = useRef(false);
+  const liveRegionId = useId();
 
   const channelMembers = useMemo(
     () =>
@@ -85,11 +136,11 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
     }
   }, [room.kind, recipientIds, mentionAll, channelMembers]);
 
-  const menuOpen = room.kind === "channel" && mentionInput !== undefined;
+  const menuOpen = room.kind === "channel" && (manualPickerOpen || mentionInput !== undefined);
 
   const suggestions = useMemo<AddressSuggestion[]>(() => {
-    if (mentionInput === undefined || room.kind !== "channel") return [];
-    const query = mentionInput.query.toLowerCase();
+    if (room.kind !== "channel" || (!manualPickerOpen && mentionInput === undefined)) return [];
+    const query = (manualPickerOpen ? "" : mentionInput!.query).toLowerCase();
     const enabledAddressable = channelMembers.filter((member) => member.enabled && member.address.length > 0);
     const matching = enabledAddressable.filter(
       (member) =>
@@ -125,7 +176,7 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
       });
     }
     return options;
-  }, [mentionInput, room.kind, channelMembers, state.employees, messages.chat.mentionEveryone]);
+  }, [manualPickerOpen, mentionInput, room.kind, channelMembers, state.employees, messages.chat.mentionEveryone]);
 
   const addressingError =
     addressing.error === undefined
@@ -150,8 +201,58 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
     item?.scrollIntoView({ block: "nearest" });
   }, [menuOpen, activeSuggestionIndex, suggestions.length]);
 
-  // A pointer outside the input area dismisses the menu; the trigger is
-  // exempt because it reopens the menu in the same gesture.
+  // The textarea follows its content: auto height first, CSS clamps it.
+  const resizeInput = useCallback((): void => {
+    const input = textareaRef.current;
+    if (input === null) return;
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight}px`;
+  }, []);
+
+  useLayoutEffect(() => {
+    resizeInput();
+  }, [draft, resizeInput]);
+
+  // Re-measure only when the composer's width changes; typing never rebuilds
+  // the observer.
+  useEffect(() => {
+    const box = boxRef.current;
+    if (box === null) return;
+    let width = box.getBoundingClientRect().width;
+    const observer = new ResizeObserver((entries) => {
+      const next = entries[0]?.contentRect.width ?? box.getBoundingClientRect().width;
+      if (Math.abs(next - width) < 0.5) return;
+      width = next;
+      resizeInput();
+    });
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [resizeInput]);
+
+  // The suggestion list lives in the top layer so the pane cannot clip it.
+  useLayoutEffect(() => {
+    if (!menuOpen) return;
+    const popover = listRef.current;
+    const anchor = textareaRef.current;
+    if (popover === null || anchor === null) return;
+    if (!popover.matches(":popover-open")) popover.showPopover();
+    const place = (): void => placeComposerPopover(popover, anchor);
+    place();
+    window.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("scroll", place);
+    const observer = new ResizeObserver(place);
+    observer.observe(anchor);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("scroll", place);
+      observer.disconnect();
+    };
+  }, [menuOpen]);
+
+  // A pointer outside the input area dismisses the suggestion list; the reply
+  // trigger is exempt because it toggles its own state in the same gesture.
   useEffect(() => {
     if (!menuOpen) return;
     const onPointerDown = (event: PointerEvent): void => {
@@ -160,6 +261,7 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
       if (inputAreaRef.current?.contains(target) === true) return;
       if (triggerRef.current?.contains(target) === true) return;
       setMentionInput(undefined);
+      setManualPickerOpen(false);
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
@@ -173,6 +275,11 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
           .join(messages.common.namesSeparator);
   const disabledMembers = channelMembers.filter((member) => !member.enabled);
 
+  const closeMenu = (): void => {
+    setMentionInput(undefined);
+    setManualPickerOpen(false);
+  };
+
   const send = async () => {
     const body = draft.trim();
     if (body.length === 0 || sending || (room.kind === "channel" && addressingError !== undefined)) return;
@@ -183,7 +290,7 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
       setDraft("");
       setRecipientIds([]);
       setMentionAll(false);
-      setMentionInput(undefined);
+      closeMenu();
       setActiveSuggestionIndex(0);
     } catch (error) {
       setError(errorDisplay(error));
@@ -193,6 +300,20 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
   };
 
   const applySuggestion = (suggestion: AddressSuggestion): void => {
+    if (manualPickerOpen) {
+      // Manual picking never touches the text or the caret.
+      if (suggestion.mentionAll) {
+        setMentionAll(true);
+        setRecipientIds([]);
+      } else {
+        setMentionAll(false);
+        setRecipientIds((ids) => (ids.includes(suggestion.id) ? ids : [...ids, suggestion.id]));
+      }
+      closeMenu();
+      setActiveSuggestionIndex(0);
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      return;
+    }
     const input = textareaRef.current;
     if (input === null || mentionInput === undefined) return;
     const caret = input.selectionStart ?? input.value.length;
@@ -200,7 +321,7 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
     if (current === undefined || current.start !== mentionInput.start || current.end !== mentionInput.end) {
       // The caret moved since the range was captured; never replace text the
       // user is no longer editing.
-      setMentionInput(undefined);
+      closeMenu();
       return;
     }
     const next = `${input.value.slice(0, mentionInput.start)}${suggestion.insertion}${input.value.slice(mentionInput.end)}`;
@@ -213,7 +334,7 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
       setRecipientIds((ids) => (ids.includes(suggestion.id) ? ids : [...ids, suggestion.id]));
     }
     setDraft(next);
-    setMentionInput(undefined);
+    closeMenu();
     setActiveSuggestionIndex(0);
     requestAnimationFrame(() => {
       input.focus();
@@ -222,6 +343,7 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
   };
 
   const onDraftChange = (value: string, caret: number): void => {
+    setManualPickerOpen(false);
     setDraft(value);
     setMentionInput(mentionRange(value, caret));
     setActiveSuggestionIndex(0);
@@ -230,46 +352,31 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
   const openMentions = (): void => {
     const input = textareaRef.current;
     if (input === null) return;
-    input.focus();
-    const start = input.selectionStart ?? input.value.length;
-    const end = input.selectionEnd ?? start;
-    const existing = mentionRange(input.value, end);
-    if (existing !== undefined) {
-      setMentionInput(existing);
-      setActiveSuggestionIndex(0);
-      return;
-    }
-    const before = input.value.slice(0, start);
-    const needsSpace = before.length > 0 && !/[\s,.;!?，。！？：；、:;()[\]{}]/u.test(before[before.length - 1]!);
-    const inserted = `${needsSpace ? " " : ""}@`;
-    const next = `${before}${inserted}${input.value.slice(end)}`;
-    const caret = start + inserted.length;
-    setDraft(next);
-    setMentionInput(mentionRange(next, caret));
+    setMentionInput(undefined);
+    setManualPickerOpen(true);
     setActiveSuggestionIndex(0);
-    requestAnimationFrame(() => {
-      input.focus();
-      input.setSelectionRange(caret, caret);
-    });
+    input.focus();
   };
 
   return (
     <footer className="composer">
-      <div className="composer-box">
+      <div className="composer-box" ref={boxRef}>
         <div
           className="composer-input"
           ref={inputAreaRef}
           onBlur={(event) => {
             if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-            setMentionInput(undefined);
+            closeMenu();
           }}
         >
           <textarea
             ref={textareaRef}
+            rows={2}
             value={draft}
             disabled={sending}
             placeholder={room.kind === "channel" ? messages.chat.channelPlaceholder : messages.chat.directPlaceholder}
             aria-label={messages.chat.messageLabel}
+            aria-describedby={room.kind === "channel" ? liveRegionId : undefined}
             aria-autocomplete={room.kind === "channel" ? "list" : undefined}
             aria-controls={menuOpen ? "chat-address-suggestions" : undefined}
             aria-expanded={menuOpen}
@@ -281,6 +388,7 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
             onChange={(event) => onDraftChange(event.currentTarget.value, event.currentTarget.selectionStart)}
             onClick={(event) => {
               if (composingRef.current) return;
+              setManualPickerOpen(false);
               setMentionInput(mentionRange(event.currentTarget.value, event.currentTarget.selectionStart));
             }}
             onKeyUp={(event) => {
@@ -290,6 +398,7 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
                 event.key === "Home" ||
                 event.key === "End"
               ) {
+                setManualPickerOpen(false);
                 setMentionInput(mentionRange(event.currentTarget.value, event.currentTarget.selectionStart));
               }
             }}
@@ -307,7 +416,8 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
               }
               if (menuOpen && event.key === "Escape") {
                 event.preventDefault();
-                setMentionInput(undefined);
+                event.stopPropagation();
+                closeMenu();
                 return;
               }
               if (menuOpen && suggestions.length > 0 && (event.key === "Enter" || event.key === "Tab") && !event.shiftKey) {
@@ -342,6 +452,7 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
             <ul
               id="chat-address-suggestions"
               ref={listRef}
+              popover="manual"
               role="listbox"
               aria-label={messages.workContexts.addressSuggestions}
               className="mention-popover"
@@ -381,63 +492,67 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
             </ul>
           ) : null}
         </div>
-        {room.kind === "channel" ? (
-          <div className="composer-status">
-            <p>{messages.chat.addressingScopeHint}</p>
-            {recipientIds.length > 0 || mentionAll ? (
-              <div className="row recipients composer-recipients">
-                <span className="hint">{messages.workContexts.addressLabel}</span>
-                {mentionAll ? (
-                  <button
-                    type="button"
-                    className="chip-toggle on"
-                    disabled={sending}
-                    title={messages.chat.mentionEveryone}
-                    aria-label={messages.chat.removeRecipient(messages.chat.mentionEveryone)}
-                    onClick={() => setMentionAll(false)}
-                  >
-                    {messages.chat.mentionEveryone}
-                    <Icon name="close" size={14} />
-                  </button>
-                ) : null}
-                {recipientIds.map((id) => {
-                  const employee = state.employees.find((entry) => entry.id === id);
-                  const name = employee?.name ?? id;
-                  return (
-                    <button
-                      key={id}
-                      type="button"
-                      className="chip-toggle on"
-                      disabled={sending}
-                      title={employee?.address ?? id}
-                      aria-label={messages.chat.removeRecipient(name)}
-                      onClick={() => setRecipientIds((ids) => ids.filter((entry) => entry !== id))}
-                    >
-                      {name}
-                      <Icon name="close" size={14} />
-                    </button>
-                  );
-                })}
-              </div>
+
+        {room.kind === "channel" && (recipientIds.length > 0 || mentionAll) ? (
+          <div className="composer-recipients">
+            {mentionAll ? (
+              <button
+                type="button"
+                className="chip-toggle on"
+                disabled={sending}
+                title={messages.chat.mentionEveryone}
+                aria-label={messages.chat.removeRecipient(messages.chat.mentionEveryone)}
+                onClick={() => setMentionAll(false)}
+              >
+                {messages.chat.mentionEveryone}
+                <Icon name="close" size={14} />
+              </button>
             ) : null}
-            {addressingError !== undefined ? (
-              <p className="composer-error" role="alert">
-                {addressingError}
-              </p>
-            ) : addressing.resolved !== undefined ? (
-              <p aria-live="polite">
-                {previewNames.length > 0 ? messages.chat.addressedReplies(previewNames) : messages.chat.noOneAddressed}
-              </p>
-            ) : null}
-            {addressing.resolved?.mentionAll && disabledMembers.length > 0 ? (
-              <p>
-                {messages.workContexts.skippedDisabled(
-                  disabledMembers.map((member) => member.name).join(messages.common.namesSeparator),
-                )}
-              </p>
-            ) : null}
+            {recipientIds.map((id) => {
+              const employee = state.employees.find((entry) => entry.id === id);
+              const name = employee?.name ?? id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className="chip-toggle on"
+                  disabled={sending}
+                  title={employee?.address ?? id}
+                  aria-label={messages.chat.removeRecipient(name)}
+                  onClick={() => setRecipientIds((ids) => ids.filter((entry) => entry !== id))}
+                >
+                  {name}
+                  <Icon name="close" size={14} />
+                </button>
+              );
+            })}
           </div>
         ) : null}
+
+        {room.kind === "channel" && addressingError !== undefined ? (
+          <p className="composer-error" role="alert">
+            {addressingError}
+          </p>
+        ) : null}
+
+        {room.kind === "channel" && addressing.resolved?.mentionAll && disabledMembers.length > 0 ? (
+          <p className="composer-notice">
+            {messages.workContexts.skippedDisabled(
+              disabledMembers.map((member) => member.name).join(messages.common.namesSeparator),
+            )}
+          </p>
+        ) : null}
+
+        {room.kind === "channel" ? (
+          <span className="visually-hidden" id={liveRegionId} aria-live="polite">
+            {addressing.resolved === undefined
+              ? ""
+              : previewNames.length > 0
+                ? messages.chat.addressedReplies(previewNames)
+                : messages.chat.noOneAddressed}
+          </span>
+        ) : null}
+
         <div className="composer-toolbar">
           {room.kind === "channel" ? (
             <button
@@ -445,11 +560,15 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
               type="button"
               className="mention-trigger"
               aria-label={messages.chat.mentionTrigger}
+              aria-haspopup="listbox"
+              aria-expanded={menuOpen}
+              aria-controls={menuOpen ? "chat-address-suggestions" : undefined}
               disabled={sending}
               onMouseDown={(event) => event.preventDefault()}
               onClick={openMentions}
             >
-              @
+              <Icon name="reply" size={16} />
+              <span className="toolbar-label">{messages.chat.replyPicker}</span>
             </button>
           ) : null}
           <button
@@ -459,7 +578,9 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
             onClick={() => void send()}
           >
             <Icon name="send" />
-            {messages.chat.send}
+            {room.kind === "channel" && recipientIds.length === 0 && !mentionAll
+              ? messages.chat.post
+              : messages.chat.send}
           </button>
         </div>
       </div>

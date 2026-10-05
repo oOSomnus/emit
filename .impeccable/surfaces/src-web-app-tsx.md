@@ -23,7 +23,7 @@ Constraints: Preserve six navigation destinations, existing content, actions, AP
 One employee team, two equally important communication modes: synchronous messages and asynchronous mail. Refuse wide logs stitched to independent forms.
 
 ### OWN-WORLD
-Aubergine rail, clean reading surfaces, system sans, 16px prose, and a signature identity marginalia: initials, author, role/address/time with a fine purple line.
+Warm sand rail, clean reading surfaces, system sans, 16px prose, and a signature identity marginalia: initials, author, role/address/time with a fine chestnut line.
 
 ### STORY
 Find an employee or conversation → understand context → send/delegate → recognize real execution state → read the delivery.

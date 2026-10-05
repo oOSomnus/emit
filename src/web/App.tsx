@@ -33,11 +33,12 @@ export function App(): ReactNode {
   }, []);
 
   // The narrow-screen navigation is modal: Escape closes it and focus returns
-  // to the control that opened it.
+  // to the control that opened it. A popover that already handled Escape (the
+  // workspace menu) marks the event, and that press must not close the drawer.
   useEffect(() => {
     if (!navOpen) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeNav(true);
+      if (event.key === "Escape" && !event.defaultPrevented) closeNav(true);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -69,7 +70,7 @@ export function App(): ReactNode {
 
   return (
     <div className={`shell${navOpen ? " nav-open" : ""}`}>
-      <Sidebar onNavigate={() => closeNav(false)} />
+      <Sidebar onNavigate={() => closeNav(false)} navOpen={navOpen} />
       <button
         type="button"
         className="sidebar-scrim"

@@ -8,6 +8,15 @@ export const englishEmployees = {
   summary: (count: number) =>
     `${count} digital ${count === 1 ? "employee" : "employees"} · each with its own role, skills, MCP servers, and tool permissions`,
   newEmployee: "New employee",
+  searchLabel: "Search name, role, or address",
+  noMatches: "No matching employees",
+  startDirect: "Message",
+  openingDirect: "Opening…",
+  configure: "Configure",
+  backToDirectory: "Back to employees",
+  modelSummaryLabel: "Model",
+  addressLabel: "Address",
+  disabledDirectHint: "This employee is disabled; direct messages are unavailable.",
   empty: "No employees yet. Create one and give it a role and a set of skills.",
   enabled: "Enabled",
   disabled: "Disabled",
@@ -43,7 +52,6 @@ export const englishEmployees = {
   delete: "Delete",
   nameRoleRequired: "Enter the employee's name and role",
   modelRequired: "Select the employee's model",
-  emptyEditor: "Select an employee to edit, or create a new one.",
 };
 
 export type EmployeesMessages = typeof englishEmployees;
@@ -52,6 +60,15 @@ export const chineseEmployees: EmployeesMessages = {
   title: "员工",
   summary: (count) => `${count} 位数字员工 · 每位拥有独立的角色、技能、MCP 与工具权限`,
   newEmployee: "新建员工",
+  searchLabel: "搜索姓名、角色或地址",
+  noMatches: "没有匹配的员工",
+  startDirect: "私信",
+  openingDirect: "打开中…",
+  configure: "配置",
+  backToDirectory: "返回员工目录",
+  modelSummaryLabel: "模型",
+  addressLabel: "地址",
+  disabledDirectHint: "该员工已停用，无法发起私信。",
   empty: "还没有员工。先创建一位，给他一个角色和一份技能。",
   enabled: "启用",
   disabled: "停用",
@@ -85,5 +102,4 @@ export const chineseEmployees: EmployeesMessages = {
   delete: "删除",
   nameRoleRequired: "请填写员工的名字与角色",
   modelRequired: "请选择员工的模型",
-  emptyEditor: "选择一位员工来编辑，或新建一位。",
 };

@@ -65,7 +65,7 @@ function toggle(list: readonly string[], value: string): string[] {
 }
 
 export function EmployeesView(): ReactNode {
-  const { state, refreshEmployees, setError } = useApp();
+  const { state, dispatch, refreshEmployees, setError, openRoom } = useApp();
   const { messages } = useI18n();
   // The full chat catalog is offered; the shared picker disables models the
   // current credential cannot use instead of hiding them.
@@ -73,6 +73,8 @@ export function EmployeesView(): ReactNode {
   const [editing, setEditing] = useState<string | "new" | undefined>(undefined);
   const [draft, setDraft] = useState<Draft>(() => draftFrom(undefined, [], "off"));
   const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const [startingDirectId, setStartingDirectId] = useState<string | undefined>(undefined);
 
   const openNew = () => {
     const first = chatModels.find((model) => model.configured) ?? chatModels[0];
@@ -85,6 +87,44 @@ export function EmployeesView(): ReactNode {
   const openEdit = (employee: EmployeeDTO) => {
     setDraft(draftFrom(employee, [], "off"));
     setEditing(employee.id);
+  };
+
+  const query = search.trim().toLowerCase();
+  const filteredEmployees = state.employees.filter((employee) => {
+    if (query.length === 0) return true;
+    return [employee.name, employee.role, employee.address].some((value) => value.toLowerCase().includes(query));
+  });
+
+  const startDirect = async (employee: EmployeeDTO): Promise<void> => {
+    const currentEmployee = state.employees.find((entry) => entry.id === employee.id);
+    if (currentEmployee === undefined || !currentEmployee.enabled || startingDirectId !== undefined) return;
+    const workContextId = state.activeWorkContextId;
+    if (workContextId === undefined) {
+      dispatch({ type: "view", view: "work-contexts" });
+      return;
+    }
+
+    setStartingDirectId(currentEmployee.id);
+    try {
+      const room = await api.createRoom({
+        kind: "dm",
+        name: currentEmployee.name,
+        workContextId,
+        memberIds: [],
+        employeeId: currentEmployee.id,
+      });
+      dispatch({ type: "room", room });
+      dispatch({ type: "view", view: "chat" });
+      try {
+        await openRoom(room.id);
+      } catch (error) {
+        setError(errorDisplay(error));
+      }
+    } catch (error) {
+      setError(errorDisplay(error));
+    } finally {
+      setStartingDirectId(undefined);
+    }
   };
 
   const selectedModel = state.models.find((model) => modelKey(model) === draft.modelKey);
@@ -128,45 +168,42 @@ export function EmployeesView(): ReactNode {
     <div className="pane">
       <header className="pane-header">
         <div>
-          <h2>{messages.employees.title}</h2>
-          <p className="topic">{messages.employees.summary(state.employees.length)}</p>
+          <h2>
+            {editing === undefined
+              ? messages.employees.title
+              : editing === "new"
+                ? messages.employees.newTitle
+                : messages.employees.editTitle}
+          </h2>
+          {editing === undefined ? <p className="topic">{messages.employees.summary(state.employees.length)}</p> : null}
         </div>
-        <button type="button" className="primary" onClick={openNew}>
-          {messages.employees.newEmployee}
-        </button>
+        <div className="pane-header-actions">
+          {editing === undefined ? (
+            <>
+              <input
+                className="employee-search"
+                type="search"
+                value={search}
+                placeholder={messages.employees.searchLabel}
+                aria-label={messages.employees.searchLabel}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              <button type="button" className="primary" onClick={openNew}>
+                {messages.employees.newEmployee}
+              </button>
+            </>
+          ) : (
+            <button type="button" disabled={busy} onClick={() => setEditing(undefined)}>
+              {messages.employees.backToDirectory}
+            </button>
+          )}
+        </div>
       </header>
 
-      <div className="scroll split employees-layout">
-        <div className="list">
-          {state.employees.length === 0 ? <p className="hint">{messages.employees.empty}</p> : null}
-          {state.employees.map((employee) => (
-            <button
-              key={employee.id}
-              type="button"
-              className={editing === employee.id ? "employee-card active" : "employee-card"}
-              onClick={() => openEdit(employee)}
-            >
-              <span className="identity">
-                <EmployeeAvatar employeeId={employee.id} />
-                <span className="identity-meta">
-                  <strong>{employee.name}</strong>
-                  <span className="role">{employee.role}</span>
-                  <span className="address">{employee.address}</span>
-                </span>
-              </span>
-              <span className="tags">
-                {employee.enabled ? <Chip tone="ok">{messages.employees.enabled}</Chip> : <Chip tone="muted">{messages.employees.disabled}</Chip>}
-                {employee.skillIds.length > 0 ? <Chip tone="info">{messages.employees.skillCount(employee.skillIds.length)}</Chip> : null}
-                {employee.mcpServerIds.length > 0 ? <Chip tone="info">{messages.employees.mcpCount(employee.mcpServerIds.length)}</Chip> : null}
-                <Chip tone="muted">v{employee.configVersion}</Chip>
-              </span>
-            </button>
-          ))}
-        </div>
 
+      <div className="scroll">
         {editing !== undefined ? (
-          <section className="editor">
-            <h3>{editing === "new" ? messages.employees.newTitle : messages.employees.editTitle}</h3>
+          <section className="editor employee-editor">
             <div className="field-grid">
               <label>
                 {messages.employees.nameLabel}
@@ -312,7 +349,7 @@ export function EmployeesView(): ReactNode {
               <button type="button" className="primary" disabled={busy} onClick={() => void save()}>
                 {busy ? messages.employees.saving : messages.employees.save}
               </button>
-              <button type="button" onClick={() => setEditing(undefined)}>
+              <button type="button" disabled={busy} onClick={() => setEditing(undefined)}>
                 {messages.employees.cancel}
               </button>
               {editing !== "new" ? (
@@ -332,10 +369,67 @@ export function EmployeesView(): ReactNode {
               ) : null}
             </div>
           </section>
+        ) : filteredEmployees.length === 0 ? (
+          <p className="hint">{state.employees.length === 0 ? messages.employees.empty : messages.employees.noMatches}</p>
         ) : (
-          <section className="editor">
-            <p className="hint">{messages.employees.emptyEditor}</p>
-          </section>
+          <div className="employee-directory">
+            {filteredEmployees.map((employee) => {
+              const providerId = employee.executionModel.model.providerId;
+              const modelId = employee.executionModel.model.modelId;
+              const modelName =
+                state.models.find((model) => model.providerId === providerId && model.modelId === modelId)?.name ??
+                `${providerId} / ${modelId}`;
+              const meta = [
+                ...(employee.skillIds.length > 0 ? [messages.employees.skillCount(employee.skillIds.length)] : []),
+                ...(employee.mcpServerIds.length > 0 ? [messages.employees.mcpCount(employee.mcpServerIds.length)] : []),
+              ];
+
+              return (
+                <article
+                  key={employee.id}
+                  className="employee-directory-card"
+                  aria-labelledby={`employee-card-${employee.id}`}
+                >
+                  <div className="employee-card-head">
+                    <EmployeeAvatar employeeId={employee.id} />
+                    <div className="employee-card-title">
+                      <h3 id={`employee-card-${employee.id}`}>{employee.name}</h3>
+                      <p className="employee-card-role">{employee.role}</p>
+                    </div>
+                    <Chip tone={employee.enabled ? "ok" : "muted"}>
+                      {employee.enabled ? messages.employees.enabled : messages.employees.disabled}
+                    </Chip>
+                  </div>
+                  <dl className="employee-card-facts">
+                    <div>
+                      <dt>{messages.employees.modelSummaryLabel}</dt>
+                      <dd>{modelName}</dd>
+                    </div>
+                    <div>
+                      <dt>{messages.employees.addressLabel}</dt>
+                      <dd>{employee.address}</dd>
+                    </div>
+                  </dl>
+                  {meta.length > 0 ? <p className="hint employee-card-meta">{meta.join(" · ")}</p> : null}
+                  <div className="employee-card-actions">
+                    <button
+                      type="button"
+                      disabled={!employee.enabled || startingDirectId !== undefined}
+                      onClick={() => void startDirect(employee)}
+                    >
+                      {startingDirectId === employee.id
+                        ? messages.employees.openingDirect
+                        : messages.employees.startDirect}
+                    </button>
+                    <button type="button" onClick={() => openEdit(employee)}>
+                      {messages.employees.configure}
+                    </button>
+                  </div>
+                  {!employee.enabled ? <p className="hint">{messages.employees.disabledDirectHint}</p> : null}
+                </article>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>
