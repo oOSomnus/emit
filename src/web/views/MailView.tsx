@@ -13,6 +13,7 @@ import { api } from "../api.ts";
 import { errorDisplay } from "../../shared/i18n.ts";
 import { useI18n } from "../i18n.tsx";
 import { uiText } from "../messages.ts";
+import { useSessionExport } from "../session-export.ts";
 import { useApp } from "../state.tsx";
 import { Chip, EmployeeAvatar, Icon, IconButton, WorkStatus, timeAgo } from "./ui.tsx";
 import { WorkExecution } from "./WorkExecution.tsx";
@@ -126,6 +127,7 @@ function snapshot(compose: Compose): string {
 export function MailView(): ReactNode {
   const { state, dispatch, setError } = useApp();
   const { messages, locale } = useI18n();
+  const exportSession = useSessionExport();
   const namesSeparator = messages.mail.namesSeparator;
   /** The room name a new mail with no subject gets; it is record data from then on. */
   const noSubjectRoomName = messages.mail.noSubject;
@@ -740,6 +742,11 @@ export function MailView(): ReactNode {
                   ))}
                 </select>
                 <div className="mail-reader-actions">
+                <IconButton
+                  icon="download"
+                  label={messages.common.exportSession}
+                  onClick={() => void exportSession({ roomId: room.id })}
+                />
                 <IconButton
                   icon="archive"
                   label={newest?.mail?.archived === true ? messages.mail.unarchive : messages.mail.archive}

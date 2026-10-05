@@ -38,6 +38,13 @@ export const apiMessages = {
   }),
   missingAuthResponse: appText({ en: "promptId or the answer is missing", "zh-CN": "缺少 promptId 或回答" }),
   apiRouteNotFound: appText({ en: "API route not found", "zh-CN": "接口不存在" }),
+  sessionExportInvalidTarget: appText({
+    en: "Provide exactly one of roomId or workId",
+    "zh-CN": "请提供 roomId 或 workId 之一",
+  }),
+  sessionExportNotFound: appText({ en: "Session export not found", "zh-CN": "会话导出不存在" }),
+  sessionExportFailed: (reason: string): AppText =>
+    appText({ en: `Failed to export session: ${reason}`, "zh-CN": `会话导出失败:${reason}` }),
   unknownRecipient: (id: string): AppText =>
     appText({ en: `Recipient not found: ${id}`, "zh-CN": `找不到收件人 ${id}` }),
 };

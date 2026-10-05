@@ -15,6 +15,7 @@ import { api } from "../api.ts";
 import { errorDisplay } from "../../shared/i18n.ts";
 import { MessageAddressingError, resolveMessageAddressing } from "../../shared/message-addressing.ts";
 import { useI18n } from "../i18n.tsx";
+import { useSessionExport } from "../session-export.ts";
 import { useApp } from "../state.tsx";
 import { Chip, EmployeeAvatar, Icon, IconButton, timeAgo } from "./ui.tsx";
 import { ChannelMembers } from "./ChannelMembers.tsx";
@@ -56,6 +57,7 @@ function initial(name: string): string {
 export function ChatView(): ReactNode {
   const { state, dispatch, openRoom, setError } = useApp();
   const { locale, messages, text } = useI18n();
+  const exportSession = useSessionExport();
   const [draft, setDraft] = useState("");
   const [mentionInput, setMentionInput] = useState<MentionRange | undefined>(undefined);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
@@ -330,6 +332,11 @@ export function ChatView(): ReactNode {
               </button>
             </>
           ) : null}
+          <IconButton
+            icon="download"
+            label={messages.common.exportSession}
+            onClick={() => void exportSession({ roomId: room.id })}
+          />
           <IconButton icon="refresh" label={messages.common.refresh} onClick={() => void openRoom(room.id)} />
         </div>
       </header>

@@ -90,35 +90,68 @@ function fitFailure(reason: "configuration" | "budget", message: AppText, verbat
   };
 }
 
+/** Marker replacing redacted values; the export service reuses the same text. */
+export const REDACTION_MARKER = "[REDACTED]";
+
+/** Marker replacing a circular reference in a walked JSON value. */
+export const CIRCULAR_MARKER = "[CIRCULAR]";
+
 /** Remove obvious inline credentials before request text or arguments reach a reviewer or the page. */
 export function redactApprovalText(value: string): string {
   return value
     .replace(
       /((?:["']?)(?:api[_-]?key|access[_-]?key|private[_-]?key|token|password|passphrase|passwd|secret|credential|authorization|cookie)(?:["']?\s*[:=]\s*))("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|Bearer\s+[^\s,;}\]]+|[^\s,;}\]]+)/gi,
-      "$1[REDACTED]",
+      `$1${REDACTION_MARKER}`,
     )
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
-    .replace(/\b(?:sk|ghp|github_pat|xox[baprs])-[A-Za-z0-9_-]{8,}\b/gi, "[REDACTED]");
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, `Bearer ${REDACTION_MARKER}`)
+    .replace(/\b(?:sk|ghp|github_pat|xox[baprs])-[A-Za-z0-9_-]{8,}\b/gi, REDACTION_MARKER);
 }
 
-/** Full redacted JSON for review. This deliberately does not truncate any action argument. */
-export function redactArguments(value: unknown): string {
+/**
+ * Usage counters whose names contain "token" but whose numeric values are
+ * diagnostic evidence, not credentials; they survive the sensitive-key policy.
+ */
+const USAGE_COUNTER_KEYS = new Set([
+  "inputTokens",
+  "outputTokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "totalTokens",
+  "input_tokens",
+  "output_tokens",
+  "prompt_tokens",
+  "completion_tokens",
+  "total_tokens",
+]);
+
+/** Credential-bearing key names replaced wholesale with the redaction marker. */
+const SENSITIVE_KEY = /(secret|token|password|passphrase|passwd|private[_-]?key|credential|access[_-]?key|api[_-]?key|authorization|cookie)/i;
+
+/**
+ * Recursively redact a JSON value without any size bound: strings lose obvious
+ * inline credentials, credential-bearing keys are replaced wholesale, and
+ * usage counters are preserved. Cycles become the circular marker.
+ */
+export function redactJsonValue(value: unknown): unknown {
   const seen = new WeakSet<object>();
   const walk = (input: unknown): unknown => {
     if (typeof input === "string") return redactApprovalText(input);
     if (typeof input !== "object" || input === null) return input;
-    if (seen.has(input)) return "[CIRCULAR]";
+    if (seen.has(input)) return CIRCULAR_MARKER;
     seen.add(input);
     if (Array.isArray(input)) return input.map(walk);
     const output: Record<string, unknown> = Object.create(null);
     for (const [key, entry] of Object.entries(input)) {
-      output[key] = /(secret|token|password|passphrase|passwd|private[_-]?key|credential|access[_-]?key|api[_-]?key|authorization|cookie)/i.test(key)
-        ? "[REDACTED]"
-        : walk(entry);
+      output[key] = !USAGE_COUNTER_KEYS.has(key) && SENSITIVE_KEY.test(key) ? REDACTION_MARKER : walk(entry);
     }
     return output;
   };
-  return JSON.stringify(walk(value) ?? null);
+  return walk(value);
+}
+
+/** Full redacted JSON for review. This deliberately does not truncate any action argument. */
+export function redactArguments(value: unknown): string {
+  return JSON.stringify(redactJsonValue(value) ?? null);
 }
 
 /** Human-only preview; it never substitutes for the full action sent to review. */

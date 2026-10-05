@@ -12,6 +12,7 @@ import { api } from "../api.ts";
 import { mergeExecutionSteps } from "../execution-steps.ts";
 import { errorDisplay, type DisplayText } from "../../shared/i18n.ts";
 import { useI18n } from "../i18n.tsx";
+import { useSessionExport } from "../session-export.ts";
 import { useApp } from "../state.tsx";
 import { Chip, IconButton, WorkStatus, timeAgo } from "./ui.tsx";
 import { ACTIVE_WORK_STATUSES } from "./WorkView.tsx";
@@ -57,6 +58,7 @@ function approvalTone(approval: ApprovalDTO): string {
 export function WorkExecution({ workId, onClose }: { workId: string; onClose: () => void }): ReactNode {
   const { state, dispatch, setError } = useApp();
   const { messages, text, locale } = useI18n();
+  const exportSession = useSessionExport();
   const [execution, setExecution] = useState<WorkExecutionDTO | undefined>(undefined);
   const [steps, setSteps] = useState<WorkExecutionStepDTO[]>([]);
   const [cursor, setCursor] = useState<string | undefined>(undefined);
@@ -148,6 +150,11 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
             {messages.work.stop}
           </button>
         ) : null}
+        <IconButton
+          icon="download"
+          label={messages.common.exportSession}
+          onClick={() => void exportSession({ workId })}
+        />
         <IconButton icon="close" label={messages.common.close} onClick={onClose} />
       </div>
 

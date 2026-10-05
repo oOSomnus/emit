@@ -23,6 +23,21 @@ export type ApiErrorBody = { message: string; messageLocalized?: LocalizedText }
 /** The result of a real connection probe, in both languages when app-authored. */
 export type CheckResultDTO = { ok: boolean; message: string; messageLocalized?: LocalizedText };
 
+/** Exactly one export target: a room transcript or one work's execution. */
+export type SessionExportRequestDTO =
+  | { roomId: string; workId?: never }
+  | { workId: string; roomId?: never };
+
+/** One saved session-export artifact on the server host. */
+export type SessionExportReceiptDTO = {
+  id: string;
+  filename: string;
+  path: string;
+  bytes: number;
+  capturedAt: number;
+  downloadUrl: string;
+};
+
 /** A stored reference to one model entry in the Pi catalog. */
 export type ModelRefDTO = {
   providerId: string;

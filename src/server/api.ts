@@ -9,11 +9,13 @@
 
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyStatic from "@fastify/static";
-import { existsSync } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import type {
   ApiErrorBody,
   MailboxItemDTO,
   ServerEvent,
+  SessionExportRequestDTO,
   WorkContextDraftDTO,
   WorkContextPatchDTO,
   WorkNoteCreateDTO,
@@ -35,6 +37,7 @@ import {
   updateEmployee,
 } from "./workspace.ts";
 import { deleteSkill, importSkillDirectory, listSkills, toSkillDTO, type SkillImportResult } from "./skills.ts";
+import { SessionExportError, SessionExportService } from "./session-export.ts";
 import { toMcpServerDTO } from "./mcp.ts";
 import { ProviderAuthError } from "./provider-auth.ts";
 import { CANONICAL_LOCALE } from "../shared/i18n.ts";
@@ -123,6 +126,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
       return reply.code(error.status).send(messageBody(message));
     }
     if (error instanceof ProviderAuthError) return reply.code(error.status).send(messageBody(message));
+    if (error instanceof SessionExportError) return reply.code(error.status).send(messageBody(message));
     return reply.code(500).send(messageBody(message));
   });
 
@@ -914,6 +918,36 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   app.delete("/api/auth/sessions/:id", async (request) => {
     const { id } = request.params as { id: string };
     return runtime.providerAuth.cancel(id);
+  });
+
+  // ---------------------------------------------------------- session exports
+
+  // One coherent debug snapshot per request: the receipt names the private file
+  // on disk, and the download URL lasts only for this process.
+  const sessionExports = new SessionExportService(runtime);
+
+  app.post("/api/session-exports", async (request, reply) => {
+    const receipt = await sessionExports.create(request.body as SessionExportRequestDTO);
+    reply.header("cache-control", "no-store");
+    return reply.code(201).send(receipt);
+  });
+
+  app.get("/api/session-exports/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const artifact = sessionExports.file(id);
+    if (artifact === undefined) return reply.code(404).send(messageBody(apiMessages.sessionExportNotFound));
+    let size: number;
+    try {
+      size = (await stat(artifact.path)).size;
+    } catch {
+      return reply.code(404).send(messageBody(apiMessages.sessionExportNotFound));
+    }
+    reply
+      .header("content-type", "application/json; charset=utf-8")
+      .header("content-disposition", `attachment; filename="${artifact.filename}"`)
+      .header("cache-control", "no-store")
+      .header("content-length", size);
+    return reply.send(createReadStream(artifact.path));
   });
 
 

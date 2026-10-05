@@ -24,6 +24,8 @@ import type {
   ProviderStatusDTO,
   RoomDTO,
   ServerEvent,
+  SessionExportReceiptDTO,
+  SessionExportRequestDTO,
   SkillDTO,
   WorkContextDTO,
   WorkContextDraftDTO,
@@ -195,6 +197,10 @@ export const api = {
   works: () => request<WorkDTO[]>("/api/works"),
 
   stopWork: (id: string) => request<{ ok: true }>(`/api/works/${id}/stop`, { method: "POST", body: "{}" }),
+
+  /** Persist one complete debug snapshot and get the file receipt back. */
+  exportSession: (target: SessionExportRequestDTO) =>
+    request<SessionExportReceiptDTO>("/api/session-exports", { method: "POST", body: JSON.stringify(target) }),
 
   /** One page of a work's durable execution record. */
   workExecution: (id: string, cursor?: string) =>

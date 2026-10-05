@@ -76,6 +76,7 @@ export type IconName =
   | "paperclip"
   | "reply"
   | "reply-all"
+  | "download"
   | "more";
 
 /**
@@ -112,6 +113,7 @@ const ICONS: Record<IconName, string[]> = {
   paperclip: ["M17.5 8.5 9.9 16a2.5 2.5 0 0 1-3.5-3.5l7.6-7.6a4 4 0 0 1 5.6 5.6l-7.6 7.6a5.5 5.5 0 0 1-7.8-7.8l7-7"],
   reply: ["M9.5 5.5 4 11l5.5 5.5", "M4 11h9.5a6 6 0 0 1 6 6v1.5"],
   "reply-all": ["M8.5 5.5 3 11l5.5 5.5", "M14 5.5 8.5 11l5.5 5.5", "M8.5 11H15a6 6 0 0 1 6 6v1.5"],
+  download: ["M12 4v10.5", "m7.8 10.3 4.2 4.2 4.2-4.2", "M4.5 19.5h15"],
   more: ["M6 12v.01M12 12v.01M18 12v.01"],
 };
 

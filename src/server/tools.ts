@@ -283,6 +283,7 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
               code: "full_output",
               message: renderToolResult("shell-failed-spill", { spillPath: result.error.spillPath }),
             });
+            await api.details({ fullOutputPath: result.error.spillPath }, ctx);
           }
           return { isError: true };
         }
@@ -300,6 +301,7 @@ export function buildFileTools(context: ToolContext): ToolRegistration[] {
             code: "full_output",
             message: renderToolResult("shell-exit-spill", { spillPath }),
           });
+          await api.details({ fullOutputPath: spillPath }, ctx);
         }
         return exitCode === 0 ? {} : { isError: true };
       },

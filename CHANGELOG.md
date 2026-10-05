@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- One-click session export: the chat header, the mail reader, and the work-execution modal each save one complete debug snapshot to a private file under the OS temporary directory — every transcript entry (messages, tool calls, tool results), the task and submission records, the documents that scope them, and the spilled full `run_shell` output — captured as a single coherent state, so an agent can debug a conversation without the browser. The receipt reports the saved path, and the browser downloads the same file directly.
 - Application text is English by default and translations are optional: server logs, model-facing tool results, approval reasons, and persisted record text are English, while the interface keeps its English/Simplified Chinese pair; `appText` is the one place a message gains a translation, and the language pickers still switch only interface text and application messages.
 - Fixed the `@` mention menu: the `@all` row's avatar and name now sit on exactly the same columns as the employee rows, because the popover option layout no longer inherits the global centered-button rule.
 
