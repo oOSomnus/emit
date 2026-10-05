@@ -68,7 +68,7 @@ async function roomMessages(app: BrowserE2eFixture, roomId: string): Promise<{ r
   return api<{ room: RoomDTO; messages: MessageDTO[] }>(app, `/api/rooms/${roomId}/messages`);
 }
 
-test("public chat distinguishes ordinary text from an @mention wake without duplicate sends", async ({ app, page }) => {
+test("public chat distinguishes ordinary text from a picked recipient without duplicate sends", async ({ app, page }) => {
   await openChannel(page, app);
   const employeeId = app.workspace.employeeIds[0]!;
   const composer = page.getByRole("textbox", { name: "Message" });
@@ -96,10 +96,12 @@ test("public chat distinguishes ordinary text from an @mention wake without dupl
 
   await composer.fill("@Ali");
   await expect(page.getByRole("option", { name: /Alice/ })).toBeVisible();
-  // Enter accepts the member suggestion. It must not also send the message.
+  // Enter accepts the member suggestion: it adds Alice as a recipient and
+  // inserts text, and it must not also send the message.
   await composer.press("Enter");
   const addressedDraft = await composer.inputValue();
   expect(postedMessages).toBe(1);
+  await expect(page.getByRole("button", { name: "Remove Alice from recipients", exact: true })).toBeVisible();
   const beforeSend = await roomMessages(app, app.workspace.channelId);
   expect(beforeSend.messages.filter((message) => message.author.type === "user")).toHaveLength(1);
 
@@ -118,6 +120,8 @@ test("public chat distinguishes ordinary text from an @mention wake without dupl
   });
   expect(postedMessages).toBe(2);
   await expect(page.getByText(mentionBody, { exact: true })).toHaveCount(1);
+  // A successful send clears the selected recipients with the draft.
+  await expect(page.getByRole("button", { name: "Remove Alice from recipients", exact: true })).toHaveCount(0);
 
   const persisted = await roomMessages(app, app.workspace.channelId);
   expect(persisted.messages.filter((message) => message.author.type === "user" && message.body === ordinaryText)).toHaveLength(1);
@@ -332,9 +336,10 @@ test("creating a channel uses a batch member picker bound to the current work", 
   expect(quiet?.memberIds).toEqual([]);
 });
 
-test("a channel message wakes exactly the employees mentioned in its text", async ({ app, page }) => {
+test("a channel message wakes exactly the selected recipients", async ({ app, page }) => {
   await openChannel(page, app);
-  const aliceId = app.workspace.employeeIds[0]!;
+  const [aliceId, bobId] = app.workspace.employeeIds;
+  if (aliceId === undefined || bobId === undefined) throw new Error("The seeded workspace did not create both employees");
   const composer = page.getByRole("textbox", { name: "Message" });
   let posted = 0;
   page.on("request", (request) => {
@@ -343,48 +348,101 @@ test("a channel message wakes exactly the employees mentioned in its text", asyn
     }
   });
 
-  // @all is plain text: deleting it before sending removes the wake.
+  // Accepting @all inserts "@all " and selects everyone without posting.
   await composer.fill("@all");
   await expect(page.getByRole("option", { name: "Everyone", exact: true })).toBeVisible();
   await composer.press("Enter");
   expect(await composer.inputValue()).toBe("@all ");
   expect(posted).toBe(0);
-  await composer.fill("ordinary after deleting mentions");
-  const plainPost = waitForMessagePost(page, app.workspace.channelId);
+  await expect(page.getByRole("button", { name: "Remove Everyone from recipients", exact: true })).toBeVisible();
+
+  // Removing the Everyone chip leaves the "@all" text, which now wakes nobody.
+  await page.getByRole("button", { name: "Remove Everyone from recipients", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Remove Everyone from recipients", exact: true })).toHaveCount(0);
+  const inertPost = waitForMessagePost(page, app.workspace.channelId);
   await composer.press("Enter");
-  const plainReceipt = await (await plainPost).json() as SendReceipt;
-  expect(plainReceipt).toMatchObject({
+  const inertReceipt = await (await inertPost).json() as SendReceipt;
+  expect(inertReceipt).toMatchObject({
     workIds: [],
-    message: { addressing: { recipientIds: [], mentionAll: false } },
+    message: { body: "@all", addressing: { recipientIds: [], mentionAll: false } },
   });
   expect(posted).toBe(1);
 
-  // The trigger inserts text without posting; sending it wakes Alice only.
+  // Picking Everyone again broadcasts even though the body has no mention.
+  await composer.fill("@all");
+  await composer.press("Enter");
+  await composer.fill("broadcast body");
+  const allPost = waitForMessagePost(page, app.workspace.channelId);
+  await composer.press("Enter");
+  const allReceipt = await (await allPost).json() as SendReceipt;
+  expect(allReceipt.message.body).toBe("broadcast body");
+  expect(allReceipt.message.addressing?.mentionAll).toBe(true);
+  expect([...(allReceipt.message.addressing?.recipientIds ?? [])].sort()).toEqual([aliceId, bobId].sort());
+  expect(allReceipt.workIds).toHaveLength(2);
+  await waitForWork(app, allReceipt.workIds[0]!, "succeeded");
+  await waitForWork(app, allReceipt.workIds[1]!, "succeeded");
+  expect(posted).toBe(2);
+
+  // Picking a member after Everyone switches to that member alone, and
+  // accepting the same member twice does not duplicate the recipient.
+  await composer.fill("@all");
+  await composer.press("Enter");
+  await expect(page.getByRole("button", { name: "Remove Everyone from recipients", exact: true })).toBeVisible();
+  await composer.fill("@Ali");
+  await expect(page.getByRole("option", { name: /Alice/ })).toBeVisible();
+  await composer.press("Enter");
+  await expect(page.getByRole("button", { name: "Remove Everyone from recipients", exact: true })).toHaveCount(0);
+  await composer.fill("@Ali");
+  await expect(page.getByRole("option", { name: /Alice/ })).toBeVisible();
+  await composer.press("Enter");
+  await expect(page.getByRole("button", { name: "Remove Alice from recipients", exact: true })).toHaveCount(1);
+  await page.getByRole("button", { name: "Remove Alice from recipients", exact: true }).click();
+  await expect(page.locator(".composer-recipients .chip-toggle")).toHaveCount(0);
+  await composer.fill("");
+
+  // A selected recipient disabled elsewhere blocks Send until the chip is
+  // removed; removing it lets a plain body send without recipients.
+  await page.getByRole("button", { name: "Mention a member", exact: true }).click();
+  await expect(page.getByRole("listbox", { name: "Members", exact: true })).toBeVisible();
+  await page.getByRole("option", { name: /Bob/ }).click();
+  await composer.fill("bob will be disabled");
+  const disabled = await app.request(`/api/employees/${bobId}`, "PATCH", { enabled: false });
+  expect(disabled.status).toBe(200);
+  await expect(page.getByRole("alert")).toContainText("disabled");
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Remove Bob from recipients", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await composer.fill("plain body after removal");
+  const afterRemovalPost = waitForMessagePost(page, app.workspace.channelId);
+  await composer.press("Enter");
+  const afterRemovalReceipt = await (await afterRemovalPost).json() as SendReceipt;
+  expect(afterRemovalReceipt).toMatchObject({
+    workIds: [],
+    message: { body: "plain body after removal", addressing: { recipientIds: [], mentionAll: false } },
+  });
+  expect(posted).toBe(3);
+  const reenabled = await app.request(`/api/employees/${bobId}`, "PATCH", { enabled: true });
+  expect(reenabled.status).toBe(200);
+
+  // The trigger opens the menu; picking a member selects that recipient, and
+  // editing the text afterwards keeps the selection.
   await page.getByRole("button", { name: "Mention a member", exact: true }).click();
   await expect(page.getByRole("listbox", { name: "Members", exact: true })).toBeVisible();
   await page.getByRole("option", { name: /Alice/ }).click();
   expect(await composer.inputValue()).toBe("@Alice ");
-  expect(posted).toBe(1);
-  await composer.fill(`${await composer.inputValue()}please read notes.txt`);
+  expect(posted).toBe(3);
+  await composer.fill("notes handled");
   const alicePost = waitForMessagePost(page, app.workspace.channelId);
   await composer.press("Enter");
   const aliceReceipt = await (await alicePost).json() as SendReceipt;
   expect(aliceReceipt.workIds).toHaveLength(1);
-  expect(aliceReceipt.message).toMatchObject({ addressing: { recipientIds: [aliceId], mentionAll: false } });
+  expect(aliceReceipt.message).toMatchObject({
+    body: "notes handled",
+    addressing: { recipientIds: [aliceId], mentionAll: false },
+  });
   const aliceWork = await waitForWork(app, aliceReceipt.workIds[0]!, "succeeded");
   expect(aliceWork.employeeId).toBe(aliceId);
-  expect(posted).toBe(2);
-
-  // Deleting the mention removes the wake again.
-  await composer.fill("notes handled without a mention");
-  const deletedPost = waitForMessagePost(page, app.workspace.channelId);
-  await composer.press("Enter");
-  const deletedReceipt = await (await deletedPost).json() as SendReceipt;
-  expect(deletedReceipt).toMatchObject({
-    workIds: [],
-    message: { addressing: { recipientIds: [], mentionAll: false } },
-  });
-  expect(posted).toBe(3);
+  expect(posted).toBe(4);
 
   // Escape closes the menu and keeps the text; Shift+Enter inserts a newline.
   await composer.fill("@Ali");
@@ -394,11 +452,13 @@ test("a channel message wakes exactly the employees mentioned in its text", asyn
   expect(await composer.inputValue()).toBe("@Ali");
   await composer.press("Shift+Enter");
   expect(await composer.inputValue()).toBe("@Ali\n");
-  expect(posted).toBe(3);
+  expect(posted).toBe(4);
 
-  // Switching rooms drops the draft and the menu state with it.
+  // Switching rooms drops the draft, the menu, and the selected recipients.
   await composer.fill("@Ali");
   await expect(page.getByRole("option", { name: /Alice/ })).toBeVisible();
+  await composer.press("Enter");
+  await expect(page.getByRole("button", { name: "Remove Alice from recipients", exact: true })).toBeVisible();
   await createDirect(page, aliceId);
   await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("");
   await revealNavigation(page);
@@ -406,6 +466,47 @@ test("a channel message wakes exactly the employees mentioned in its text", asyn
   await expect(page.getByRole("heading", { name: /General/ })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("");
   await expect(page.getByRole("listbox", { name: "Members", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Remove Alice from recipients", exact: true })).toHaveCount(0);
+});
+
+test("a failed send keeps the draft and recipients until a retry succeeds", async ({ app, page }) => {
+  await openChannel(page, app);
+  const aliceId = app.workspace.employeeIds[0]!;
+  const body = "retry after failure";
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await composer.fill("@Ali");
+  await expect(page.getByRole("option", { name: /Alice/ })).toBeVisible();
+  await composer.press("Enter");
+  await composer.fill(body);
+
+  let failures = 0;
+  await page.route(`**/api/rooms/${app.workspace.channelId}/messages`, async (route) => {
+    if (route.request().method() === "POST" && failures === 0) {
+      failures += 1;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "fixture failure" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(() => failures).toBe(1);
+  await expect(page.getByRole("button", { name: "Remove Alice from recipients", exact: true })).toBeVisible();
+  expect(await composer.inputValue()).toBe(body);
+
+  const retry = waitForMessagePost(page, app.workspace.channelId);
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const receipt = await (await retry).json() as SendReceipt;
+  expect(receipt).toMatchObject({
+    message: { body, addressing: { recipientIds: [aliceId], mentionAll: false } },
+  });
+  expect(receipt.workIds).toHaveLength(1);
+  await expect(page.getByRole("button", { name: "Remove Alice from recipients", exact: true })).toHaveCount(0);
+  expect(await composer.inputValue()).toBe("");
+  await waitForWork(app, receipt.workIds[0]!, "succeeded");
 });
 
 test("mention suggestions align member and @all rows and insert without posting", async ({ app, page }) => {
@@ -463,16 +564,19 @@ test("mention suggestions align member and @all rows and insert without posting"
   const english = await measureMenu();
   expectAligned(english);
 
-  // Clicking @all inserts the text without posting.
+  // Clicking @all selects everyone and inserts text without posting.
   await page.locator("#address-suggestion-all").click();
   expect(await composer.inputValue()).toBe("@all ");
+  await expect(page.getByRole("button", { name: "Remove Everyone from recipients", exact: true })).toBeVisible();
   expect(posted).toBe(0);
+  await page.getByRole("button", { name: "Remove Everyone from recipients", exact: true }).click();
 
   // The keyboard path inserts the same text without posting.
   await composer.fill("@all");
   await composer.press("Enter");
   expect(await composer.inputValue()).toBe("@all ");
   expect(posted).toBe(0);
+  await page.getByRole("button", { name: "Remove Everyone from recipients", exact: true }).click();
 
   // A long, unbreakable member name still stays inside the menu at this width.
   const longName = "AlexandertheGreatMemberNameWithoutBreaks0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -550,7 +654,10 @@ test("employee Markdown renders safely in final answers and survives a reload", 
   page.on("request", (request) => requests.push(request.url()));
 
   const composer = page.getByRole("textbox", { name: "Message" });
-  await composer.fill("@Alice BROWSER_MARKDOWN");
+  await composer.fill("@Ali");
+  await expect(page.getByRole("option", { name: /Alice/ })).toBeVisible();
+  await composer.press("Enter");
+  await composer.fill("BROWSER_MARKDOWN");
   const post = waitForMessagePost(page, app.workspace.channelId);
   await composer.press("Enter");
   const response = await post;
@@ -606,7 +713,10 @@ test("live Markdown progress renders before the answer completes", async ({ app,
   test.setTimeout(120_000);
   await openChannel(page, app);
   const composer = page.getByRole("textbox", { name: "Message" });
-  await composer.fill("@Alice BROWSER_MARKDOWN_STREAM");
+  await composer.fill("@Ali");
+  await expect(page.getByRole("option", { name: /Alice/ })).toBeVisible();
+  await composer.press("Enter");
+  await composer.fill("BROWSER_MARKDOWN_STREAM");
   const post = waitForMessagePost(page, app.workspace.channelId);
   await composer.press("Enter");
   const receipt = await (await post).json() as SendReceipt;

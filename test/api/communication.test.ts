@@ -117,7 +117,7 @@ async function waitForWorks(http: HttpRuntimeFixture, events: EventStream, ids: 
 
 
 describe("communication HTTP API", () => {
-  it("creates channels and DMs, changes channel members, and wakes only explicitly, text-addressed, or all members", async () => {
+  it("creates channels and DMs, changes channel members, and wakes only explicit recipients or explicit broadcasts", async () => {
     const fixture = await startApi();
     const { http, provider, root } = fixture;
     const workspace = await seed(http, provider, root);
@@ -185,10 +185,32 @@ describe("communication HTTP API", () => {
     });
     expect(bodyAddress.statusCode).toBe(200);
     const bodyResult = json<{ message: MessageDTO; workIds: string[] }>(bodyAddress);
-    expect(bodyResult.message.addressing).toEqual({ recipientIds: [bob], mentionAll: false });
-    expect(bodyResult.workIds).toHaveLength(1);
-    const bodyWorks = await waitForWorks(http, events, bodyResult.workIds);
-    expect(bodyWorks.find(({ id }) => id === bodyResult.workIds[0])).toMatchObject({ status: "succeeded", employeeId: bob, sourceEntryId: bodyResult.message.id });
+    expect(bodyResult.message.body).toBe("Please @Bob handle the request");
+    expect(bodyResult.message.addressing).toEqual({ recipientIds: [], mentionAll: false });
+    expect(bodyResult.workIds).toEqual([]);
+    expect(json<WorkDTO[]>(await call(http.server, "GET", "/api/works")).some((work) => work.sourceEntryId === bodyResult.message.id)).toBe(false);
+
+    const broadcastLikeText = "@all @全体 @Nobody";
+    const broadcastLike = await call(http.server, "POST", `/api/rooms/${workspace.channelId}/messages`, {
+      body: broadcastLikeText,
+      recipientIds: [],
+      mentionAll: false,
+    });
+    expect(broadcastLike.statusCode).toBe(200);
+    const broadcastLikeResult = json<{ message: MessageDTO; workIds: string[] }>(broadcastLike);
+    expect(broadcastLikeResult.message.body).toBe(broadcastLikeText);
+    expect(broadcastLikeResult.message.addressing).toEqual({ recipientIds: [], mentionAll: false });
+    expect(broadcastLikeResult.workIds).toEqual([]);
+
+    const mixed = await call(http.server, "POST", `/api/rooms/${workspace.channelId}/messages`, {
+      body: "@all only the explicit recipient",
+      recipientIds: [alice],
+    });
+    expect(mixed.statusCode).toBe(200);
+    const mixedResult = json<{ message: MessageDTO; workIds: string[] }>(mixed);
+    expect(mixedResult.message.addressing).toEqual({ recipientIds: [alice], mentionAll: false });
+    expect(mixedResult.workIds).toHaveLength(1);
+    await waitForWorks(http, events, mixedResult.workIds);
 
     const allAddress = await call(http.server, "POST", `/api/rooms/${workspace.channelId}/messages`, {
       body: "Please handle this as a group",

@@ -7,16 +7,6 @@ import { type AppText, appText } from "../app-text.ts";
 import type { MessageAddressingError } from "../../shared/message-addressing.ts";
 
 export const addressingMessages = {
-  unknownMention: (token: string): AppText =>
-    appText({
-      en: `No member matches ${token}`,
-      "zh-CN": `没有成员匹配 ${token}`,
-    }),
-  ambiguousMention: (token: string): AppText =>
-    appText({
-      en: `Several members match ${token}; use the full address`,
-      "zh-CN": `有多位成员匹配 ${token}，请使用完整地址`,
-    }),
   notMember: (token: string): AppText =>
     appText({
       en: `${token} is not a member of this channel`,
@@ -37,10 +27,6 @@ export const addressingMessages = {
 /** One addressing failure as an application message. */
 export function addressingErrorText(error: MessageAddressingError): AppText {
   switch (error.code) {
-    case "unknown-mention":
-      return addressingMessages.unknownMention(error.token);
-    case "ambiguous-mention":
-      return addressingMessages.ambiguousMention(error.token);
     case "not-member":
       return addressingMessages.notMember(error.token.length > 0 ? error.token : error.employeeId);
     case "disabled":

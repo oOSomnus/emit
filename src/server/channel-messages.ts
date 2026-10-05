@@ -188,7 +188,6 @@ export async function sendQueuedMessage(
     let resolved;
     try {
       resolved = resolveMessageAddressing(
-        input.body,
         input.recipientIds ?? [],
         input.mentionAll === true,
         roomMembers(room, employees),

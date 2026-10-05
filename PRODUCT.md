@@ -39,7 +39,7 @@ Durable execution and inspectable approvals support this promise; they are not s
 
 ### Existing capabilities
 
-- Channels wake only addressed employees: explicit recipient chips, unambiguous `@name`/`@address` mentions, or `@all` for enabled members. Ordinary unaddressed text is recorded without starting work; direct messages wake their employee by default.
+- Channels wake only explicitly selected recipients: the `@` picker's accepted suggestions and its removable recipient chips, or `@all` for every enabled member. Ordinary text — including `@name`, `@address`, and `@all` — never selects recipients and is recorded without starting work; direct messages wake their employee by default.
 - Mail is durable and asynchronous. To recipients that are employees start work; CC receives a copy without starting work. Employees' final answers are delivered as replies.
 - Drafts, reply/reply-all, read/archive flags, search, and execution inspection support the mailbox workflow.
 - Delegation is bounded by depth, cross-employee wake count, and model-turn budgets; delegation cycles back to a supervisor are rejected.

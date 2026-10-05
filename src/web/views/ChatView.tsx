@@ -5,9 +5,10 @@
  * shown inline — live text, tool activity, and a stop button — so the wait is
  * visible rather than implied.
  *
- * In a channel, the message body is the only addressing source: an @mention in
- * the text wakes an employee, and a message without one wakes nobody. The
- * picker above the composer is a typing aid for that text, never hidden state.
+ * In a channel, routing comes only from the explicit selection: the @ picker
+ * adds a recipient when a suggestion is accepted, and the recipient row above
+ * the toolbar shows and removes that selection. The message text never selects
+ * recipients, no matter what it contains.
  */
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -59,6 +60,8 @@ export function ChatView(): ReactNode {
   const { locale, messages, text } = useI18n();
   const exportSession = useSessionExport();
   const [draft, setDraft] = useState("");
+  const [recipientIds, setRecipientIds] = useState<string[]>([]);
+  const [mentionAll, setMentionAll] = useState(false);
   const [mentionInput, setMentionInput] = useState<MentionRange | undefined>(undefined);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [sending, setSending] = useState(false);
@@ -89,7 +92,7 @@ export function ChatView(): ReactNode {
     if (room?.kind !== "channel") return { resolved: undefined, error: undefined };
     try {
       return {
-        resolved: resolveMessageAddressing(draft, [], false, channelMembers),
+        resolved: resolveMessageAddressing(recipientIds, mentionAll, channelMembers),
         error: undefined,
       };
     } catch (error) {
@@ -98,7 +101,7 @@ export function ChatView(): ReactNode {
         error: error instanceof MessageAddressingError ? error : undefined,
       };
     }
-  }, [room?.kind, draft, channelMembers]);
+  }, [room?.kind, recipientIds, mentionAll, channelMembers]);
 
   const menuOpen = room?.kind === "channel" && mentionInput !== undefined;
 
@@ -111,24 +114,20 @@ export function ChatView(): ReactNode {
         query.length === 0 || member.name.toLowerCase().includes(query) || member.address.toLowerCase().includes(query),
     );
     const options: AddressSuggestion[] = matching.map((member) => {
-      // A name is inserted only when the resolver uniquely maps it back to this
-      // member; ambiguous or reserved names fall back to the unique address.
-      const nameInsertion = `@${member.name} `;
-      let insertion = `@${member.address} `;
-      try {
-        const resolved = resolveMessageAddressing(nameInsertion, [], false, channelMembers);
-        if (!resolved.mentionAll && resolved.recipientIds.length === 1 && resolved.recipientIds[0] === member.id) {
-          insertion = nameInsertion;
-        }
-      } catch {
-        // Keep the address insertion.
-      }
+      // Display text only: the bare name when it is non-empty, unique among the
+      // channel's members, and not the reserved broadcast word; the unique
+      // address otherwise. Accepting the suggestion always selects this
+      // employee's id, never text.
+      const nameKey = member.name.toLowerCase();
+      const nameCount = channelMembers.filter((candidate) => candidate.name.toLowerCase() === nameKey).length;
+      const uniqueName =
+        member.name.length > 0 && nameCount === 1 && nameKey !== "all" && nameKey !== "全体";
       return {
         id: member.id,
         name: member.name,
         role: state.employees.find((employee) => employee.id === member.id)?.role ?? "",
         address: member.address,
-        insertion,
+        insertion: `@${uniqueName ? member.name : member.address} `,
         mentionAll: false,
       };
     });
@@ -149,19 +148,15 @@ export function ChatView(): ReactNode {
   const addressingError =
     addressing.error === undefined
       ? undefined
-      : addressing.error.code === "unknown-mention"
-        ? messages.workContexts.unknownMention(`@${addressing.error.token}`)
-        : addressing.error.code === "ambiguous-mention"
-          ? messages.workContexts.ambiguousMention(`@${addressing.error.token}`)
-          : addressing.error.code === "not-member"
-            ? messages.workContexts.mentionNotMember(
-                state.employees.find((employee) => employee.id === addressing.error?.employeeId)?.name ??
-                  addressing.error.token ??
-                  addressing.error.employeeId,
-              )
-            : addressing.error.code === "disabled"
-              ? messages.workContexts.mentionDisabled(addressing.error.token)
-              : messages.workContexts.mentionEmptyAll;
+      : addressing.error.code === "not-member"
+        ? messages.workContexts.mentionNotMember(
+            state.employees.find((employee) => employee.id === addressing.error?.employeeId)?.name ??
+              addressing.error.token ??
+              addressing.error.employeeId,
+          )
+        : addressing.error.code === "disabled"
+          ? messages.workContexts.mentionDisabled(addressing.error.token)
+          : messages.workContexts.mentionEmptyAll;
 
   const roomWork = useMemo(
     () => state.work.filter((work) => work.roomId === state.activeRoomId && work.status !== "succeeded" && work.status !== "failed" && work.status !== "stopped"),
@@ -223,13 +218,13 @@ export function ChatView(): ReactNode {
     if (body.length === 0 || sending || (room.kind === "channel" && addressingError !== undefined)) return;
     setSending(true);
     try {
-      const input =
-        room.kind === "channel"
-          ? { body, ...resolveMessageAddressing(body, [], false, channelMembers) }
-          : { body };
+      const input = room.kind === "channel" ? { body, recipientIds, mentionAll } : { body };
       await api.sendRoomMessage(room.id, input);
       setDraft("");
+      setRecipientIds([]);
+      setMentionAll(false);
       setMentionInput(undefined);
+      setActiveSuggestionIndex(0);
     } catch (error) {
       setError(errorDisplay(error));
     } finally {
@@ -250,6 +245,13 @@ export function ChatView(): ReactNode {
     }
     const next = `${input.value.slice(0, mentionInput.start)}${suggestion.insertion}${input.value.slice(mentionInput.end)}`;
     const nextCaret = mentionInput.start + suggestion.insertion.length;
+    if (suggestion.mentionAll) {
+      setMentionAll(true);
+      setRecipientIds([]);
+    } else {
+      setMentionAll(false);
+      setRecipientIds((ids) => (ids.includes(suggestion.id) ? ids : [...ids, suggestion.id]));
+    }
     setDraft(next);
     setMentionInput(undefined);
     setActiveSuggestionIndex(0);
@@ -533,6 +535,42 @@ export function ChatView(): ReactNode {
           {room.kind === "channel" ? (
             <div className="composer-status">
               <p>{messages.chat.addressingScopeHint}</p>
+              {recipientIds.length > 0 || mentionAll ? (
+                <div className="row recipients composer-recipients">
+                  <span className="hint">{messages.workContexts.addressLabel}</span>
+                  {mentionAll ? (
+                    <button
+                      type="button"
+                      className="chip-toggle on"
+                      disabled={sending}
+                      title={messages.chat.mentionEveryone}
+                      aria-label={messages.chat.removeRecipient(messages.chat.mentionEveryone)}
+                      onClick={() => setMentionAll(false)}
+                    >
+                      {messages.chat.mentionEveryone}
+                      <Icon name="close" size={14} />
+                    </button>
+                  ) : null}
+                  {recipientIds.map((id) => {
+                    const employee = state.employees.find((entry) => entry.id === id);
+                    const name = employee?.name ?? id;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        className="chip-toggle on"
+                        disabled={sending}
+                        title={employee?.address ?? id}
+                        aria-label={messages.chat.removeRecipient(name)}
+                        onClick={() => setRecipientIds((ids) => ids.filter((entry) => entry !== id))}
+                      >
+                        {name}
+                        <Icon name="close" size={14} />
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
               {addressingError !== undefined ? (
                 <p className="composer-error" role="alert">
                   {addressingError}

@@ -324,7 +324,7 @@ describe("L1 fast-check properties", () => {
       fc.property(fc.array(fc.integer({ min: 0, max: 2 }), { maxLength: 40 }), (indexes) => {
         const enabledIds = members.filter(({ enabled }) => enabled).map(({ id }) => id);
         const requestedIds = indexes.map((index) => enabledIds[index]!);
-        const resolved = resolveMessageAddressing("", requestedIds, false, members);
+        const resolved = resolveMessageAddressing(requestedIds, false, members);
         const expectedIds = [...new Set(requestedIds)];
         expect([...resolved.recipientIds].sort()).toEqual([...expectedIds].sort());
         expect(new Set(resolved.recipientIds).size).toBe(resolved.recipientIds.length);
@@ -347,7 +347,7 @@ describe("L1 fast-check properties", () => {
         if (expectedIds.length === 0) {
           let caught: unknown;
           try {
-            resolveMessageAddressing("@all", [], false, members);
+            resolveMessageAddressing([], true, members);
           } catch (error) {
             caught = error;
           }
@@ -356,7 +356,7 @@ describe("L1 fast-check properties", () => {
           return;
         }
 
-        const resolved = resolveMessageAddressing("@all", [], false, members);
+        const resolved = resolveMessageAddressing([], true, members);
         expect([...resolved.recipientIds].sort()).toEqual([...expectedIds].sort());
         expect(resolved.mentionAll).toBe(true);
       }),

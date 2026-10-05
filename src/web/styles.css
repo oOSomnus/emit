@@ -944,6 +944,17 @@ ul {
 .composer-status .composer-error {
   color: var(--error);
 }
+.composer-status .composer-recipients {
+  padding: 0;
+}
+.composer-recipients .chip-toggle {
+  gap: 4px;
+  padding: 0 8px 0 10px;
+}
+.composer-recipients .chip-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .composer-toolbar {
   display: flex;
   align-items: center;

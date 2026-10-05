@@ -200,7 +200,7 @@ describe("explicit channel addressing and employee collaboration", () => {
     expect(fixture.requests).toHaveLength(baselineRequests);
 
     const onlyAliceText = `@Alice one-person-${randomUUID()}`;
-    const onlyAlice = await sendChannelMessage(resume, room, onlyAliceText);
+    const onlyAlice = await sendChannelMessage(resume, room, onlyAliceText, [alice.id]);
     expect(onlyAlice.message.addressing).toEqual({ recipientIds: [alice.id], mentionAll: false });
     expect(onlyAlice.workIds).toHaveLength(1);
     await waitForWorks(resume, onlyAlice.workIds);
@@ -209,7 +209,7 @@ describe("explicit channel addressing and employee collaboration", () => {
     ]);
 
     const twoNamesText = `@Alice @Bob two-person-${randomUUID()}`;
-    const twoNames = await sendChannelMessage(resume, room, twoNamesText);
+    const twoNames = await sendChannelMessage(resume, room, twoNamesText, [alice.id, bob.id]);
     expect(twoNames.message.addressing?.recipientIds).toEqual([alice.id, bob.id]);
     expect(twoNames.workIds).toHaveLength(2);
     await waitForWorks(resume, twoNames.workIds);
@@ -245,19 +245,23 @@ describe("explicit channel addressing and employee collaboration", () => {
     ).toBe(true);
     const allAliasesText = `@all @全体 alias-${randomUUID()}`;
     const allAliases = await sendChannelMessage(resume, room, allAliasesText);
-    expect(allAliases.message.addressing).toEqual({ recipientIds: [alice.id, bob.id, cara.id], mentionAll: true });
-    expect(allAliases.workIds).toHaveLength(3);
-    await waitForWorks(resume, allAliases.workIds);
+    expect(allAliases.message.addressing).toEqual({ recipientIds: [], mentionAll: false });
+    expect(allAliases.workIds).toHaveLength(0);
 
     const selectedText = `@Alice and explicitly selected Cara ${randomUUID()}`;
     const selected = await sendChannelMessage(resume, room, selectedText, [cara.id]);
-    expect(selected.message.addressing?.recipientIds.sort()).toEqual([alice.id, cara.id].sort());
+    expect(selected.message.addressing?.recipientIds).toEqual([cara.id]);
     expect(selected.message.addressing?.mentionAll).toBe(false);
-    expect(selected.workIds).toHaveLength(2);
+    expect(selected.workIds).toHaveLength(1);
     await waitForWorks(resume, selected.workIds);
+    expect(
+      (await listWorks(runtime))
+        .filter((work) => work.sourceEntryId === selected.message.id)
+        .map((work) => work.employeeId),
+    ).toEqual([cara.id]);
 
     const duplicateText = `@Alice @Alice duplicate-${randomUUID()}`;
-    const duplicate = await sendChannelMessage(resume, room, duplicateText);
+    const duplicate = await sendChannelMessage(resume, room, duplicateText, [alice.id, alice.id]);
     expect(duplicate.message.addressing?.recipientIds).toEqual([alice.id]);
     expect(duplicate.workIds).toHaveLength(1);
     await waitForWorks(resume, duplicate.workIds);
@@ -268,7 +272,7 @@ describe("explicit channel addressing and employee collaboration", () => {
     expect(await listWorks(runtime)).toEqual(previousWorks);
     expect((await listWorks(runtime)).some((work) => work.sourceEntryId === all.message.id && work.employeeId === dana.id)).toBe(false);
 
-    for (const sent of [onlyAlice, twoNames, all, allAliases, selected, duplicate]) {
+    for (const sent of [onlyAlice, twoNames, all, selected, duplicate]) {
       const works = (await listWorks(runtime)).filter((work) => work.sourceEntryId === sent.message.id);
       const messages = await readFixtureRoomMessages(runtime, room);
       for (const work of works) {
@@ -278,14 +282,121 @@ describe("explicit channel addressing and employee collaboration", () => {
       }
     }
     const requestsForAcceptedMessages = fixture.requests.filter((request) =>
-      [onlyAliceText, twoNamesText, allText, allAliasesText, selectedText, duplicateText].some((body) =>
+      [onlyAliceText, twoNamesText, allText, selectedText, duplicateText].some((body) =>
         request.prompt.includes(body),
       ),
     );
-    expect(requestsForAcceptedMessages).toHaveLength(12);
+    expect(requestsForAcceptedMessages).toHaveLength(8);
   }, 60_000);
 
-  it("rejects invalid mentions without side effects and enforces whole-send wake budgets", async () => {
+  it("body-only employee sends stay inert after an explicit broadcast", async () => {
+    const bodyOnlyText = "@all BODY_ONLY_REPLY";
+    const finalOnlyText = "@all FINAL_ONLY_REPLY";
+    let channelId = "";
+    const fixture = await startFixture((request) => {
+      if (request.model === "fake-reviewer") return defaultAnswer(request);
+      if (channelId.length === 0) return defaultAnswer(request);
+      const messages = JSON.parse(request.prompt) as { role?: string }[];
+      if (!messages.some((message) => message.role === "tool")) {
+        return { toolCall: { name: "send_message", args: { roomId: channelId, body: bodyOnlyText } } };
+      }
+      return { content: finalOnlyText };
+    });
+    cleanup.push(() => fixture.close());
+    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-body-only-");
+    const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta"]);
+    const alpha = employeeNamed(employees, "Alpha");
+    const beta = employeeNamed(employees, "Beta");
+    const context = await createWorkContextFixture(runtime, "Body-only work");
+    const room = await createRoom(runtime, {
+      kind: "channel",
+      name: "Body-only channel",
+      workContextId: context.id,
+      memberIds: [alpha.id, beta.id],
+    });
+    channelId = room.id;
+    runtime.resume();
+
+    const broadcast = await sendChannelMessage(resume, room, `explicit-broadcast-${randomUUID()}`, [], true);
+    expect(broadcast.message.addressing).toEqual({ recipientIds: [alpha.id, beta.id], mentionAll: true });
+    expect(broadcast.workIds).toHaveLength(2);
+    await waitForWorks(resume, broadcast.workIds);
+    for (const workId of broadcast.workIds) {
+      expect((await findWork(runtime, workId))?.status).toBe("succeeded");
+    }
+
+    const works = await listWorks(runtime);
+    expect(works.map((work) => work.id).sort()).toEqual([...broadcast.workIds].sort());
+    for (const workId of broadcast.workIds) {
+      const collaboration = await runtime.readFamily(CollaborationDoc, workId, { rootWorkId: workId });
+      expect(collaboration?.crossEmployeeWakes).toBe(0);
+    }
+
+    const messages = await readFixtureRoomMessages(runtime, room);
+    const toolEntries = messages.filter(
+      (message) => message.author.type === "employee" && message.body === bodyOnlyText,
+    );
+    expect(toolEntries.map((message) => message.author.id).sort()).toEqual([alpha.id, beta.id].sort());
+    for (const entry of toolEntries) {
+      expect(entry.addressing).toEqual({ recipientIds: [], mentionAll: false });
+    }
+    const finalReplies = messages.filter(
+      (message) => message.author.type === "employee" && message.body === finalOnlyText,
+    );
+    expect(finalReplies).toHaveLength(2);
+    for (const reply of finalReplies) {
+      expect(reply.addressing).toBeUndefined();
+      expect(reply.workId).toBeDefined();
+      expect(broadcast.workIds).toContain(reply.workId!);
+    }
+    for (const work of works) {
+      expect(toolEntries.some((entry) => entry.id === work.sourceEntryId)).toBe(false);
+      expect(finalReplies.some((entry) => entry.id === work.sourceEntryId)).toBe(false);
+    }
+  }, 60_000);
+
+  it("explicit employee broadcast wakes other enabled members", async () => {
+    const fixture = await startFixture(defaultAnswer);
+    cleanup.push(() => fixture.close());
+    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-explicit-all-");
+    const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta", "Gamma"]);
+    const alpha = employeeNamed(employees, "Alpha");
+    const beta = employeeNamed(employees, "Beta");
+    const gamma = employeeNamed(employees, "Gamma");
+    const context = await createWorkContextFixture(runtime, "Explicit broadcast work");
+    const room = await createRoom(runtime, {
+      kind: "channel",
+      name: "Explicit broadcast channel",
+      workContextId: context.id,
+      memberIds: [alpha.id, beta.id, gamma.id],
+    });
+    // The runtime stays paused: the user's root and the tool send run directly.
+    const root = await sendChannelMessage(resume, room, `alpha-root-${randomUUID()}`, [alpha.id]);
+    const rootWorkId = root.workIds[0]!;
+    const body = `EXPLICIT_ALL-${randomUUID()}`;
+    const sent = await executeCollaborationTool(
+      resume,
+      alpha,
+      rootWorkId,
+      "send_message",
+      { roomId: room.id, body, mentionAll: true },
+      8801,
+    );
+    expect(sent.isError).not.toBe(true);
+
+    const children = (await listWorks(runtime)).filter((work) => work.parentWorkId === rootWorkId);
+    expect(children.map((work) => work.employeeId).sort()).toEqual([beta.id, gamma.id].sort());
+    expect(children.every((work) => work.depth === 1)).toBe(true);
+    const messages = await readFixtureRoomMessages(runtime, room);
+    const entry = messages.find((message) => message.author.id === alpha.id && message.body === body);
+    expect(entry?.addressing).toEqual({ recipientIds: [beta.id, gamma.id], mentionAll: true });
+    expect(children.every((work) => work.sourceEntryId === entry?.id)).toBe(true);
+    expect(children.some((work) => work.employeeId === alpha.id)).toBe(false);
+    const collaboration = await runtime.readFamily(CollaborationDoc, rootWorkId, { rootWorkId });
+    expect(collaboration?.crossEmployeeWakes).toBe(2);
+  }, 60_000);
+
+  it("rejects invalid recipients without side effects and enforces whole-send wake budgets", async () => {
     const fixture = await startFixture(defaultAnswer);
     cleanup.push(() => fixture.close());
     const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-validation-");
@@ -322,24 +433,17 @@ describe("explicit channel addressing and employee collaboration", () => {
       expect(await listWorks(runtime)).toEqual(beforeWorks);
     };
 
-    await rejectWithoutWrites(`@Dee nonmember-${randomUUID()}`);
     await rejectWithoutWrites(`selected nonmember ${randomUUID()}`, { recipientIds: [dee.id] });
-    await rejectWithoutWrites(`@Nobody unknown-${randomUUID()}`);
     await updateEmployee(runtime, cara.id, { enabled: false });
-    await rejectWithoutWrites(`@Cara disabled-${randomUUID()}`);
     await rejectWithoutWrites(`selected disabled ${randomUUID()}`, { recipientIds: [cara.id] });
     const partialAllBody = `@all skip-disabled-${randomUUID()}`;
-    const partialAll = await sendChannelMessage(resume, room, partialAllBody);
+    const partialAll = await sendChannelMessage(resume, room, partialAllBody, [], true);
     expect(partialAll.message.addressing).toEqual({ recipientIds: [ada.id, bert.id], mentionAll: true });
     expect(partialAll.workIds).toHaveLength(2);
     await updateEmployee(runtime, cara.id, { enabled: true });
 
-    await updateEmployee(runtime, bert.id, { name: "Ada" });
-    await rejectWithoutWrites(`@Ada ambiguous-${randomUUID()}`);
-    await updateEmployee(runtime, bert.id, { name: "Bert" });
-
     for (const employee of [ada, bert, cara]) await updateEmployee(runtime, employee.id, { enabled: false });
-    await rejectWithoutWrites("@all no-enabled-member", { mentionAll: false });
+    await rejectWithoutWrites(`no-enabled-member-${randomUUID()}`, { mentionAll: true });
     for (const employee of [ada, bert, cara]) await updateEmployee(runtime, employee.id, { enabled: true });
     const emptyRoom = await createRoom(runtime, {
       kind: "channel",
@@ -375,10 +479,10 @@ describe("explicit channel addressing and employee collaboration", () => {
     expect(inert.message.addressing).toEqual({ recipientIds: [], mentionAll: false });
 
     const uniqueBody = `@Ada answer this ${randomUUID()}`;
-    const uniqueName = await sendChannelMessage(resume, room, uniqueBody);
+    const uniqueName = await sendChannelMessage(resume, room, uniqueBody, [ada.id]);
     expect(uniqueName.message.addressing?.recipientIds).toEqual([ada.id]);
     const fullAddressBody = `Please review @${ada.address} ${randomUUID()}`;
-    const fullAddress = await sendChannelMessage(resume, room, fullAddressBody);
+    const fullAddress = await sendChannelMessage(resume, room, fullAddressBody, [ada.id]);
     expect(fullAddress.message.addressing?.recipientIds).toEqual([ada.id]);
 
     const app = await readApp(runtime);
@@ -764,7 +868,11 @@ describe("explicit channel addressing and employee collaboration", () => {
     expect(invitationNotices[0]?.body).toContain(delta.name);
     expect(fixture.requests).toHaveLength(beforeInviteRequestCount);
 
-    const sendArgs = { roomId: room.id, body: `receipt-send-${randomUUID()}`, recipientIds: [beta.id, delta.id] };
+    const sendArgs = {
+      roomId: room.id,
+      body: `receipt-send @all @未知成员-${randomUUID()}`,
+      recipientIds: [beta.id, delta.id],
+    };
     const firstSend = await executeCollaborationTool(resume, alpha, parentWorkId, "send_message", sendArgs, 7602);
     const sendReplay = await executeCollaborationTool(resume, alpha, parentWorkId, "send_message", sendArgs, 7602);
     expect(firstSend.isError).not.toBe(true);
@@ -772,6 +880,7 @@ describe("explicit channel addressing and employee collaboration", () => {
     const children = (await listWorks(runtime)).filter((work) => work.parentWorkId === parentWorkId);
     expect(children).toHaveLength(2);
     expect(children.map((work) => work.employeeId).sort()).toEqual([beta.id, delta.id].sort());
+    expect(children.some((work) => work.employeeId === gamma.id)).toBe(false);
     expect((await listRooms(runtime)).filter((candidate) => candidate.kind === "dm")).toHaveLength(0);
     const collaboration = await runtime.readFamily(CollaborationDoc, parentWorkId, { rootWorkId: parentWorkId });
     expect(collaboration?.crossEmployeeWakes).toBe(2);
@@ -781,7 +890,8 @@ describe("explicit channel addressing and employee collaboration", () => {
     expect(afterFirstSendEntries.filter((entry) => entry.author.id === alpha.id && entry.body === sendArgs.body)).toHaveLength(
       1,
     );
-    expect(followUpEntry?.addressing?.recipientIds).toEqual([beta.id, delta.id]);
+    expect(followUpEntry?.addressing).toEqual({ recipientIds: [beta.id, delta.id], mentionAll: false });
+    expect(followUpEntry?.body).toBe(sendArgs.body);
 
     const betaWork = children.find((work) => work.employeeId === beta.id)!;
     const beforeAncestorAttempt = await readFixtureRoomMessages(runtime, room);

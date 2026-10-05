@@ -38,13 +38,13 @@
     }
   },
   "send_message": {
-    "description": "Send an in-app message. Provide exactly one of `to` (a direct message to another employee) or `roomId` (a channel of the current work you are a member of). In a channel, address people with @name or the recipientIds/mentionAll fields; a plain message is visible to everyone and wakes nobody. Your own message never wakes you.",
+    "description": "Send an in-app message. Provide exactly one of `to` (a direct message to another employee) or `roomId` (a channel of the current work you are a member of). In a channel, only the `recipientIds` and `mentionAll` fields decide who is woken: omit them and no employee is woken. Mentions, names, and @all inside `body` are message text only and never select recipients. Your own message never wakes you.",
     "parameters": {
       "to": "Employee name, id, or address; opens or reuses your direct conversation with them",
       "roomId": "Channel id; for the channel this work runs in, take the exact id from the current-channel context section, never the work ID or the channel name",
-      "body": "Message text; @name and @all/@全体 wake the addressed enabled members",
-      "recipientIds": "Explicit employee ids to wake, taken from the employee directory in your context where member=true and enabled=true",
-      "mentionAll": "Wake every enabled member of the channel (default false)"
+      "body": "Message content only; text never selects recipients or wakes employees.",
+      "recipientIds": "Explicit employee ids to wake, taken from the employee directory in your context where member=true and enabled=true; omitting the field wakes nobody",
+      "mentionAll": "Explicitly wake every enabled channel member except yourself (default false); do not set this merely because the message text contains @all"
     }
   },
   "invite_to_channel": {

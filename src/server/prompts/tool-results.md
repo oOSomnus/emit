@@ -45,7 +45,7 @@ Message sent to channel "{{roomName}}"; {{count}} employees were woken for this 
 Message sent to channel "{{roomName}}"; no one was addressed, so no employees were started.
 
 ## invite-ok
-Invited {{names}} to the current channel ({{count}} added); invitations do not wake them. Mention them again if you need a reply.
+Invited {{names}} to the current channel ({{count}} added); invitations do not wake them. Use send_message with recipientIds to request a reply.
 
 ## invite-replay
 This invitation has already been applied (safe replay; no duplicate invitation).
