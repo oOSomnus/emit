@@ -265,7 +265,34 @@ try {
     assert.equal(missing.status, 404);
     assert.match(missing.contentType, /application\/json/);
     assert.ok(!existsSync(path.join(scratch, "dist")), "the source frontend directory must not appear at runtime");
-    reportPass("embedded frontend and SPA fallback", "4. embedded frontend: assets 200, SPA fallback, API 404 as JSON");
+
+    // Every asset the build embedded (including vendor chunks) must come back
+    // byte-identical over HTTP, not as SPA fallback HTML or a stale cache entry.
+    const manifestPath = path.join(repoRoot, "dist", "sea", "web-manifest.json");
+    assert.ok(existsSync(manifestPath), `missing ${manifestPath}; run make binary first`);
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    assert.ok(Array.isArray(manifest) && manifest.length > 0, "web manifest must list the embedded assets");
+    const onDisk = [];
+    const walkWebAssets = (dir, prefix) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+        if (entry.isDirectory()) walkWebAssets(path.join(dir, entry.name), relative);
+        else onDisk.push(relative);
+      }
+    };
+    walkWebAssets(path.join(repoRoot, "dist", "web"), "");
+    assert.deepEqual([...manifest].sort(), onDisk.sort(), "web manifest must cover every dist/web file");
+    for (const file of manifest) {
+      const response = await fetch(`${urlA}/${file}`, { signal: AbortSignal.timeout(requestTimeoutMs) });
+      assert.equal(response.status, 200, `${file} must be served from the embedded bundle`);
+      const served = Buffer.from(await response.arrayBuffer());
+      const expected = readFileSync(path.join(repoRoot, "dist", "web", file));
+      assert.ok(served.equals(expected), `${file} must match the build output byte for byte`);
+      const type = response.headers.get("content-type") ?? "";
+      if (file.endsWith(".js")) assert.match(type, /javascript/, `${file} must be served as JavaScript`);
+      if (file.endsWith(".css")) assert.match(type, /text\/css/, `${file} must be served as CSS`);
+    }
+    reportPass("embedded frontend and SPA fallback", `4. embedded frontend: ${manifest.length} manifest assets byte-identical, SPA fallback, API 404 as JSON`);
   }
 
   // 5. Persistence across restarts, plus cache repair after corruption.
