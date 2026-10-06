@@ -35,6 +35,8 @@ import {
   createRoomIn,
   findRoom,
   plainRoom,
+  projectMessageAddresses,
+  readFlags,
   roomDTOWithUnread,
   toMessageDTO,
   type RoomCreateInput,
@@ -406,7 +408,7 @@ async function replayedSend(runtime: EmitRuntime, receipt: MailSendReceiptRecord
   return { message: dto, workIds: [...receipt.workIds] };
 }
 
-/** Read one message entry out of a room's transcript. */
+/** Read one message entry out of a room's transcript, with migrated headers applied. */
 async function readMessageEntry(
   runtime: EmitRuntime,
   room: RoomRecord,
@@ -424,5 +426,11 @@ async function readMessageEntry(
   );
   const entry = page.items[0];
   if (entry === undefined || !RoomMessageEntry.is(entry)) return undefined;
-  return { entry, data: entry.data };
+  // A historical entry may carry an address override from the one-time
+  // migration; continuing a reply from the stored headers would address the
+  // retired domain, so the projection is what a reader ever sees.
+  const flags = await readFlags(runtime, room.id, entry.id);
+  const projected = projectMessageAddresses(entry, flags);
+  if (!RoomMessageEntry.is(projected)) return undefined;
+  return { entry: projected, data: projected.data };
 }

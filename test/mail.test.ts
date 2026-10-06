@@ -16,7 +16,7 @@ import type { ConversationId, TaskId } from "@earendil-works/pi-durable";
 import type { EmitRuntime } from "../src/server/runtime.ts";
 import { sendQueuedMail } from "../src/server/mail.ts";
 import { installEmployeeExtension, listWorks, reconcileWorks, stopWork, type Resume } from "../src/server/work.ts";
-import { createEmployee, listEmployees, setupWorkspace, updateEmployee } from "../src/server/workspace.ts";
+import { createEmployee, listEmployees, readApp, setupWorkspace, updateEmployee } from "../src/server/workspace.ts";
 import {
   RoomDirectoryError,
   appendRoomMessage,
@@ -26,7 +26,7 @@ import {
   messageData,
   toMessageDTO,
 } from "../src/server/rooms.ts";
-import { RoomMessageEntry, type EmployeeRecord, type RoomRecord } from "../src/server/documents.ts";
+import { MailFlagDoc, RoomMessageEntry, type EmployeeRecord, type RoomRecord } from "../src/server/documents.ts";
 import { WorkExecutionCursorError, readWorkExecution } from "../src/server/work-execution.ts";
 import type { EmployeeDraftDTO, MessageDTO } from "../src/shared/contracts.ts";
 import { toWorkDTO } from "../src/server/dto.ts";
@@ -69,7 +69,6 @@ async function openWorkspaceForRun(
   const { runtime, resume } = await openRuntime(dir);
   await runtime.storeCustomProviders([providerConfig(baseUrl)]);
   await setupWorkspace(runtime, {
-    workspaceName: "邮件测试",
     userName: "测试者",
     defaultExecutionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
     approval: { kind: "llm", model: { providerId: "fake", modelId: "fake-reviewer" }, effort: "off", criteriaVersion: 3 },
@@ -128,7 +127,6 @@ describe("durable mail delivery", () => {
     });
     await first.runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
     await setupWorkspace(first.runtime, {
-      workspaceName: "邮件测试",
       userName: "测试者",
       defaultExecutionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
       approval: { kind: "llm", model: { providerId: "fake", modelId: "fake-reviewer" }, effort: "off", criteriaVersion: 3 },
@@ -243,7 +241,6 @@ describe("durable mail delivery", () => {
     });
     await runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
     await setupWorkspace(runtime, {
-      workspaceName: "邮件测试",
       userName: "测试者",
       defaultExecutionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
       approval: { kind: "llm", model: { providerId: "fake", modelId: "fake-reviewer" }, effort: "off", criteriaVersion: 3 },
@@ -263,8 +260,31 @@ describe("durable mail delivery", () => {
     const b = employeeNamed(employees, "乙");
     runtime.resume();
 
-    const sent = await sendQueuedMail(resume, mailInput(room, [a]));
+    // The mail being answered is a pre-migration snapshot: its stored headers
+    // still carry the retired domain, and the migration's override is what a
+    // reader sees. The prompt and the reply envelope must use the new
+    // addresses, never the retired ones.
+    const legacyUserAddress = "tester@legacy.test";
+    const legacyEmployeeAddress = "tester2@legacy.test";
+    const sent = await sendQueuedMail(resume, {
+      room: { id: room.id },
+      data: messageData({
+        author: { type: "user", id: "user", name: "测试者", address: legacyUserAddress },
+        body: "请读一下 notes.txt 并总结",
+        mail: mailEnvelope({
+          subject: "读一下 notes.txt",
+          to: [{ name: a.name, address: legacyEmployeeAddress }],
+          recipients: [a.id],
+          sent: true,
+        }),
+      }),
+    });
     expect(sent.workIds).toHaveLength(1);
+    const app = await readApp(runtime);
+    const flagKey = `${room.id}|${sent.message.id}`;
+    await runtime.updateFamily(MailFlagDoc, flagKey, { key: flagKey }, (doc) => {
+      doc.addresses = { address: app.userAddress, to: [{ name: a.name, address: a.address }], cc: [] };
+    });
 
     // 甲 asks 乙 and then tries to answer on its own: the answer is held, not
     // delivered, and the work waits instead of finishing.
@@ -304,6 +324,12 @@ describe("durable mail delivery", () => {
     // The final turn really did receive the reply, not just a notification.
     const finalRequest = fixture.requests.at(-1)!;
     expect(finalRequest.prompt).toContain("结果是 42");
+    // The answer is addressed from the projected headers, and no turn ever saw
+    // the retired domain in the source envelope.
+    expect(answers[0]?.mail?.to[0]?.address).toBe(app.userAddress);
+    expect(answers[0]?.mail?.cc.some((entry) => entry.address.includes("legacy.test"))).toBe(false);
+    expect(fixture.requests.some((request) => request.prompt.includes(app.userAddress))).toBe(true);
+    expect(fixture.requests.some((request) => request.prompt.includes("legacy.test"))).toBe(false);
   }, 60_000);
 
   it("continues one work with two different replies and answers once", async () => {
@@ -543,7 +569,6 @@ describe("durable mail delivery", () => {
     });
     await runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
     await setupWorkspace(runtime, {
-      workspaceName: "邮件测试",
       userName: "测试者",
       defaultExecutionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
       approval: { kind: "llm", model: { providerId: "fake", modelId: "fake-reviewer" }, effort: "off", criteriaVersion: 3 },
@@ -615,7 +640,6 @@ describe("durable mail delivery", () => {
     });
     await runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
     await setupWorkspace(runtime, {
-      workspaceName: "邮件测试",
       userName: "测试者",
       defaultExecutionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
       approval: { kind: "llm", model: { providerId: "fake", modelId: "fake-reviewer" }, effort: "off", criteriaVersion: 3 },
@@ -691,7 +715,6 @@ describe("durable mail delivery", () => {
     });
     await first.runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
     await setupWorkspace(first.runtime, {
-      workspaceName: "邮件测试",
       userName: "测试者",
       defaultExecutionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
       approval: { kind: "llm", model: { providerId: "fake", modelId: "fake-reviewer" }, effort: "off", criteriaVersion: 3 },

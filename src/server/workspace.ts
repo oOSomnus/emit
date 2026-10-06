@@ -16,13 +16,27 @@ import type {
   EmployeeDraftDTO,
   EmployeeToolPolicyDTO,
 } from "../shared/contracts.ts";
-import { AppDoc, EmployeeDoc, type AppRecord, type EmployeeRecord } from "./documents.ts";
+import type { ConversationId, Cursor, EntryRecord, Tx } from "@earendil-works/pi-durable";
+import {
+  AppDoc,
+  EmployeeDoc,
+  MailFlagDoc,
+  RoomDoc,
+  RoomMessageEntry,
+  type AppRecord,
+  type EmployeeRecord,
+  type MessageAddressOverride,
+  type MessageAddressOverrides,
+} from "./documents.ts";
 import { completeText, parseJsonObject } from "./llm.ts";
 import { AppError } from "./messages.ts";
 import { workspaceMessages, type ExecutionModelScope } from "./messages/workspace.ts";
 import { renderAddressSystem, renderAddressUser } from "./prompts/index.ts";
 import type { EmitRuntime } from "./runtime.ts";
 import { CLASSIFIER_CRITERIA_VERSION, LLM_CRITERIA_VERSION } from "./approval/evaluators.ts";
+
+/** The one internal address domain: every identity is `localpart@emit`. */
+export const INTERNAL_ADDRESS_DOMAIN = "emit";
 
 /** Local parts that must not be handed to a digital employee. */
 const RESERVED_LOCAL_PARTS = [
@@ -56,10 +70,6 @@ export function slugify(text: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
   return slug.length > 0 ? slug : "workspace";
-}
-
-export function workspaceDomain(app: AppRecord): string {
-  return `${app.workspaceSlug}.test`;
 }
 
 export function toChatSelection(selection: {
@@ -102,7 +112,6 @@ export async function readApp(runtime: EmitRuntime): Promise<AppRecord> {
 export function toAppDTO(app: AppRecord): AppConfigDTO {
   return {
     onboarded: app.onboarded,
-    workspace: { name: app.workspaceName, slug: app.workspaceSlug },
     user: { name: app.userName, address: app.userAddress },
     defaultExecutionModel: toChatSelection(app.defaultExecutionModel),
     approval:
@@ -188,7 +197,7 @@ export function allocateAddress(
 export async function suggestLocalPart(
   runtime: EmitRuntime,
   model: { providerId: string; modelId: string; effort: string } | null,
-  input: { name: string; role: string; workspaceSlug: string },
+  input: { name: string; role: string },
 ): Promise<string | null> {
   if (model === null || model.providerId.length === 0) return null;
   const outcome = await completeText(
@@ -197,7 +206,6 @@ export async function suggestLocalPart(
     {
       system: renderAddressSystem(),
       prompt: renderAddressUser({
-        workspaceSlug: input.workspaceSlug,
         name: input.name,
         role: input.role,
       }),
@@ -216,7 +224,6 @@ export async function suggestLocalPart(
 }
 
 export type SetupInput = {
-  workspaceName: string;
   userName: string;
   defaultExecutionModel: ChatSelectionDTO | null;
   approval: AppConfigDTO["approval"];
@@ -235,10 +242,7 @@ export async function setupWorkspace(runtime: EmitRuntime, input: SetupInput): P
   assertChatSelection(runtime, input.defaultExecutionModel, "default");
   assertApproval(runtime, input.approval);
   const approval = input.approval;
-  const workspaceSlug = slugify(input.workspaceName);
   const app = await runtime.updateSession(AppDoc, (draft) => {
-    draft.workspaceName = input.workspaceName;
-    draft.workspaceSlug = workspaceSlug;
     draft.userName = input.userName;
     draft.defaultExecutionModel =
       input.defaultExecutionModel === null
@@ -257,22 +261,19 @@ export async function setupWorkspace(runtime: EmitRuntime, input: SetupInput): P
     };
     draft.onboarded = true;
   });
-  const domain = workspaceDomain(app);
   const taken = new Set<string>();
   for (const employee of await listEmployees(runtime)) taken.add(employee.address);
-  const userLocal = await suggestLocalPart(
-    runtime,
-    app.defaultExecutionModel,
-    { name: app.userName, role: `owner of ${app.workspaceName}`, workspaceSlug: app.workspaceSlug },
-  );
-  const userAddress = allocateAddress(userLocal ?? slugify(app.userName), domain, taken);
+  const userLocal = await suggestLocalPart(runtime, app.defaultExecutionModel, {
+    name: app.userName,
+    role: "workspace owner",
+  });
+  const userAddress = allocateAddress(userLocal ?? slugify(app.userName), INTERNAL_ADDRESS_DOMAIN, taken);
   return runtime.updateSession(AppDoc, (draft) => {
     draft.userAddress = userAddress;
   });
 }
 
 export type AppPatch = {
-  workspaceName?: string;
   userName?: string;
   defaultExecutionModel?: ChatSelectionDTO | null;
   approval?: AppConfigDTO["approval"];
@@ -291,10 +292,6 @@ export async function updateAppConfig(runtime: EmitRuntime, patch: AppPatch): Pr
   if (approval === null) throw new ValidationError(workspaceMessages.approvalJudgeEmpty);
   if (approval !== undefined) assertApproval(runtime, approval);
   const saved = await runtime.updateSession(AppDoc, (draft) => {
-    if (patch.workspaceName !== undefined && patch.workspaceName.length > 0) {
-      draft.workspaceName = patch.workspaceName;
-      draft.workspaceSlug = slugify(patch.workspaceName);
-    }
     if (patch.userName !== undefined && patch.userName.length > 0) draft.userName = patch.userName;
     if (patch.defaultExecutionModel !== undefined) {
       draft.defaultExecutionModel =
@@ -336,7 +333,6 @@ export async function createEmployee(runtime: EmitRuntime, draft: EmployeeDraftD
   // owner's address can no longer route mail by address unambiguously.
   const takenAddresses = new Set([app.userAddress, ...existing.map((employee) => employee.address)]);
   const id = newEmployeeId(draft.name, takenIds);
-  const domain = workspaceDomain(app);
 
   const executionModel =
     draft.executionModel?.model.providerId !== undefined && draft.executionModel.model.providerId.length > 0
@@ -353,7 +349,6 @@ export async function createEmployee(runtime: EmitRuntime, draft: EmployeeDraftD
     const proposal = await suggestLocalPart(runtime, app.defaultExecutionModel, {
       name: draft.name,
       role: draft.role,
-      workspaceSlug: app.workspaceSlug,
     });
     if (proposal !== null) {
       desired = proposal;
@@ -366,7 +361,7 @@ export async function createEmployee(runtime: EmitRuntime, draft: EmployeeDraftD
   const record: EmployeeRecord = {
     id,
     name: draft.name,
-    address: allocateAddress(desired, domain, takenAddresses),
+    address: allocateAddress(desired, INTERNAL_ADDRESS_DOMAIN, takenAddresses),
     addressSource,
     role: draft.role,
     instructions: draft.instructions ?? "",
@@ -408,14 +403,13 @@ export async function updateEmployee(
   if (current === undefined) throw new AppError(workspaceMessages.employeeNotFound(id));
   if (patch.address !== undefined) {
     const app = await readApp(runtime);
-    const domain = workspaceDomain(app);
     const others = new Set([
       app.userAddress,
       ...(await listEmployees(runtime)).filter((e) => e.id !== id).map((e) => e.address),
     ]);
     const normalized = normalizeLocalPart(patch.address.split("@")[0] ?? patch.address);
     if (normalized.length === 0) throw new ValidationError(workspaceMessages.employeeLocalPartInvalid);
-    const address = allocateAddress(normalized, domain, others);
+    const address = allocateAddress(normalized, INTERNAL_ADDRESS_DOMAIN, others);
     patch = { ...patch, address };
   }
   if (patch.executionModel !== undefined) {
@@ -445,6 +439,185 @@ export async function updateEmployee(
   });
   runtime.emit({ type: "employee", employee: toEmployeeDTO(saved) });
   return saved;
+}
+
+/** The identity a retired address belonged to, while a migration rewrites it. */
+type LegacyIdentity = { kind: "user" } | { kind: "employee"; id: string };
+
+/**
+ * One shared instance per identity: every lookup returns a registered object,
+ * so identities compare by reference.
+ */
+const LEGACY_USER_IDENTITY: LegacyIdentity = { kind: "user" };
+
+/**
+ * Rewrite a historical To/CC target onto the new internal address.
+ *
+ * A target with no name is how a typed external address is stored, so it is
+ * kept as written even when it happens to equal a retired internal address.
+ * Employee candidates are limited to the envelope's own wake set; a target
+ * that matches several identities that the envelope cannot disambiguate stops
+ * the migration instead of guessing.
+ */
+function migrateMailTarget(
+  target: { name: string; address: string },
+  legacyIdentities: ReadonlyMap<string, readonly LegacyIdentity[]>,
+  allowedEmployees: ReadonlySet<string>,
+  migratedAddresses: ReadonlyMap<LegacyIdentity, string>,
+  entryId: string,
+): { name: string; address: string } {
+  if (target.name.length === 0 || target.address.length === 0) return target;
+  const identities = legacyIdentities.get(target.address);
+  if (identities === undefined) return target;
+  const candidates = identities.filter(
+    (identity) => identity.kind === "user" || allowedEmployees.has(identity.id),
+  );
+  if (candidates.length === 0) return target;
+  if (candidates.length > 1) {
+    throw new Error(`Internal address migration is ambiguous for mail entry ${entryId}.`);
+  }
+  const replacement = migratedAddresses.get(candidates[0]!) ?? "";
+  return replacement.length === 0 ? target : { ...target, address: replacement };
+}
+
+/**
+ * One-time rewrite of every internal address onto the single internal domain.
+ *
+ * Workspaces created before the domain change hold `<slug>.test` addresses in
+ * the app record, the employee directory, and every message already written.
+ * The records are rewritten in one commit: the user's address, the employees'
+ * addresses in creation order, and one address-override document per historical
+ * message whose stored headers actually change. Message entries themselves are
+ * immutable and are never rewritten; readers project the overrides instead.
+ *
+ * The function makes no model calls and changes no employee identity, model,
+ * configuration version, approval version, or work binding. A destination is
+ * only replaced when the stored address is one the message history itself
+ * attributed to a known identity, so a real external address that merely looks
+ * internal is left alone.
+ */
+export async function migrateInternalAddresses(runtime: EmitRuntime): Promise<void> {
+  const app = await readApp(runtime);
+  if (app.addressFormatVersion === 2) return;
+  const employees = await listEmployees(runtime);
+  const employeeIdentities = new Map<string, LegacyIdentity>(
+    employees.map((employee) => [employee.id, { kind: "employee", id: employee.id }]),
+  );
+
+  // New addresses first: the user keeps the local part of its stored address,
+  // then employees follow in creation order, and collisions take the same
+  // deterministic numeric suffixes a live allocation would produce.
+  const orderedEmployees = [...employees].sort(
+    (left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),
+  );
+  const taken = new Set<string>();
+  const migratedAddresses = new Map<LegacyIdentity, string>();
+  const storedAddresses: Array<[LegacyIdentity, string]> = [
+    [LEGACY_USER_IDENTITY, app.userAddress],
+    ...orderedEmployees.map((employee): [LegacyIdentity, string] => [
+      employeeIdentities.get(employee.id)!,
+      employee.address,
+    ]),
+  ];
+  for (const [identity, address] of storedAddresses) {
+    // An unfinished setup has no address to migrate and must stay empty.
+    if (address.length === 0) continue;
+    const separator = address.indexOf("@");
+    const migrated = allocateAddress(
+      separator === -1 ? address : address.slice(0, separator),
+      INTERNAL_ADDRESS_DOMAIN,
+      taken,
+    );
+    taken.add(migrated);
+    migratedAddresses.set(identity, migrated);
+  }
+  const userAddress = migratedAddresses.get(LEGACY_USER_IDENTITY) ?? "";
+
+  // Pass 1: read every room's full history and index which identity each stored
+  // address was attributed to. The index exists only inside this migration.
+  const history: Array<{ roomId: string; entry: EntryRecord }> = [];
+  const legacyIdentities = new Map<string, LegacyIdentity[]>();
+  const indexAddress = (address: string, identity: LegacyIdentity): void => {
+    if (address.length === 0) return;
+    const identities = legacyIdentities.get(address);
+    if (identities === undefined) legacyIdentities.set(address, [identity]);
+    else if (!identities.includes(identity)) identities.push(identity);
+  };
+  indexAddress(app.userAddress, LEGACY_USER_IDENTITY);
+  for (const employee of employees) indexAddress(employee.address, employeeIdentities.get(employee.id)!);
+  const authorIdentity = (authorType: string, authorId: string): LegacyIdentity | undefined => {
+    if (authorType === "user") return LEGACY_USER_IDENTITY;
+    if (authorType === "employee") return employeeIdentities.get(authorId);
+    return undefined;
+  };
+
+  const rooms = await runtime.listFamily(RoomDoc, (id) => ({ id }));
+  for (const { value: room } of rooms) {
+    const conversation = await runtime.harness.conversation(room.conversationId as ConversationId, runtime.ctx);
+    if (conversation === undefined) continue;
+    let cursor: Cursor | undefined;
+    for (;;) {
+      const page = await conversation.entries({}, 200, cursor, runtime.ctx);
+      for (const entry of page.items) {
+        if (!RoomMessageEntry.is(entry)) continue;
+        const identity = authorIdentity(entry.data.authorType, entry.data.authorId);
+        if (identity !== undefined) indexAddress(entry.data.address, identity);
+        history.push({ roomId: room.id, entry });
+      }
+      if (page.next === undefined) break;
+      cursor = page.next;
+    }
+  }
+
+  // Pass 2: compute the rewritten headers. A known internal identity takes its
+  // new address; an unknown or already-deleted one keeps its stored snapshot.
+  const rewrites = new Map<string, MessageAddressOverrides>();
+  for (const { roomId, entry } of history) {
+    if (!RoomMessageEntry.is(entry)) continue;
+    const data = entry.data;
+    const identity = authorIdentity(data.authorType, data.authorId);
+    const address =
+      identity !== undefined &&
+      data.address.length > 0 &&
+      (legacyIdentities.get(data.address)?.includes(identity) ?? false)
+        ? migratedAddresses.get(identity) ?? data.address
+        : data.address;
+    let to: MessageAddressOverride[] = [];
+    let cc: MessageAddressOverride[] = [];
+    if (data.mail !== null) {
+      const allowedEmployees = new Set([...data.mail.recipients, ...data.mail.copies]);
+      to = data.mail.to.map((target) =>
+        migrateMailTarget(target, legacyIdentities, allowedEmployees, migratedAddresses, String(entry.id)),
+      );
+      cc = data.mail.cc.map((target) =>
+        migrateMailTarget(target, legacyIdentities, allowedEmployees, migratedAddresses, String(entry.id)),
+      );
+    }
+    const changed =
+      address !== data.address ||
+      (data.mail !== null &&
+        (to.some((target, index) => target.address !== data.mail!.to[index]!.address) ||
+          cc.some((target, index) => target.address !== data.mail!.cc[index]!.address)));
+    if (changed) rewrites.set(`${roomId}|${String(entry.id)}`, { address, to, cc });
+  }
+
+  // Pass 3: one commit writes the new app record, the employees, and every
+  // message override, so a failure leaves the stored format untouched.
+  await runtime.harness.commit(async (tx: Tx) => {
+    const doc = await tx.doc(AppDoc);
+    doc.userAddress = userAddress;
+    doc.addressFormatVersion = 2;
+    for (const employee of orderedEmployees) {
+      const address = migratedAddresses.get(employeeIdentities.get(employee.id)!);
+      if (address === undefined) continue;
+      const record = await tx.doc(EmployeeDoc, employee.id, { id: employee.id });
+      if (record.address !== address) record.address = address;
+    }
+    for (const [key, addresses] of rewrites) {
+      const flag = await tx.doc(MailFlagDoc, key, { key });
+      flag.addresses = addresses;
+    }
+  }, runtime.ctx);
 }
 
 /** Resolve a recipient written as an address, an id, or a display name. */

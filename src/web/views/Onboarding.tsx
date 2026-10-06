@@ -1,4 +1,4 @@
-/** First run: name the workspace, connect providers, pick the models, and open the door. */
+/** First run: name yourself, connect providers, pick the models, and open the door. */
 
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api.ts";
@@ -14,11 +14,6 @@ import type { ApprovalEvaluatorConfigDTO, ModelInfoDTO } from "../../shared/cont
 export function Onboarding(): ReactNode {
   const { state, reload, setError } = useApp();
   const { messages } = useI18n();
-  // An untouched workspace name follows the interface language; any edit —
-  // including clearing the field — pins the value so a switch cannot overwrite
-  // what the user typed.
-  const [workspaceName, setWorkspaceName] = useState("");
-  const [workspaceNameEdited, setWorkspaceNameEdited] = useState(false);
   const [userName, setUserName] = useState("");
   const [chatModel, setChatModel] = useState<string>("");
   const [effort, setEffort] = useState("off");
@@ -84,8 +79,6 @@ export function Onboarding(): ReactNode {
               criteriaVersion: 3,
             };
       await api.setup({
-        workspaceName:
-          workspaceName.trim().length > 0 ? workspaceName.trim() : messages.onboarding.defaultWorkspace,
         userName: userName.trim(),
         defaultExecutionModel: {
           model: { providerId: selectedChat.providerId, modelId: selectedChat.modelId },
@@ -114,17 +107,6 @@ export function Onboarding(): ReactNode {
       </fieldset>
 
       <div className="field-grid">
-        <label>
-          {messages.onboarding.workspaceNameLabel}
-          <input
-            value={workspaceNameEdited ? workspaceName : messages.onboarding.defaultWorkspace}
-            onChange={(event) => {
-              setWorkspaceName(event.target.value);
-              setWorkspaceNameEdited(true);
-            }}
-          />
-        </label>
-
         <label>
           {messages.onboarding.userNameLabel}
           <input

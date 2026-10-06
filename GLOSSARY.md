@@ -18,3 +18,11 @@ The channel or direct-message editor in which content is written and channel rec
 
 **Ordinary reply**:
 The first message an employee sends with `send_message` into the channel its own work started from without addressing anyone. It is linked to that work, and the work's final text becomes its recorded answer instead of a second room message.
+
+**Internal address**:
+The address Emit gives the user or an employee — a local part plus the one fixed internal domain, unique inside the workspace and carrying no delivery outside it.
+_Avoid_: handle, username, email address
+
+**External address**:
+An address stored in a mail envelope that belongs to no internal identity. It is kept exactly as written and wakes no one.
+_Avoid_: external contact, recipient

@@ -21,6 +21,7 @@ import {
   RoomMessageEntry,
   WorkContextDoc,
   type MailEnvelope,
+  type MailFlagRecord,
   type RoomMessageData,
   type RoomMessageAddressing,
   type RoomRecord,
@@ -181,12 +182,41 @@ function toMailMeta(envelope: MailEnvelope): MailMetaDTO {
   return meta;
 }
 
-export function toMessageDTO(
+/** The stored state a message DTO is built from. */
+export type MessageFlags = Pick<MailFlagRecord, "read" | "archived" | "active" | "addresses">;
+
+/**
+ * Overlay the addresses a historical message actually carries on the entry a
+ * reader sees.
+ *
+ * Message entries are immutable, so the one-time internal-address migration
+ * cannot rewrite their headers; it stores the rewritten headers on the
+ * message's flag document instead, and every reader goes through here so old
+ * mail is addressed to the new internal addresses. An entry without an
+ * override projects to itself.
+ */
+export function projectMessageAddresses(
   entry: EntryRecord,
-  flags?: { read: boolean; archived: boolean; active: boolean },
-): MessageDTO | undefined {
-  if (!RoomMessageEntry.is(entry)) return undefined;
+  flags?: Pick<MailFlagRecord, "addresses">,
+): EntryRecord {
+  const overrides = flags?.addresses;
+  if (overrides === undefined || !RoomMessageEntry.is(entry)) return entry;
   const data = entry.data;
+  const mail = data.mail;
+  return {
+    ...entry,
+    data: {
+      ...data,
+      address: overrides.address,
+      ...(mail === null ? {} : { mail: { ...mail, to: overrides.to, cc: overrides.cc } }),
+    },
+  };
+}
+
+export function toMessageDTO(entry: EntryRecord, flags?: MessageFlags): MessageDTO | undefined {
+  const projected = projectMessageAddresses(entry, flags);
+  if (!RoomMessageEntry.is(projected)) return undefined;
+  const data = projected.data;
   const dto: MessageDTO = {
     id: String(entry.id),
     roomId: "",
@@ -306,16 +336,21 @@ export async function listRoomMessages(
   return messages.reverse();
 }
 
-async function readFlags(
+/**
+ * The flags of one message, including any address override the migration may
+ * have written. Exported because the mail, channel, and work readers must all
+ * project through the same document.
+ */
+export async function readFlags(
   runtime: EmitRuntime,
   roomId: string,
   entryId: EntryId,
-): Promise<{ read: boolean; archived: boolean; active: boolean } | undefined> {
+): Promise<MessageFlags | undefined> {
   const flag = await runtime.readFamily(MailFlagDoc, `${roomId}|${String(entryId)}`, {
     key: `${roomId}|${String(entryId)}`,
   });
   if (flag === undefined) return undefined;
-  return { read: flag.read, archived: flag.archived, active: flag.active };
+  return { read: flag.read, archived: flag.archived, active: flag.active, addresses: flag.addresses };
 }
 
 export async function listRooms(runtime: EmitRuntime): Promise<RoomRecord[]> {
@@ -344,13 +379,16 @@ export async function countMailUnread(
   let unread = 0;
   for (const entry of page.items) {
     if (!RoomMessageEntry.is(entry)) continue;
-    const mail = entry.data.mail;
-    if (mail === null || entry.data.authorId === userId) continue;
-    if (mail.draft === true) continue;
-    if (!mailAddresses(mail, userAddress)) continue;
+    if (entry.data.authorId === userId) continue;
+    // The flags are read before the envelope is judged: a historical message's
+    // headers live in its flag document.
     const flag = await readFlags(runtime, room.id, entry.id);
-    if (flag?.active === false || flag?.archived === true) continue;
-    if (flag?.read === true) continue;
+    if (flag?.active === false || flag?.archived === true || flag?.read === true) continue;
+    const projected = projectMessageAddresses(entry, flag);
+    if (!RoomMessageEntry.is(projected)) continue;
+    const mail = projected.data.mail;
+    if (mail === null || mail.draft === true) continue;
+    if (!mailAddresses(mail, userAddress)) continue;
     unread += 1;
   }
   return unread;

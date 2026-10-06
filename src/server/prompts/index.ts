@@ -70,10 +70,8 @@ export function renderEmployeeIdentity(input: {
 }
 
 export type EmployeeContextInput = {
-  /** Workspace facts, or null when the app record cannot be read. */
+  /** Collaboration limits, or null when the app record cannot be read. */
   app: {
-    workspaceName: string;
-    workspaceSlug: string;
     maxDepth: number;
     maxCrossEmployeeWakes: number;
   } | null;
@@ -128,10 +126,6 @@ export function renderEmployeeContext(input: EmployeeContextInput): string {
   const parts: string[] = [];
   if (input.app !== null) {
     parts.push(
-      filled("context.md", "workspace", {
-        workspaceName: input.app.workspaceName,
-        workspaceSlug: input.app.workspaceSlug,
-      }),
       filled("context.md", "collaboration", {
         maxDepth: input.app.maxDepth,
         maxCrossEmployeeWakes: input.app.maxCrossEmployeeWakes,
@@ -485,12 +479,11 @@ export function renderAddressSystem(): string {
   return readResource("address-system.md").trim();
 }
 
-export function renderAddressUser(input: { workspaceSlug: string; name: string; role: string }): string {
+export function renderAddressUser(input: { name: string; role: string }): string {
   return fill(
     readResource("address-user.md"),
     { file: "address-user.md" },
     {
-      workspaceSlug: input.workspaceSlug,
       name: input.name,
       role: input.role.length > 0 ? input.role : "(unnamed role)",
     },

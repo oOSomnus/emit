@@ -251,10 +251,9 @@ async function seedMockWorkspace(
   }
 
   await setupWorkspace(runtime, {
-    workspaceName: "Emit Mock",
     userName: source.app.user.name.length > 0 ? source.app.user.name : "Tester",
     defaultExecutionModel: null,
-    approval: source.approval,
+    approval: source.app.approval,
   });
   await updateAppConfig(runtime, {
     defaultExecutionModel: source.executionModel,

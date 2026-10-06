@@ -190,7 +190,7 @@ export function Sidebar({ onNavigate, navOpen }: { onNavigate?: () => void; navO
   return (
     <aside className="sidebar">
       <header>
-        <div className="workspace-name">{state.app?.workspace.name ?? "Emit"}</div>
+        <div className="workspace-name">Emit</div>
         <div className="workspace-user">{state.app?.user.address ?? ""}</div>
       </header>
 

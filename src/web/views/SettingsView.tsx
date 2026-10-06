@@ -36,7 +36,6 @@ function effortForModel(models: readonly ModelInfoDTO[], key: string, current: s
 export function SettingsView(): ReactNode {
   const { state, dispatch, setError } = useApp();
   const { messages, text } = useI18n();
-  const [workspaceName, setWorkspaceName] = useState(state.app?.workspace.name ?? "");
   const [userName, setUserName] = useState(state.app?.user.name ?? "");
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("workspace");
   const contentRef = useRef<HTMLDivElement>(null);
@@ -52,9 +51,8 @@ export function SettingsView(): ReactNode {
   });
 
   useEffect(() => {
-    setWorkspaceName(state.app?.workspace.name ?? "");
     setUserName(state.app?.user.name ?? "");
-  }, [state.app?.workspace.name, state.app?.user.name]);
+  }, [state.app?.user.name]);
 
   const app = state.app;
   if (app === undefined) return <div className="boot">{messages.common.loading}</div>;
@@ -153,10 +151,6 @@ export function SettingsView(): ReactNode {
               </div>
           <div className="field-grid">
             <label>
-              {messages.settings.workspaceName}
-              <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} />
-            </label>
-            <label>
               {messages.settings.yourName}
               <input value={userName} onChange={(event) => setUserName(event.target.value)} />
             </label>
@@ -175,7 +169,7 @@ export function SettingsView(): ReactNode {
               className="primary"
               onClick={() => {
                 void api
-                  .updateApp({ workspaceName, userName })
+                  .updateApp({ userName })
                   .then((next) => dispatch({ type: "app", app: next }))
                   .catch((error: unknown) => setError(errorDisplay(error)));
               }}

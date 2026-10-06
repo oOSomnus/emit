@@ -22,14 +22,13 @@ export async function setupFixtureWorkspace(
   runtime: EmitRuntime,
   resume: Resume,
   names: readonly string[],
-  options: { workspaceName?: string; userName?: string; executionModel?: ChatSelectionDTO } = {},
+  options: { userName?: string; executionModel?: ChatSelectionDTO } = {},
 ): Promise<EmployeeRecord[]> {
   const executionModel = options.executionModel ?? {
     model: { providerId: "fake", modelId: "fake-chat" },
     effort: "off",
   };
   await setupWorkspace(runtime, {
-    workspaceName: options.workspaceName ?? "Integration fixture",
     userName: options.userName ?? "Test User",
     defaultExecutionModel: executionModel,
     approval: {

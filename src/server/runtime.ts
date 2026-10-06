@@ -31,6 +31,7 @@ import {
 import lockfile from "proper-lockfile";
 import type { CustomProviderConfigDTO, ServerEvent } from "../shared/contracts.ts";
 import { ModelCatalog } from "./models.ts";
+import { migrateInternalAddresses } from "./workspace.ts";
 import { createCustomProviders, normalizeCustomProviders } from "./providers.ts";
 import { ProviderAuthSessions } from "./provider-auth.ts";
 import { applyCredentialsToEnv, EmitCredentialStore, type CredentialsFile } from "./credentials.ts";
@@ -138,7 +139,7 @@ export class EmitRuntime {
       },
       BACKGROUND_CONTEXT,
     );
-    return new EmitRuntime({
+    const runtime = new EmitRuntime({
       dataDir,
       catalog,
       credentialStore,
@@ -149,6 +150,16 @@ export class EmitRuntime {
       storagePath,
       releaseLock,
     });
+    // The stored records must be readable under the current identity contract
+    // before any HTTP request or resumed run can observe them. A failure here
+    // is a startup failure: close what was opened and report it.
+    try {
+      await migrateInternalAddresses(runtime);
+    } catch (error) {
+      await runtime.close().catch(() => undefined);
+      throw error;
+    }
+    return runtime;
   }
 
   /**

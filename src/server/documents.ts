@@ -59,10 +59,14 @@ export type ModelSelectionRecord = {
 
 export type AppRecord = {
   onboarded: boolean;
-  workspaceName: string;
-  workspaceSlug: string;
   userName: string;
   userAddress: string;
+  /**
+   * Internal address format of the stored records: 1 until the one-time
+   * migration to the single internal domain has run, 2 afterwards. Not part of
+   * the HTTP contract.
+   */
+  addressFormatVersion: 1 | 2;
   defaultExecutionModel: ModelSelectionRecord | null;
   approval: ApprovalRecordConfig;
   collaboration: { maxDepth: number; maxCrossEmployeeWakes: number; maxModelTurns: number };
@@ -332,6 +336,24 @@ export type ApprovalRecord = {
   timeline: ApprovalTimelineRecord[];
 };
 
+/** One address as a historical message header stored it. */
+export type MessageAddressOverride = { name: string; address: string };
+
+/**
+ * The address projection of one historical message entry.
+ *
+ * Message entries are immutable, so the one-time internal-address migration
+ * cannot rewrite their headers. It records the rewritten headers on the
+ * message's flag document instead, and every reader projects them over the
+ * stored entry. `to` and `cc` are stored even for a non-mail entry so the
+ * projection stays a pure read.
+ */
+export type MessageAddressOverrides = {
+  address: string;
+  to: MessageAddressOverride[];
+  cc: MessageAddressOverride[];
+};
+
 export type MailFlagRecord = {
   /** `${roomId}|${entryId}` */
   key: string;
@@ -339,6 +361,8 @@ export type MailFlagRecord = {
   archived: boolean;
   /** False once a draft has been sent or replaced, which retires it. */
   active: boolean;
+  /** Present only when the migration rewrote this message's address headers. */
+  addresses?: MessageAddressOverrides;
 };
 
 export type CollaborationRecord = {
@@ -366,14 +390,13 @@ export type ConversationContextRecord = {
 
 export const AppDoc = defineDoc<AppRecord>({
   kind: "emit.app",
-  version: 1,
+  version: 2,
   scope: "session",
   initial: () => ({
     onboarded: false,
-    workspaceName: "",
-    workspaceSlug: "",
     userName: "",
     userAddress: "",
+    addressFormatVersion: 2,
     defaultExecutionModel: null,
     approval: {
       kind: "llm",
@@ -385,6 +408,18 @@ export const AppDoc = defineDoc<AppRecord>({
     collaboration: { maxDepth: 3, maxCrossEmployeeWakes: 12, maxModelTurns: 40 },
     policyVersion: 1,
   }),
+  /**
+   * Version 1 stored the team name and its slug, which no longer exist as
+   * configuration. The stored user address is kept: rewriting it, the
+   * employees' addresses, and the historical message headers is the one-time
+   * migration's job, and it must not run while this document is read.
+   */
+  migrate: (value) => {
+    const migrated = { ...value };
+    delete migrated.workspaceName;
+    delete migrated.workspaceSlug;
+    return { ...migrated, addressFormatVersion: 1 } as unknown as AppRecord;
+  },
 });
 
 export const EmployeeDoc = defineDocFamily<EmployeeRecord, { id: string }>({

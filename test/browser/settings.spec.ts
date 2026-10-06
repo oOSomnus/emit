@@ -40,17 +40,17 @@ test("settings sections switch without losing drafts and only the active panel s
   await expect(page.locator(".settings-panel:visible")).toHaveCount(1);
   await expect(page.locator("#settings-panel-mcp")).toHaveAttribute("hidden", "");
 
-  // A workspace edit is a draft: switching sections keeps it, and nothing is
+  // An identity edit is a draft: switching sections keeps it, and nothing is
   // written until Save.
-  await page.getByLabel("Workspace name", { exact: true }).fill("Unsaved workspace");
+  await page.getByLabel("Your name", { exact: true }).fill("Unsaved name");
   await selectSettingsSection(page, "mcp");
   await page.getByPlaceholder("Name", { exact: true }).fill("Draft MCP");
   await selectSettingsSection(page, "skills");
   await selectSettingsSection(page, "workspace");
-  await expect(page.getByLabel("Workspace name", { exact: true })).toHaveValue("Unsaved workspace");
-  expect((await api<AppConfigDTO>(app, "/api/app")).workspace.name).toBe("Test Workspace");
+  await expect(page.getByLabel("Your name", { exact: true })).toHaveValue("Unsaved name");
+  expect((await api<AppConfigDTO>(app, "/api/app")).user.name).toBe("Test User");
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect.poll(async () => (await api<AppConfigDTO>(app, "/api/app")).workspace.name).toBe("Unsaved workspace");
+  await expect.poll(async () => (await api<AppConfigDTO>(app, "/api/app")).user.name).toBe("Unsaved name");
 
   // The MCP draft survives the round trip too.
   await selectSettingsSection(page, "mcp");
@@ -216,7 +216,6 @@ test("switching settings sections keeps an in-progress authentication session", 
     await expect(page.getByText("Authentication status: Saved", { exact: true })).toBeVisible();
 
     const setup = await oauthApp.request("/api/setup", "POST", {
-      workspaceName: "OAuth Workspace",
       userName: "Tester",
       defaultExecutionModel: { model: { providerId: "fixture-oauth", modelId: "fixture-oauth-chat" }, effort: "off" },
       approval: {
@@ -228,7 +227,7 @@ test("switching settings sections keeps an in-progress authentication session", 
     });
     expect(setup.status).toBe(200);
     await page.reload();
-    await expect(page.locator(".workspace-name")).toHaveText("OAuth Workspace");
+    await expect(page.locator(".workspace-name")).toHaveText("Emit");
 
     await navigateWorkspace(page, "Settings");
     await selectSettingsSection(page, "providers");

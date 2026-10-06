@@ -1,19 +1,16 @@
 /**
  * First-run setup.
  *
- * Every key the view uses lives here in both languages; the workspace-name
- * default is a seed value, so it is a dictionary entry rather than a literal
- * in the component. Validation errors are short sentences the app authors,
- * captured as pairs with `uiText` at the moment they are raised.
+ * Every key the view uses lives here in both languages. Validation errors are
+ * short sentences the app authors, captured as pairs with `uiText` at the
+ * moment they are raised.
  */
 
 export const englishOnboarding = {
-  defaultWorkspace: "My digital team",
   lede: "A digital-employee workspace that runs entirely locally. Employees collaborate over instant messages and deliver over email; every tool call, approval, and reply is stored durably and resumes after a restart.",
   appearanceLegend: "Appearance",
   themeLabel: "Theme",
   appearanceHint: "You can switch light, dark, or system at any time from the bottom of the sidebar.",
-  workspaceNameLabel: "Workspace name",
   userNameLabel: "Your name",
   userNamePlaceholder: "Used to generate your email address",
   defaultModelLabel: "Default employee model",
@@ -40,12 +37,10 @@ export const englishOnboarding = {
 export type OnboardingMessages = typeof englishOnboarding;
 
 export const chineseOnboarding: OnboardingMessages = {
-  defaultWorkspace: "我的数字团队",
   lede: "一个只在本地运行的数字员工工作台。员工用消息即时协作，用邮件异步交付；每一次工具调用、审批和回复都持久保存，进程重启后可以继续。",
   appearanceLegend: "外观",
   themeLabel: "主题",
   appearanceHint: "可以随时在左侧栏底部切换浅色、深色或跟随系统。",
-  workspaceNameLabel: "工作区名称",
   userNameLabel: "你的名字",
   userNamePlaceholder: "用于生成你的邮箱地址",
   defaultModelLabel: "员工默认模型",

@@ -74,7 +74,7 @@ describe("real-process native key wizards and OpenCode Go", () => {
     }
     expect((await request<BootstrapDTO>("/api/bootstrap")).body.app.onboarded).toBe(false);
     expect((await request("/api/providers/custom", "PUT", { providers: [providerConfig(fixture.provider.baseUrl)] })).status).toBe(200);
-    const setup = { workspaceName: "冒烟工作区", userName: "测试者", defaultExecutionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" } };
+    const setup = { userName: "测试者", defaultExecutionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" } };
     const rejected = await request("/api/setup", "POST", { ...setup, approval: null });
     expect(rejected.status).toBe(400);
     expect((await request<BootstrapDTO>("/api/bootstrap")).body.app.onboarded).toBe(false);

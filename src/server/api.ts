@@ -269,16 +269,14 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
 
   app.post("/api/setup", async (request, reply) => {
     const body = request.body as {
-      workspaceName?: unknown;
       userName?: unknown;
       defaultExecutionModel?: unknown;
       approval?: unknown;
     };
-    if (typeof body?.workspaceName !== "string" || typeof body?.userName !== "string") {
-      return reply.code(400).send(messageBody(apiMessages.missingWorkspaceName));
+    if (typeof body?.userName !== "string") {
+      return reply.code(400).send(messageBody(apiMessages.missingUserName));
     }
     const saved = await setupWorkspace(runtime, {
-      workspaceName: body.workspaceName,
       userName: body.userName,
       defaultExecutionModel: (body.defaultExecutionModel as never) ?? null,
       approval: (body.approval as never) ?? null,

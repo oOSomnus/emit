@@ -193,7 +193,6 @@ test("a workspace without work sends Message to work creation instead of opening
       providers: [providerConfig(fresh.provider.baseUrl)],
     });
     await api<unknown>(fresh, "/api/setup", "POST", {
-      workspaceName: "Fresh Workspace",
       userName: "Founder",
       defaultExecutionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
       approval: {

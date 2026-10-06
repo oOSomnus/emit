@@ -45,7 +45,6 @@ export async function seedTestWorkspace(options: {
     effort: "off",
   };
   await requestJson(options.url, "POST", "/api/setup", {
-    workspaceName: "Test Workspace",
     userName: "Test User",
     defaultExecutionModel: executionModel,
     approval: {

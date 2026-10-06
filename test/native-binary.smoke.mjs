@@ -300,16 +300,16 @@ try {
     const patch = await jsonRequest(`${urlA}/api/app`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ workspaceName: "native-smoke" }),
+      body: JSON.stringify({ userName: "native-smoke" }),
     });
     assert.equal(patch.status, 200);
-    assert.equal(patch.body.workspace.name, "native-smoke");
+    assert.equal(patch.body.user.name, "native-smoke");
     assert.equal(await stopEmit(childA.proc), 0);
     assert.ok(existsSync(path.join(scratch, "data-a", "emit.sqlite")), "emit.sqlite must be created");
 
     const restarted = startEmit("A2", { dataDir: path.join(scratch, "data-a") });
     const restartedUrl = await restarted.url;
-    assert.equal((await jsonRequest(`${restartedUrl}/api/app`)).body.workspace.name, "native-smoke");
+    assert.equal((await jsonRequest(`${restartedUrl}/api/app`)).body.user.name, "native-smoke");
     assert.equal(await stopEmit(restarted.proc), 0);
 
     const cachedIndex = path.join(scratch, "data-a", ".emit-web", "index.html");
@@ -443,12 +443,12 @@ try {
     await expectStartupFailure("competing-owner", { dataDir: path.join(scratch, "data-b") });
     assert.equal((await jsonRequest(`${urlB}/api/app`)).status, 200);
     const changed = await jsonRequest(`${urlB}/api/app`, {
-      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceName: "surviving-owner" }),
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ userName: "surviving-owner" }),
     });
-    assert.equal(changed.body.workspace.name, "surviving-owner");
+    assert.equal(changed.body.user.name, "surviving-owner");
     await stopEmit(childB.proc);
     const replacement = startEmit("replacement-owner", { dataDir: path.join(scratch, "data-b") });
-    assert.equal((await jsonRequest(`${await replacement.url}/api/app`)).body.workspace.name, "surviving-owner");
+    assert.equal((await jsonRequest(`${await replacement.url}/api/app`)).body.user.name, "surviving-owner");
     await stopEmit(replacement.proc);
   });
   if (failures.length > 0) throw new AggregateError(failures, `${failures.length} native startup regressions failed`);

@@ -1,1 +1,1 @@
-You propose professional email addresses for a company directory. Answer with a single JSON object and nothing else.
+You propose short local parts for the internal addresses in Emit's employee directory. Answer with a single JSON object and nothing else.

@@ -8,9 +8,9 @@
 import { appText, type AppText } from "../app-text.ts";
 
 export const apiMessages = {
-  missingWorkspaceName: appText({
-    en: "Workspace name or your name is missing",
-    "zh-CN": "缺少工作区名称或你的名字",
+  missingUserName: appText({
+    en: "Your name is missing",
+    "zh-CN": "缺少你的名字",
   }),
   missingModelRef: appText({ en: "Model reference is missing", "zh-CN": "缺少模型标识" }),
   employeeNotFound: appText({ en: "Employee not found", "zh-CN": "员工不存在" }),

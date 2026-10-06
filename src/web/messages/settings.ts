@@ -14,7 +14,6 @@ export const englishSettings = {
 
   // Workspace: identity, appearance, and interface language.
   workspace: "Workspace",
-  workspaceName: "Workspace name",
   yourName: "Your name",
   yourAddress: "Your mail address: ",
 
@@ -78,7 +77,6 @@ export const chineseSettings: SettingsMessages = {
   localData: "本地数据",
 
   workspace: "工作台",
-  workspaceName: "工作区名称",
   yourName: "你的名字",
   yourAddress: "你的邮箱地址：",
 

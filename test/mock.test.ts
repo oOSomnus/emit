@@ -224,7 +224,6 @@ async function startSourceWorkspace(employeeName: string): Promise<{
   cleanups.push(() => opened.runtime.close());
   await opened.runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
   const employees = await setupFixtureWorkspace(opened.runtime, opened.resume, [employeeName], {
-    workspaceName: "源工作区",
     userName: "源用户",
     executionModel: sourceExecutionModel,
   });
@@ -274,7 +273,6 @@ describe("make mock", () => {
       await waitForReady(instance);
 
       const bootstrap = await getBootstrap(instance.url);
-      expect(bootstrap.app.workspace.name).toBe("Emit Mock");
       expect(bootstrap.app.user.name).toBe("源用户");
       expect(bootstrap.app.onboarded).toBe(true);
       expect(bootstrap.app.defaultExecutionModel).toEqual(sourceExecutionModel);
@@ -384,7 +382,6 @@ describe("make mock", () => {
       cleanups.push(() => opened.runtime.close());
       await opened.runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
       await setupWorkspace(opened.runtime, {
-        workspaceName: "无模型工作区",
         userName: "测试者",
         defaultExecutionModel: null,
         approval: {

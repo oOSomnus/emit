@@ -39,6 +39,7 @@ import {
   ensureEmployeeDm,
   findRoom,
   messageData,
+  readFlags,
   roomDTOWithUnread,
   toMessageDTO,
 } from "./rooms.ts";
@@ -347,7 +348,10 @@ async function replayedMessageSend(
       ? await conversation.entries({ minEntryId: entryId as never, maxEntryId: entryId as never }, 1, undefined, runtime.ctx)
       : undefined;
   const entry = page?.items[0];
-  const dto = entry !== undefined && RoomMessageEntry.is(entry) ? toMessageDTO(entry) : undefined;
+  const dto =
+    entry !== undefined && RoomMessageEntry.is(entry)
+      ? toMessageDTO(entry, await readFlags(runtime, room.id, entry.id))
+      : undefined;
   if (dto === undefined) throw new RoomError(404, appMessages.mail.replayRecordMissing());
   dto.roomId = room.id;
   return { message: dto, workIds: [...receipt.workIds] };

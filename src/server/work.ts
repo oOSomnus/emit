@@ -65,6 +65,8 @@ import {
   isSentMailEntry,
   mailEnvelope,
   messageData,
+  projectMessageAddresses,
+  readFlags,
   readRoomMessageWindow,
   roomDTOWithUnread,
   toMessageDTO,
@@ -585,7 +587,12 @@ async function sourceMessage(
   const page = await conversation.entries({}, ROOM_PAGE_SIZE, undefined, runtime.ctx);
   const entry = page.items.find((item) => String(item.id) === entryId);
   if (entry === undefined || !RoomMessageEntry.is(entry)) return undefined;
-  return entry.data as RoomMessageData;
+  // A historical entry may carry an address override from the one-time
+  // migration: the prompt and the reply envelope must see the new internal
+  // addresses, never the retired ones.
+  const flags = await readFlags(runtime, room.id, entry.id);
+  const projected = projectMessageAddresses(entry, flags);
+  return RoomMessageEntry.is(projected) ? projected.data : undefined;
 }
 
 async function mailSubject(runtime: EmitRuntime, room: RoomRecord): Promise<string> {

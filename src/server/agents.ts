@@ -136,8 +136,6 @@ export function buildEmployeeExtension(input: EmployeeAgentInput): Extension {
       app === undefined
         ? null
         : {
-            workspaceName: app.workspaceName,
-            workspaceSlug: app.workspaceSlug,
             maxDepth: app.collaboration.maxDepth,
             maxCrossEmployeeWakes: app.collaboration.maxCrossEmployeeWakes,
           };

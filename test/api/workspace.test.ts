@@ -110,7 +110,7 @@ describe("workspace and onboarding HTTP API", () => {
     expect(initialBootstrap.rooms).toEqual([]);
     expect(initialBootstrap.workContexts).toEqual([]);
 
-    const incomplete = await call(http.server, "POST", "/api/setup", { workspaceName: "Incomplete" });
+    const incomplete = await call(http.server, "POST", "/api/setup", { defaultExecutionModel: executionModel });
     expect(json<unknown>(await call(http.server, "GET", "/api/app"))).toEqual(initialBootstrap.app);
     expect(incomplete.statusCode).toBe(400);
 
@@ -119,17 +119,16 @@ describe("workspace and onboarding HTTP API", () => {
     });
     expect(configured.statusCode).toBe(200);
     const setup = await call(http.server, "POST", "/api/setup", {
-      workspaceName: "API Workspace",
       userName: "API User",
       defaultExecutionModel: executionModel,
       approval: { kind: "llm", model: reviewerModel.model, effort: reviewerModel.effort, criteriaVersion: 3 },
     });
     expect(setup.statusCode).toBe(200);
     const setupApp = json<BootstrapDTO["app"]>(setup);
-    expect(setupApp).toMatchObject({ onboarded: true, workspace: { name: "API Workspace" }, user: { name: "API User" } });
+    expect(setupApp).toMatchObject({ onboarded: true, user: { name: "API User" } });
     expect(setupApp.defaultExecutionModel).toEqual(executionModel);
     expect(setupApp.approval).toMatchObject({ kind: "llm", model: reviewerModel.model, effort: reviewerModel.effort });
-    expect(setupApp.user.address).toBe("api-user@api-workspace.test");
+    expect(setupApp.user.address).toBe("api-user@emit");
 
     const readApp = await call(http.server, "GET", "/api/app");
     expect(readApp.statusCode).toBe(200);
@@ -147,13 +146,11 @@ describe("workspace and onboarding HTTP API", () => {
     expect(missingModel.statusCode).toBe(400);
 
     const patched = await call(http.server, "PATCH", "/api/app", {
-      workspaceName: "Updated API Workspace",
       userName: "Updated API User",
       collaboration: { maxDepth: 4, maxCrossEmployeeWakes: 3, maxModelTurns: 12 },
     });
     expect(patched.statusCode).toBe(200);
     const patchedApp = json<BootstrapDTO["app"]>(patched);
-    expect(patchedApp.workspace.name).toBe("Updated API Workspace");
     expect(patchedApp.user.name).toBe("Updated API User");
     expect(patchedApp.collaboration).toEqual({ maxDepth: 4, maxCrossEmployeeWakes: 3, maxModelTurns: 12 });
     const bootstrap = await call(http.server, "GET", "/api/bootstrap");
@@ -161,7 +158,7 @@ describe("workspace and onboarding HTTP API", () => {
     expect(json<BootstrapDTO>(bootstrap).app).toEqual(patchedApp);
     expect(bootstrap.body).not.toContain("api-workspace-fixture-key");
 
-    const rejectedSetup = await call(http.server, "POST", "/api/setup", { workspaceName: "" });
+    const rejectedSetup = await call(http.server, "POST", "/api/setup", { defaultExecutionModel: executionModel });
     expect(json<BootstrapDTO["app"]>(await call(http.server, "GET", "/api/app"))).toEqual(patchedApp);
     expect(rejectedSetup.statusCode).toBe(400);
   }, 30_000);

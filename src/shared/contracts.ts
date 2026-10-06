@@ -73,7 +73,6 @@ export type CollaborationLimitsDTO = {
 
 export type AppConfigDTO = {
   onboarded: boolean;
-  workspace: { name: string; slug: string };
   user: { name: string; address: string };
   defaultExecutionModel: ChatSelectionDTO | null;
   approval: ApprovalEvaluatorConfigDTO | null;

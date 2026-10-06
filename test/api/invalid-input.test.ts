@@ -116,12 +116,12 @@ async function publicSnapshot(http: HttpRuntimeFixture, channelId: string, mailR
 }
 
 function exactSizeAppPatch(byteLength: number): string {
-  const prefix = '{"workspaceName":"';
+  const prefix = '{"userName":"';
   const suffix = '"}';
   const contentBytes = byteLength - Buffer.byteLength(prefix + suffix, "utf8");
   const value = "界".repeat(Math.floor(contentBytes / 3)) + "x".repeat(contentBytes % 3);
   const body = `${prefix}${value}${suffix}`;
-  if (Buffer.byteLength(body, "utf8") !== byteLength || JSON.parse(body).workspaceName !== value) {
+  if (Buffer.byteLength(body, "utf8") !== byteLength || JSON.parse(body).userName !== value) {
     throw new Error(`Could not create valid JSON of exactly ${byteLength} UTF-8 bytes`);
   }
   return body;
@@ -158,7 +158,7 @@ describe("HTTP invalid-input boundaries", () => {
     const before = await publicSnapshot(http, workspace.channelId, workspace.mailRoomId);
 
     const cases: Array<{ name: string; method: Method; url: string; body: unknown; status: number }> = [
-      { name: "setup missing user name", method: "POST", url: "/api/setup", body: { workspaceName: "Not complete" }, status: 400 },
+      { name: "setup missing user name", method: "POST", url: "/api/setup", body: {}, status: 400 },
       { name: "empty approval patch", method: "PATCH", url: "/api/app", body: { approval: null }, status: 400 },
       { name: "model check missing model identity", method: "POST", url: "/api/models/check", body: { model: {} }, status: 400 },
       {
@@ -322,8 +322,8 @@ describe("HTTP invalid-input boundaries", () => {
       expect(Buffer.byteLength(rawBody, "utf8")).toBe(byteLength);
       expect(response.status, `PATCH body length ${byteLength}`).toBe(200);
       const app = json<BootstrapDTO["app"]>(await call(http.server, "GET", "/api/app"));
-      const requestValue = JSON.parse(rawBody).workspaceName as string;
-      expect(app.workspace.name).toBe(requestValue);
+      const requestValue = JSON.parse(rawBody).userName as string;
+      expect(app.user.name).toBe(requestValue);
     }
   }, 30_000);
 
@@ -345,7 +345,7 @@ describe("HTTP invalid-input boundaries", () => {
     const { http, provider, root } = fixture;
     await seed(http, provider, root);
     const before = json<BootstrapDTO["app"]>(await call(http.server, "GET", "/api/app"));
-    const response = await wirePatch(http, '{"workspaceName":');
+    const response = await wirePatch(http, '{"userName":');
     expect(json<BootstrapDTO["app"]>(await call(http.server, "GET", "/api/app"))).toEqual(before);
     expect(response.status).toBeGreaterThanOrEqual(400);
     expect(response.status).toBeLessThan(500);

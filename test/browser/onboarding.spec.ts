@@ -30,7 +30,6 @@ test("a first-run workspace connects a local provider and creates its first empl
     await setDeterministicPreferences(page);
     await page.goto(browserApp.emit.url);
     await expect(page.getByRole("heading", { name: "Emit", exact: true })).toBeVisible();
-    await page.getByLabel("Workspace name").fill("Local Company");
     await page.getByLabel("Your name").fill("Workspace Founder");
 
     const providers = page.locator(".provider-manager");
@@ -62,7 +61,7 @@ test("a first-run workspace connects a local provider and creates its first empl
     expect(viewport.contentWidth, "onboarding must fit the viewport before submitting").toBeLessThanOrEqual(viewport.clientWidth);
 
     await page.getByRole("button", { name: "Enter workspace", exact: true }).click();
-    await expect(page.locator(".workspace-name")).toHaveText("Local Company");
+    await expect(page.locator(".workspace-name")).toHaveText("Emit");
     await expect(page.locator(".workspace-user")).toContainText("@");
 
     await navigateWorkspace(page, "Employees");

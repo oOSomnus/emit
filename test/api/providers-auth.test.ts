@@ -129,7 +129,6 @@ describe("provider and authentication HTTP contracts", () => {
         effort: "off",
       };
       const setup = await request<unknown>(http.url, "POST", "/api/setup", {
-        workspaceName: "Auth Fixture Workspace",
         userName: "Auth Fixture User",
         defaultExecutionModel: selected,
         approval: {
@@ -142,7 +141,7 @@ describe("provider and authentication HTTP contracts", () => {
       expect(setup.status).toBe(200);
       const app = await request<{ defaultExecutionModel: typeof selected }>(http.url, "GET", "/api/app");
       expect(app.body.defaultExecutionModel).toEqual(selected);
-      expect((await request(http.url, "PATCH", "/api/app", { workspaceName: "Edited Auth Workspace" })).status).toBe(200);
+      expect((await request(http.url, "PATCH", "/api/app", { userName: "Edited Auth User" })).status).toBe(200);
       const appEvent = await events.next((event) => event.type === "app");
       expect(appEvent).toMatchObject({ type: "app", app: { defaultExecutionModel: selected } });
       expect(JSON.stringify(appEvent)).not.toContain(canary);
@@ -278,7 +277,6 @@ describe("provider and authentication HTTP contracts", () => {
         effort: "off",
       };
       const setup = await request<unknown>(http.url, "POST", "/api/setup", {
-        workspaceName: "OAuth Fixture Workspace",
         userName: "OAuth Fixture User",
         defaultExecutionModel: selection,
         approval: {
@@ -289,7 +287,7 @@ describe("provider and authentication HTTP contracts", () => {
         },
       });
       expect(setup.status).toBe(200);
-      expect((await request(http.url, "PATCH", "/api/app", { workspaceName: "Edited OAuth Workspace" })).status).toBe(200);
+      expect((await request(http.url, "PATCH", "/api/app", { userName: "Edited OAuth User" })).status).toBe(200);
       const appEvent = await events.next((event) => event.type === "app");
       expect(appEvent).toMatchObject({ type: "app", app: { defaultExecutionModel: selection } });
       expect(JSON.stringify([catalog.body, setup.body, appEvent])).not.toContain("fixture-access-2");

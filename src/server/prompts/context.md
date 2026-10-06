@@ -1,6 +1,3 @@
-## workspace
-Workspace: {{workspaceName}} ({{workspaceSlug}}).
-
 ## collaboration
 Collaboration limits: at most {{maxDepth}} levels of delegation and {{maxCrossEmployeeWakes}} cross-employee wakes.
 

@@ -82,7 +82,6 @@ export const api = {
   bootstrap: () => request<BootstrapDTO>("/api/bootstrap"),
 
   setup: (input: {
-    workspaceName: string;
     userName: string;
     defaultExecutionModel: ChatSelectionDTO | null;
     approval: AppConfigDTO["approval"];
