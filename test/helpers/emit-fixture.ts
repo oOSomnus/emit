@@ -1,6 +1,6 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConversationId } from "@earendil-works/pi-durable";
@@ -98,6 +98,22 @@ export type FixtureAnswer = {
   /** Omit the generated OpenAI [DONE] marker without changing the generated finish reason. */
   omitDone?: boolean;
 };
+
+/** Use the same local approval response while keeping each fixture's completion explicit. */
+export function answerFixtureRequest(request: FixtureRequest, completion: () => string): FixtureAnswer {
+  if (request.model === "fake-reviewer") {
+    return {
+      content: JSON.stringify({
+        outcome: "allow",
+        risk: "low",
+        rationale: "Local test action",
+        readOnly: true,
+        userAuthorization: "unknown",
+      }),
+    };
+  }
+  return { content: completion() };
+}
 
 /** A reasoning-only completion with no visible final answer. */
 export function emptyThinkingAnswer(canary: string, model = "fake-chat"): FixtureAnswer {
@@ -295,6 +311,21 @@ export async function openRuntime(dir: string): Promise<{ runtime: EmitRuntime; 
   const resume = buildResume(runtime, new McpManager(runtime));
   return { runtime, resume };
 }
+
+/** Open a fixture-backed runtime and register its resources with suite cleanup. */
+export async function openFixtureRuntime(
+  fixture: Fixture,
+  cleanup: Array<() => Promise<void> | void>,
+  prefix: string,
+): Promise<{ runtime: EmitRuntime; resume: Resume; dataDir: string }> {
+  const dataDir = mkdtempDataDir(prefix);
+  cleanup.push(() => rmSync(dataDir, { recursive: true, force: true }));
+  const opened = await openRuntime(dataDir);
+  cleanup.push(() => opened.runtime.close());
+  await opened.runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
+  return { ...opened, dataDir };
+}
+
 /** Start the real HTTP API around an open fixture runtime; setup and resume remain caller-owned. */
 export async function startHttpRuntime(
   dir: string,

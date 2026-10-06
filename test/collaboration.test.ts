@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import type { ConversationId, TaskId, ToolExecutionApi, ToolExecutionResult } from "@earendil-works/pi-durable";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { CollaborationDoc, type EmployeeRecord, type RoomRecord } from "../src/server/documents.ts";
 import { buildMessageTools, sendQueuedMessage } from "../src/server/channel-messages.ts";
 import { sendQueuedMail } from "../src/server/mail.ts";
-import { createWorkContextFixture } from "./helpers/emit-fixture.ts";
 import {
   createRoom,
   ensureEmployeeDm,
@@ -27,69 +26,37 @@ import { findWork, isTerminal } from "../src/server/work-queue.ts";
 import { createEmployee, listEmployees, readApp, updateAppConfig, updateEmployee } from "../src/server/workspace.ts";
 import type { ChatSelectionDTO, MessageDTO } from "../src/shared/contracts.ts";
 import {
+  answerFixtureRequest,
   FAKE_KEY_ENV,
+  createWorkContextFixture,
   mkdtempDataDir,
+  openFixtureRuntime,
   openRuntime,
   providerConfig,
   readFixtureRoomMessages,
   setupFixtureWorkspace,
   startFixture,
   waitForFixture,
-  type Fixture,
   type FixtureRequest,
 } from "./helpers/emit-fixture.ts";
+import { useSuiteCleanup } from "./helpers/suite-hooks.ts";
 
-const cleanup: Array<() => Promise<void> | void> = [];
-let previousApiKey: string | undefined;
-
-beforeEach(() => {
-  previousApiKey = process.env[FAKE_KEY_ENV];
-  process.env[FAKE_KEY_ENV] = "local-fixture-key";
-});
-
-afterEach(async () => {
-  for (const close of cleanup.splice(0).reverse()) {
-    try {
-      await close();
-    } catch {
-      // Cleanup is best effort and must not hide the assertion that failed.
-    }
-  }
-  if (previousApiKey === undefined) delete process.env[FAKE_KEY_ENV];
-  else process.env[FAKE_KEY_ENV] = previousApiKey;
+const cleanup = useSuiteCleanup({
+  key: { env: FAKE_KEY_ENV, value: "local-fixture-key" },
+  errorMode: "ignore",
 });
 
 const userAuthor = { type: "user" as const, id: "user", name: "Test User", address: "" };
 const executionModel: ChatSelectionDTO = { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" };
 
 function defaultAnswer(request: FixtureRequest) {
-  if (request.model === "fake-reviewer") {
-    return {
-      content: JSON.stringify({
-        outcome: "allow",
-        risk: "low",
-        rationale: "Local test action",
-        readOnly: true,
-        userAuthorization: "unknown",
-      }),
-    };
-  }
-  return { content: `Completed: ${randomUUID()}` };
+  return answerFixtureRequest(request, () => `Completed: ${randomUUID()}`);
 }
 
 function employeeNamed(employees: readonly EmployeeRecord[], name: string): EmployeeRecord {
   const employee = employees.find((candidate) => candidate.name === name);
   if (employee === undefined) throw new Error(`Missing employee ${name}`);
   return employee;
-}
-
-async function openTestRuntime(fixture: Fixture, prefix: string) {
-  const dataDir = mkdtempDataDir(prefix);
-  cleanup.push(() => rmSync(dataDir, { recursive: true, force: true }));
-  const opened = await openRuntime(dataDir);
-  cleanup.push(() => opened.runtime.close());
-  await opened.runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
-  return { ...opened, dataDir };
 }
 
 async function waitForWorks(resume: Resume, workIds: readonly string[], description = "works to finish"): Promise<void> {
@@ -173,7 +140,7 @@ describe("explicit channel addressing and employee collaboration", () => {
   it("stores the exact user wake set and leaves ordinary visible posts inert", async () => {
     const fixture = await startFixture(defaultAnswer);
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-routing-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-collab-routing-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Alice", "Bob", "Cara", "Dana"]);
     const alice = employeeNamed(employees, "Alice");
     const bob = employeeNamed(employees, "Bob");
@@ -299,7 +266,7 @@ describe("explicit channel addressing and employee collaboration", () => {
       return { content: finalOnlyText };
     });
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-body-only-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-collab-body-only-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta"]);
     const alpha = employeeNamed(employees, "Alpha");
     const beta = employeeNamed(employees, "Beta");
@@ -366,7 +333,7 @@ describe("explicit channel addressing and employee collaboration", () => {
       return { content: crossFinal };
     });
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-cross-channel-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-collab-cross-channel-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta"]);
     const alpha = employeeNamed(employees, "Alpha");
     const context = await createWorkContextFixture(runtime, "Cross-channel work");
@@ -419,7 +386,7 @@ describe("explicit channel addressing and employee collaboration", () => {
       return { content: wakeFinal };
     });
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-addressed-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-collab-addressed-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta"]);
     const alpha = employeeNamed(employees, "Alpha");
     const beta = employeeNamed(employees, "Beta");
@@ -470,7 +437,7 @@ describe("explicit channel addressing and employee collaboration", () => {
       return { content: failedFinal };
     });
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-failed-send-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-collab-failed-send-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta"]);
     const alpha = employeeNamed(employees, "Alpha");
     const context = await createWorkContextFixture(runtime, "Failed send work");
@@ -515,7 +482,7 @@ describe("explicit channel addressing and employee collaboration", () => {
       return { content: internalSummary };
     });
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-multi-update-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-collab-multi-update-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta"]);
     const alpha = employeeNamed(employees, "Alpha");
     const context = await createWorkContextFixture(runtime, "Multi update work");
@@ -550,7 +517,7 @@ describe("explicit channel addressing and employee collaboration", () => {
   it("explicit employee broadcast wakes other enabled members", async () => {
     const fixture = await startFixture(defaultAnswer);
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-explicit-all-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-collab-explicit-all-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta", "Gamma"]);
     const alpha = employeeNamed(employees, "Alpha");
     const beta = employeeNamed(employees, "Beta");
@@ -591,7 +558,7 @@ describe("explicit channel addressing and employee collaboration", () => {
   it("rejects invalid recipients without side effects and enforces whole-send wake budgets", async () => {
     const fixture = await startFixture(defaultAnswer);
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-validation-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-collab-validation-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Ada", "Bert", "Cara", "Dee"]);
     const ada = employeeNamed(employees, "Ada");
     const bert = employeeNamed(employees, "Bert");
@@ -734,7 +701,7 @@ describe("explicit channel addressing and employee collaboration", () => {
       return { content: "The initiating work completed." };
     });
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-invite-flow-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-collab-invite-flow-");
     cleanup.push(() => sendGate.resolve());
     const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta", "Gamma", "Delta"]);
     const alpha = employeeNamed(employees, "Alpha");
@@ -834,7 +801,7 @@ describe("explicit channel addressing and employee collaboration", () => {
       return { content: "The addressed member completed the follow-up." };
     });
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-context-ids-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-collab-context-ids-");
     cleanup.push(() => sendGate.resolve());
     const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta", "Delta"]);
     const alpha = employeeNamed(employees, "Alpha");
@@ -963,7 +930,7 @@ describe("explicit channel addressing and employee collaboration", () => {
       return { content: "No identity task matched." };
     });
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-channel-identity-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-collab-channel-identity-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta", "Delta"]);
     const alpha = employeeNamed(employees, "Alpha");
     const beta = employeeNamed(employees, "Beta");
@@ -1034,7 +1001,7 @@ describe("explicit channel addressing and employee collaboration", () => {
   it("replays invite and send receipts once and blocks invalid invite or ancestor actions", async () => {
     const fixture = await startFixture(defaultAnswer);
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-receipts-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-collab-receipts-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta", "Gamma", "Delta"]);
     const alpha = employeeNamed(employees, "Alpha");
     const beta = employeeNamed(employees, "Beta");
@@ -1254,7 +1221,7 @@ describe("explicit channel addressing and employee collaboration", () => {
       return { content: `B completed ${marker}` };
     });
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-collab-member-removal-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-collab-member-removal-");
     cleanup.push(() => answerGate.resolve());
     await runtime.storeCustomProviders([
       {
