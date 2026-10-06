@@ -8,7 +8,7 @@
  * copy of build output: a missing or corrupt file is rewritten on the next
  * start rather than failing forever.
  */
-import { existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import type { Stats } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { getAsset, getRawAsset, isSea } from "node:sea";
@@ -24,7 +24,15 @@ const MANIFEST_ASSET = "web/.manifest.json";
  * held and before the HTTP server listens, so a failure aborts startup.
  */
 export function resolveWebRoot(dataDir: string, override: string | undefined): string {
-  if (override !== undefined) return override;
+  if (override !== undefined) {
+    // An explicit --web-root that cannot serve files must abort startup, not
+    // silently run without any UI.
+    const stats = statSync(override, { throwIfNoEntry: false });
+    if (stats === undefined || !stats.isDirectory()) {
+      throw new Error(`Web root must be an existing directory: ${override}`);
+    }
+    return override;
+  }
   if (!isSea()) return resolve(import.meta.dirname, "../../dist/web");
   return restoreEmbeddedWeb(dataDir);
 }
