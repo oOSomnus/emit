@@ -46,6 +46,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # grype downloads its vulnerability database on every run - the slowest
+      # linter input (~80 s). Cache what it keeps in the container's home
+      # directory (~/.cache/grype, mounted from ${{ runner.temp }}/_github_home)
+      # for a week: grype refreshes a database older than its update TTL on its
+      # own, so a restored cache still self-heals.
+      - name: Prepare grype database cache key
+        id: grype-db
+        run: |
+          mkdir -p "$RUNNER_TEMP/_github_home/.cache/grype"
+          echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache grype vulnerability database
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/_github_home/.cache/grype
+          key: grype-db-${{ runner.os }}-${{ steps.grype-db.outputs.week }}
+          restore-keys: grype-db-${{ runner.os }}-
+
       # MegaLinter
       - name: MegaLinter
         uses: oxsecurity/megalinter/flavors/javascript@9949bad031045f366be2467e00e8371a7328a2e2 # v10.1.0
