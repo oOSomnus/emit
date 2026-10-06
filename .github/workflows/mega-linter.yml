@@ -71,6 +71,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The container writes the database as root, so the runner cannot read it
+      # when actions/cache saves the path in its post step. Widen the modes (and
+      # keep them on directories, hence X) before the job ends.
+      - name: Make the grype database readable for the cache
+        if: always()
+        run: |
+          cache_dir="$RUNNER_TEMP/_github_home/.cache/grype"
+          if [ -d "$cache_dir" ]; then
+            sudo chmod -R a+rX "$cache_dir"
+          fi
+
       # Upload MegaLinter reports
       - name: Archive MegaLinter reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
