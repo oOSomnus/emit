@@ -13,7 +13,7 @@
 .DEFAULT_GOAL := all
 .PHONY: all binary native smoke help install dev dev-web dev-server start \
         build build-web typecheck test test-watch test-api test-fault test-stress \
-        test-gate patch e2e e2e-web mock
+        test-gate patch e2e e2e-web mock clean nuke
 
 ARGS ?=
 
@@ -92,6 +92,15 @@ test-gate: node_modules/.emit-deps
 mock: build-web
 	node --import tsx scripts/mock.ts $(ARGS)
 
+# Remove build and test artifacts. Runtime state (data/, tmp/, credentials,
+# .env*) stays; only the listed artifact directories are deleted.
+clean:
+	rm -rf -- dist coverage test-results playwright-report
+
+# clean plus the installed dependency tree; the next build reruns npm ci.
+nuke: clean
+	rm -rf -- node_modules
+
 help:
 	@echo "emit · Make targets (run make for the default target)"
 	@echo ""
@@ -117,6 +126,8 @@ help:
 	@echo "  make test-fault     run explicit manual fault tests"
 	@echo "  make test-stress    run explicit manual stress tests"
 	@echo "  make test-gate      run the full daily gate sequentially"
+	@echo "  make clean          remove build/test artifacts (dist, coverage, test-results, playwright-report)"
+	@echo "  make nuke           clean plus node_modules; next build reinstalls dependencies"
 	@echo ""
 	@echo "Argument examples:"
 	@echo "  make test ARGS='test/mock.test.ts'"
