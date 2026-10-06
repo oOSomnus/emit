@@ -12,6 +12,27 @@ export default defineConfig({
   build: {
     outDir: "../../dist/web",
     emptyOutDir: true,
+    // Split vendor code into cacheable chunks; react-dom alone exceeds the
+    // 500 kB warning limit when it shares one bundle with the markdown stack.
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: "react-vendor",
+              test: /node_modules[\\/](?:react-dom|react|scheduler)[\\/]/,
+              priority: 20,
+            },
+            {
+              name: "markdown-vendor",
+              test: /node_modules[\\/](?:react-markdown|remark-gfm)[\\/]/,
+              priority: 10,
+              includeDependenciesRecursively: true,
+            },
+          ],
+        },
+      },
+    },
   },
   ...(proxyPort === undefined
     ? {}
