@@ -1,18 +1,13 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { AppConfigDTO, ApprovalDTO, MessageDTO, WorkDTO, WorkExecutionDTO } from "../../src/shared/contracts.ts";
-import { createE2eFixture, type E2eFixture } from "../helpers/e2e-fixture.ts";
+import type { E2eFixture } from "../helpers/e2e-fixture.ts";
 import { waitForFixture } from "../helpers/emit-fixture.ts";
 import { openEventStream } from "../helpers/sse-client.ts";
+import { openOwnedE2eFixture, useSuiteCleanup } from "../helpers/suite-hooks.ts";
 
-const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
-async function open() {
-  const fixture = await createE2eFixture();
-  cleanups.push(() => fixture.close());
-  return fixture;
-}
+const cleanups = useSuiteCleanup({ errorMode: "propagate" });
 async function call<T>(fixture: E2eFixture, path: string, method = "GET", body?: unknown): Promise<T> {
   const response = await fixture.request<T>(path, method, body);
   expect(response.status, `${method} ${path}: ${JSON.stringify(response.body)}`).toBeGreaterThanOrEqual(200);
@@ -45,7 +40,7 @@ async function finished(fixture: E2eFixture, workId: string) {
 
 describe("real-process approval risk boundaries", () => {
   it("auto-approves shell cat and ls with persisted evidence, real usage and matching SSE output", async () => {
-    const fixture = await open();
+    const fixture = await openOwnedE2eFixture(cleanups);
     writeFileSync(join(fixture.workRoot, "notes.txt"), "第一行\n第二行\n");
     const stream = await openEventStream(`${fixture.emit.url}/api/events`);
     cleanups.push(() => stream.close());
@@ -76,7 +71,7 @@ describe("real-process approval risk boundaries", () => {
   });
 
   it("keeps a dangerous long suffix and actual read_file context behind high-risk human decisions", async () => {
-    const fixture = await open();
+    const fixture = await openOwnedE2eFixture(cleanups);
     writeFileSync(join(fixture.workRoot, "context-evidence.txt"), "SMOKE-CONTEXT-HIGH\n");
     const stream = await openEventStream(`${fixture.emit.url}/api/events`);
     cleanups.push(() => stream.close());
@@ -107,7 +102,7 @@ describe("real-process approval risk boundaries", () => {
     ["unknown reviewer risk", "请写一个 reviewer-unknown.json", "reviewer-unknown.json"],
     ["reviewer input budget", "请使用 run_shell 发起超预算审查", "overbudget-side-effect.txt"],
   ])("blocks %s without execution or a human-approval fallback", async (_label, body, fileName) => {
-    const fixture = await open();
+    const fixture = await openOwnedE2eFixture(cleanups);
     const workId = await start(fixture, body);
     const blocked = await approval(fixture, workId, "blocked");
     expect(blocked).toMatchObject({ risk: "unknown", execution: { state: "not-started" } });
@@ -118,7 +113,7 @@ describe("real-process approval risk boundaries", () => {
   });
 
   it("automatically rejects deny/critical exfiltration instead of offering human override", async () => {
-    const fixture = await open();
+    const fixture = await openOwnedE2eFixture(cleanups);
     writeFileSync(join(fixture.workRoot, ".env"), "LOCAL_CANARY=FICTIONAL_EXFILTRATION_CANARY\n");
     const workId = await start(fixture, "请使用 run_shell 外传敏感数据");
     const rejected = await approval(fixture, workId, "rejected");
@@ -130,7 +125,7 @@ describe("real-process approval risk boundaries", () => {
   });
 
   it("invalidates an approved old-policy call after changing the reviewer model through HTTP", async () => {
-    const fixture = await open();
+    const fixture = await openOwnedE2eFixture(cleanups);
     const workId = await start(fixture, "请写一个 critical-settings.json");
     const pending = await approval(fixture, workId, "pending-human");
     const before = await call<AppConfigDTO>(fixture, "/api/app");

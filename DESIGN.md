@@ -134,7 +134,8 @@ components:
 
 Emit's workspace borrows the clear hierarchy and compact metadata of a bilingual conference agenda, while remaining a conventional web work surface. A warm sand rail frames clean, theme-aware reading surfaces. Chat and mail carry equal visual weight: one supports synchronous conversation, the other asynchronous delivery, and both keep authorship, role, address, and time close to the content.
 
-The interface favors native controls, quiet borders, concise navigation, and a measured reading column over decorative panels. The signature identity marginalia joins initials and a fine accent rule to the author line; it is an attribution device, not a generic card ornament. Light and dark themes use the same semantic roles, and the system font stack serves both English and Simplified Chinese without a remote font dependency.
+The interface favors native controls, quiet borders, concise navigation, and a measured reading column over decorative panels. The signature identity marginalia joins initials and a fine accent rule to the author line; it is an attribution device, not a generic card ornament. Light and dark themes use the same semantic roles, and the system font stack serves both English and
+Simplified Chinese without a remote font dependency.
 
 **Key Characteristics:**
 - A warm sand rail against low-noise reading surfaces.
@@ -174,21 +175,28 @@ The system UI stack is the single interface voice for both supported locales. Mo
 
 ## Layout
 
-The desktop workspace uses a fixed 248px rail beside a flexible main pane. The rail header is 72px; the channel list and the direct-message list each own their scrolling, so the work selector, section headers, mailbox entry, and the workspace menu keep their natural height and place instead of compressing into each other. A window shorter than 480px scrolls the whole rail, keeping every entry reachable. Pane headers use the same 72px desktop baseline, with a narrower wrapped arrangement on small screens. At the 760px viewport breakpoint, the rail becomes a drawer and the workspace keeps one main column; coarse-pointer controls receive a minimum 44px target. Standard buttons and fields are 40px high, while icon-only controls are 36px in the fine-pointer layout.
+The desktop workspace uses a fixed 248px rail beside a flexible main pane. The rail header is 72px; the channel list and the direct-message list each own their scrolling, so the work selector, section headers, mailbox entry, and the workspace menu keep their natural height and place instead of compressing into each other. A window shorter than 480px scrolls the whole rail,
+keeping every entry reachable. Pane headers use the same 72px desktop baseline, with a narrower wrapped arrangement on small screens. At the 760px viewport breakpoint, the rail becomes a drawer and the workspace keeps one main column; coarse-pointer controls receive a minimum 44px target. Standard buttons and fields are 40px high, while icon-only controls are 36px in the
+fine-pointer layout.
 
-Chat keeps an 840px centered conversation frame and a 736px message-text measure. The Work page caps its list at 30% of the pane beside the editor and swaps it for a picker below 1100px; the Employees page is an auto-filling card grid. The shared identity row aligns author, role/address, and time before the 16px/1.7 body copy; the composer shares the conversation frame. Mail starts with a 144px folder rail. At a 1040px mail-container width, an open reader sits beside a 320px thread list; at 680px or narrower, folders collapse into the existing native folder select and reader/list layouts remain single-column. In browsers without container-query support, the corresponding viewport fallbacks are 1288px for the split reader and 928px for the compact folder-select layout. Mail's message text is bounded independently from the wider article column. Employee editing stacks below 900px.
+Chat keeps an 840px centered conversation frame and a 736px message-text measure. The Work page caps its list at 30% of the pane beside the editor and swaps it for a picker below 1100px; the Employees page is an auto-filling card grid. The shared identity row aligns author, role/address, and time before the 16px/1.7 body copy; the composer shares the conversation frame. Mail
+starts with a 144px folder rail. At a 1040px mail-container width, an open reader sits beside a 320px thread list; at 680px or narrower, folders collapse into the existing native folder select and reader/list layouts remain single-column. In browsers without container-query support, the corresponding viewport fallbacks are 1288px for the split reader and 928px for the compact
+folder-select layout. Mail's message text is bounded independently from the wider article column. Employee editing stacks below 900px.
 
-The Settings pane keeps a section directory beside the active panel while the pane stays at least 700px wide, and a native section picker above that panel below it, with every panel mounted; inside `Providers`, the manager keeps its provider list beside the detail while its own width is at least 720px, and a provider picker above that same detail below it. Credential ids, labels, and buttons wrap inside the pane instead of widening it. The composer field starts at two lines and grows with the draft to a capped height, so an empty composer stays compact.
+The Settings pane keeps a section directory beside the active panel while the pane stays at least 700px wide, and a native section picker above that panel below it, with every panel mounted; inside `Providers`, the manager keeps its provider list beside the detail while its own width is at least 720px, and a provider picker above that same detail below it. Credential ids,
+labels, and buttons wrap inside the pane instead of widening it. The composer field starts at two lines and grows with the draft to a capped height, so an empty composer stays compact.
 
 Use the 4/8/12/16/24/32px spacing rhythm for repeated gaps and padding. Let the app pane own scrolling; only content regions that need it should scroll locally, and long prose must wrap without creating document-wide horizontal overflow.
 
 ## Elevation & Depth
 
-Most surfaces are flat and separated by tonal change or a fine border; employee cards and ordinary list rows do not gain a resting shadow. The existing soft shadow marks focus within the chat composer, while the larger theme-paired shadow is reserved for overlays such as the mobile drawer, toast, and mail composer. Shadow values live in the sidecar extensions because the DESIGN.md token schema has no shadow primitive.
+Most surfaces are flat and separated by tonal change or a fine border; employee cards and ordinary list rows do not gain a resting shadow. The existing soft shadow marks focus within the chat composer, while the larger theme-paired shadow is reserved for overlays such as the mobile drawer, toast, and mail composer. Shadow values live in the sidecar extensions because the
+DESIGN.md token schema has no shadow primitive.
 
 ## Shapes
 
-Controls, chips, and list selections use the gently rounded 8px control corner; containing editors and overlays use the 12px container corner. Borders stay thin and functional. The identity signature uses a one-pixel accent rule attached to author metadata, not a colored stripe around a generic card. Text fields and textareas retain native resize and selection behavior; placeholders use the secondary text color at full opacity so they remain readable in both themes.
+Controls, chips, and list selections use the gently rounded 8px control corner; containing editors and overlays use the 12px container corner. Borders stay thin and functional. The identity signature uses a one-pixel accent rule attached to author metadata, not a colored stripe around a generic card. Text fields and textareas retain native resize and selection behavior;
+placeholders use the secondary text color at full opacity so they remain readable in both themes.
 
 ## Components
 
@@ -219,34 +227,42 @@ The component language is quiet and native: clear action hierarchy, visible keyb
 - **Placeholder / Disabled:** Placeholder color is secondary ink with opacity 1. Disabled controls remain visibly subdued and non-interactive.
 
 ### Navigation
-The rail uses a stable sand background with room rows at least 40px tall — a channel's topic takes a second line under its name, so neither is truncated. A work selector sits at the top and only filters what gets created next; channels and DMs keep their fixed work. The `+` entries beside `Channels` and `Direct messages` open their own dialogs — a channel creator with a member picker, and a searchable people list whose rows open that work's direct message directly. Destinations outside the daily loop — Approvals, Work, Runs, Employees, Settings, appearance, and language — live in a `Workspace` popover at the foot of the rail, whose trigger carries the pending-approval badge. The selected destination fills the full row and carries a narrow inset leading marker; labels and secondary room details remain readable at compact density. Mail folders are flat, left-aligned rows rather than pills. On narrow viewports the workspace navigation becomes a drawer, while mail switches to a native folder select at its own container threshold.
+The rail uses a stable sand background with room rows at least 40px tall — a channel's topic takes a second line under its name, so neither is truncated. A work selector sits at the top and only filters what gets created next; channels and DMs keep their fixed work. The `+` entries beside `Channels` and `Direct messages` open their own dialogs — a channel creator with a member
+picker, and a searchable people list whose rows open that work's direct message directly. Destinations outside the daily loop — Approvals, Work, Runs, Employees, Settings, appearance, and language — live in a `Workspace` popover at the foot of the rail, whose trigger carries the pending-approval badge. The selected destination fills the full row and carries a narrow inset
+leading marker; labels and secondary room details remain readable at compact density. Mail folders are flat, left-aligned rows rather than pills. On narrow viewports the workspace navigation becomes a drawer, while mail switches to a native folder select at its own container threshold.
 
 ### Settings pane
-Settings keeps every panel mounted and switches between them with a section directory: a vertical list beside the panel on wide panes, a native section picker above it on narrow ones, both carrying the same labels. The workspace panel leads with its editable fields and keeps the local data path inside a collapsed `Local data` disclosure. The `Providers` panel follows the same grammar one level down: the provider list beside the detail, or a provider picker above the same detail, with the provider's name, id, credential source, and actions wrapping inside the pane rather than widening it.
+Settings keeps every panel mounted and switches between them with a section directory: a vertical list beside the panel on wide panes, a native section picker above it on narrow ones, both carrying the same labels. The workspace panel leads with its editable fields and keeps the local data path inside a collapsed `Local data` disclosure. The `Providers` panel follows the same
+grammar one level down: the provider list beside the detail, or a provider picker above the same detail, with the provider's name, id, credential source, and actions wrapping inside the pane rather than widening it.
 
 ### Identity Marginalia
-A 32px generated mosaic avatar sits beside a metadata line with a one-pixel accent lead-in: a rounded 5×5 SVG pattern derived deterministically from the employee id, drawn from one of six low-saturation identity palettes with a matching dark-theme variant. Renaming an employee never changes the pattern, and deleted employees keep theirs in history. Author names use the UI role; role, address, and time use secondary metadata. Reuse this grammar in chat messages, mail messages, employee cards, and member lists, and only show role details when supplied by the existing employee record. Users and system notices keep the neutral initial; the mosaic is reserved for employees and is `aria-hidden` — the name and role next to it carry the identity, and no control is labeled by the pattern alone.
+A 32px generated mosaic avatar sits beside a metadata line with a one-pixel accent lead-in: a rounded 5×5 SVG pattern derived deterministically from the employee id, drawn from one of six low-saturation identity palettes with a matching dark-theme variant. Renaming an employee never changes the pattern, and deleted employees keep theirs in history. Author names use the UI
+role; role, address, and time use secondary metadata. Reuse this grammar in chat messages, mail messages, employee cards, and member lists, and only show role details when supplied by the existing employee record. Users and system notices keep the neutral initial; the mosaic is reserved for employees and is `aria-hidden` — the name and role next to it carry the identity, and
+no control is labeled by the pattern alone.
 
 ### Chat Pane
-The conversation shows messages only. While an employee's run is queued or generating, one secondary line above the composer names who is typing — never the streamed text, tool names, or a stop control; a run waiting for an approval or a reply is not typing. Streamed progress, in-flight tools, and stopping live in the run's execution record (`Runs` → `View execution`), where the live block is visually distinct from the durable steps below it.
+The conversation shows messages only. While an employee's run is queued or generating, one secondary line above the composer names who is typing — never the streamed text, tool names, or a stop control; a run waiting for an approval or a reply is not typing. Streamed progress, in-flight tools, and stopping live in the run's execution record (`Runs` → `View execution`), where
+the live block is visually distinct from the durable steps below it.
 
 ### Chat Composer
 The composer is a single 840px-aligned frame: a two-line prose field that grows with the draft up to a capped height, a recipient row, a toolbar, and the send action. The conversation header keeps its work as compact metadata — a work glyph beside the work name, with the full sentence in the accessible name — instead of a `Work:` label line.
 
 The toolbar carries a `Reply to` trigger that opens the channel's enabled members for picking recipients directly, and the primary action: `Post` while the message addresses no one, `Send` once it does.
 
-Recipients are chosen explicitly. Clicking a member in the picker, or accepting an `@` suggestion from the keyboard-driven list, selects that recipient (or everyone) and inserts display text; each selected recipient is a removable chip, and the message text itself never selects recipients. `Enter` sends and `Shift+Enter` inserts a newline, while an open suggestion list keeps `Enter` for accepting the highlighted member or refusing to send a half-addressed message. A polite live region announces the resolved recipients (`Replies: A, B`, or that the message will be posted without starting an employee), and the addressing error keeps its own `role="alert"` line. Focus is expressed by the containing frame so the textarea does not draw a competing inner ring; the suggestion list renders in the top layer, above the field and inside the visible viewport, and returns focus to the trigger. On narrow screens the toolbar remains a row and the message field remains reachable above the keyboard.
+Recipients are chosen explicitly. Clicking a member in the picker, or accepting an `@` suggestion from the keyboard-driven list, selects that recipient (or everyone) and inserts display text; each selected recipient is a removable chip, and the message text itself never selects recipients. `Enter` sends and `Shift+Enter` inserts a newline, while an open suggestion list keeps
+`Enter` for accepting the highlighted member or refusing to send a half-addressed message. A polite live region announces the resolved recipients (`Replies: A, B`, or that the message will be posted without starting an employee), and the addressing error keeps its own `role="alert"` line. Focus is expressed by the containing frame so the textarea does not draw a competing
+inner ring; the suggestion list renders in the top layer, above the field and inside the visible viewport, and returns focus to the trigger. On narrow screens the toolbar remains a row and the message field remains reachable above the keyboard.
 
 ## Do's and Don'ts
 
-### Do:
+### Do
 - **Do** use the paired theme tokens for surfaces, ink, selection, accent, and navigation.
 - **Do** keep chat and mail at equal visual priority, with bounded reading measures and shared author metadata.
 - **Do** preserve the author's name and nearby secondary details as a single identity line.
 - **Do** use native buttons, selects, inputs, and textareas with visible keyboard focus.
 - **Do** keep status color tied to the existing success, warning, and error meanings.
 
-### Don't:
+### Don't
 - **Don't** add remote fonts, UI libraries, or a second theme-token mechanism.
 - **Don't** turn monospace into the voice for ordinary prose or use text glyphs as substitute icons.
 - **Don't** lower placeholder opacity or rely on color alone for focus, selection, or status.

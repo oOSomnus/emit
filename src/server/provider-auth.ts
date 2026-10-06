@@ -17,7 +17,6 @@ import type {
   AuthType,
   Models,
   ModelsRefreshResult,
-  ProviderAuthInteraction,
 } from "@earendil-works/pi-ai";
 import type {
   AuthEventDTO,
@@ -154,7 +153,7 @@ export class ProviderAuthSessions {
       discard: undefined,
     };
     this.#sessions.set(id, session);
-    session.task = this.#run(session, method.login.bind(method));
+    session.task = this.#run(session);
     return this.#snapshot(session);
   }
 
@@ -226,7 +225,7 @@ export class ProviderAuthSessions {
     return [...this.#sessions.values()].find(isActive);
   }
 
-  async #run(session: Session, login: (interaction: ProviderAuthInteraction) => Promise<unknown>): Promise<void> {
+  async #run(session: Session): Promise<void> {
     const interaction: AuthInteraction = {
       signal: session.controller.signal,
       prompt: (prompt: LocalizedAuthPrompt) => this.#prompt(session, prompt),

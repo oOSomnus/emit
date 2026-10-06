@@ -14,17 +14,26 @@ import remarkGfm from "remark-gfm";
 const REMARK_PLUGINS = [remarkGfm];
 
 const COMPONENTS: Components = {
-  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
-  img: ({ node: _node, src, alt }) => (
-    <a href={src ?? ""} target="_blank" rel="noopener noreferrer">
-      {alt !== undefined && alt.length > 0 ? alt : src ?? ""}
-    </a>
-  ),
-  table: ({ node: _node, children, ...props }) => (
-    <div className="markdown-table-scroll">
-      <table {...props}>{children}</table>
-    </div>
-  ),
+  a: ({ node: _node, ...props }) => {
+    void _node;
+    return <a {...props} target="_blank" rel="noopener noreferrer" />;
+  },
+  img: ({ node: _node, src, alt }) => {
+    void _node;
+    return (
+      <a href={src ?? ""} target="_blank" rel="noopener noreferrer">
+        {alt !== undefined && alt.length > 0 ? alt : src ?? ""}
+      </a>
+    );
+  },
+  table: ({ node: _node, children, ...props }) => {
+    void _node;
+    return (
+      <div className="markdown-table-scroll">
+        <table {...props}>{children}</table>
+      </div>
+    );
+  },
 };
 
 export const MarkdownBody = memo(function MarkdownBody({

@@ -128,7 +128,7 @@ describe("real-process crash recovery and data-directory ownership", () => {
     const root = mkdtempSync(join(tmpdir(), "emit-queued-recovery-"));
     const sockets = new Set<Socket>();
     let gateSeen = false;
-    const gateServer = createServer((_request, _response) => { gateSeen = true; });
+    const gateServer = createServer(() => { gateSeen = true; });
     gateServer.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
     let provider: E2eFixture["provider"] | undefined;
     let paused: EmitProcessFixture | undefined;

@@ -32,6 +32,7 @@ import type { EmployeeDraftDTO, MessageDTO } from "../src/shared/contracts.ts";
 import { toWorkDTO } from "../src/server/dto.ts";
 import {
   FAKE_KEY_ENV,
+  emptyThinkingAnswer,
   createWorkContextFixture,
   mkdtempDataDir,
   openRuntime,
@@ -84,6 +85,60 @@ async function openWorkspaceForRun(
   const workContext = await createWorkContextFixture(runtime, "邮件测试");
   const room = await createRoom(runtime, { kind: "mail", name: "邮件测试", workContextId: workContext.id });
   return { runtime, resume, room };
+}
+
+async function openMailRuntimeWithEmployee(
+  dir: string,
+  baseUrl: string,
+  employeeName: string,
+): Promise<{ runtime: EmitRuntime; resume: Resume; employee: EmployeeRecord }> {
+  const { runtime, resume } = await openRuntime(dir);
+  cleanups.push(async () => {
+    await runtime.close();
+  });
+  await runtime.storeCustomProviders([providerConfig(baseUrl)]);
+  await setupWorkspace(runtime, {
+    userName: "测试者",
+    defaultExecutionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
+    approval: { kind: "llm", model: { providerId: "fake", modelId: "fake-reviewer" }, effort: "off", criteriaVersion: 3 },
+  });
+  await createEmployee(runtime, {
+    name: employeeName,
+    role: "研究",
+    executionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
+  } satisfies EmployeeDraftDTO);
+  const employee = employeeNamed(await listEmployees(runtime), employeeName);
+  return { runtime, resume, employee };
+}
+
+async function sendMailAndWaitForRecipientWork(input: {
+  dir: string;
+  baseUrl: string;
+  senderName: string;
+  recipientName: string;
+  waitLabel: string;
+}): Promise<{
+  runtime: EmitRuntime;
+  resume: Resume;
+  room: RoomRecord;
+  sender: EmployeeRecord;
+  recipient: EmployeeRecord;
+}> {
+  const { runtime, resume, room } = await openWorkspaceForRun(input.dir, input.baseUrl, [
+    input.senderName,
+    input.recipientName,
+  ]);
+  const sender = employeeNamed(await listEmployees(runtime), input.senderName);
+  const recipient = employeeNamed(await listEmployees(runtime), input.recipientName);
+  runtime.resume();
+  await sendQueuedMail(resume, mailInput(room, [sender]));
+
+  await waitFor(async () => {
+    const works = await listWorks(runtime);
+    return works.some((work) => work.employeeId === sender.id && work.status === "waiting-mail") &&
+      works.some((work) => work.employeeId === recipient.id);
+  }, input.waitLabel);
+  return { runtime, resume, room, sender, recipient };
 }
 
 const userAuthor = { type: "user" as const, id: "user", name: "测试者", address: "" };
@@ -208,14 +263,15 @@ describe("durable mail delivery", () => {
     expect(entries.some((entry) => entry.author.name === "丙")).toBe(false);
   }, 60_000);
 
-  it("pauses a work that awaits a reply, continues it with the real reply, and delivers one answer", async () => {
+  it.each(["premature-text", "reasoning-only-empty"] as const)("handles %s while awaiting mail", async (firstFinalAnswer) => {
+    const PREMATURE = "我还在等回信前的答复。";
+    const EMPTY_THINKING_CANARY = "PRIVATE_MAIL_EMPTY_THINKING";
+    const FINAL = "最终答复：回信结果是 42。";
     let releaseReply: (() => void) | undefined;
     const replyGate = new Promise<void>((resolve) => {
       releaseReply = resolve;
     });
     cleanups.push(() => releaseReply?.());
-    const PREMATURE = "我还在等回信前的答复。";
-    const FINAL = "最终答复：回信结果是 42。";
     const fixture = await startFixture((request) => {
       if (request.prompt.includes("localpart")) return { content: '{"localpart": "tester"}' };
       // 乙 cannot answer until the latch opens: the awaiting state is observed
@@ -223,7 +279,11 @@ describe("durable mail delivery", () => {
       if (request.system.includes("Your name is 乙 (")) return { content: "回信：结果是 42。", gate: replyGate };
       // 甲: ask, try to answer early, then answer for real once the reply is read.
       if (request.prompt.includes("Received an email reply related to this task")) return { content: FINAL };
-      if (request.prompt.includes("Email sent to")) return { content: PREMATURE };
+      if (request.prompt.includes("Email sent to")) {
+        return firstFinalAnswer === "premature-text"
+          ? { content: PREMATURE }
+          : emptyThinkingAnswer(EMPTY_THINKING_CANARY);
+      }
       return {
         toolCall: {
           name: "send_mail",
@@ -293,13 +353,17 @@ describe("durable mail delivery", () => {
       return works.some((work) => work.employeeId === a.id && work.status === "waiting-mail");
     }, "甲 的工作进入等待回信");
     const waiting = (await listWorks(runtime)).find((work) => work.employeeId === a.id)!;
-    expect(waiting.answer).toBe(PREMATURE);
+    expect(waiting.status).toBe("waiting-mail");
+    expect(waiting.answer).toBe(firstFinalAnswer === "premature-text" ? PREMATURE : "");
     expect(waiting.awaitedMailWorkIds).toHaveLength(1);
+    expect(JSON.stringify(waiting)).not.toContain(EMPTY_THINKING_CANARY);
     const beforeReply = await roomMessages(runtime, room);
+    expect(JSON.stringify(beforeReply)).not.toContain(EMPTY_THINKING_CANARY);
     // 甲's own mail is in the thread; what must not be there is the answer it
     // tried to write before reading the reply.
     expect(beforeReply.some((message) => message.body === PREMATURE)).toBe(false);
     expect(beforeReply.some((message) => message.author.name === "甲" && message.mail?.subject === "求助")).toBe(true);
+    expect(beforeReply.some((message) => message.author.type === "employee" && message.body.length === 0)).toBe(false);
     // The request for 乙 is a real work that the reply will come from.
     const childWork = (await listWorks(runtime)).find((work) => work.employeeId === b.id);
     expect(childWork?.status).not.toBe("succeeded");
@@ -314,12 +378,15 @@ describe("durable mail delivery", () => {
     // One answer, delivered once, written after the reply was read; and no
     // "thanks for the reply" mail back to 乙.
     const after = await roomMessages(runtime, room);
+    expect(JSON.stringify(after)).not.toContain(EMPTY_THINKING_CANARY);
     const answers = after.filter((message) => message.body === FINAL);
     expect(answers).toHaveLength(1);
     expect(answers[0]?.author.name).toBe("甲");
     expect(after.some((message) => message.body === PREMATURE)).toBe(false);
+    expect(after.some((message) => message.author.type === "employee" && message.body.length === 0)).toBe(false);
     expect((await listWorks(runtime)).filter((work) => work.employeeId === b.id)).toHaveLength(1);
     const finalWork = (await listWorks(runtime)).find((work) => work.employeeId === a.id)!;
+    expect(finalWork.status).toBe("succeeded");
     expect(finalWork.awaitedMailWorkIds).toHaveLength(0);
     // The final turn really did receive the reply, not just a notification.
     const finalRequest = fixture.requests.at(-1)!;
@@ -454,17 +521,13 @@ describe("durable mail delivery", () => {
     const dir = mkdtempDataDir("emit-mail-stopchild-");
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
-    const { runtime, resume, room } = await openWorkspaceForRun(dir, fixture.baseUrl, ["甲", "乙"]);
-    const a = employeeNamed(await listEmployees(runtime), "甲");
-    const b = employeeNamed(await listEmployees(runtime), "乙");
-    runtime.resume();
-    await sendQueuedMail(resume, mailInput(room, [a]));
-
-    await waitFor(async () => {
-      const works = await listWorks(runtime);
-      return works.some((work) => work.employeeId === a.id && work.status === "waiting-mail") &&
-        works.some((work) => work.employeeId === b.id);
-    }, "甲 在等待且乙已开始");
+    const { runtime, resume, room, sender: a, recipient: b } = await sendMailAndWaitForRecipientWork({
+      dir,
+      baseUrl: fixture.baseUrl,
+      senderName: "甲",
+      recipientName: "乙",
+      waitLabel: "甲 在等待且乙已开始",
+    });
     const child = (await listWorks(runtime)).find((work) => work.employeeId === b.id)!;
     await stopWork(resume, child.id);
     releaseReply!();
@@ -502,17 +565,13 @@ describe("durable mail delivery", () => {
     const dir = mkdtempDataDir("emit-mail-stopwait-");
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
-    const { runtime, resume, room } = await openWorkspaceForRun(dir, fixture.baseUrl, ["甲", "乙"]);
-    const a = employeeNamed(await listEmployees(runtime), "甲");
-    const b = employeeNamed(await listEmployees(runtime), "乙");
-    runtime.resume();
-    await sendQueuedMail(resume, mailInput(room, [a]));
-
-    await waitFor(async () => {
-      const works = await listWorks(runtime);
-      return works.some((work) => work.employeeId === a.id && work.status === "waiting-mail") &&
-        works.some((work) => work.employeeId === b.id);
-    }, "甲 在等待回信");
+    const { runtime, resume, room, sender: a, recipient: b } = await sendMailAndWaitForRecipientWork({
+      dir,
+      baseUrl: fixture.baseUrl,
+      senderName: "甲",
+      recipientName: "乙",
+      waitLabel: "甲 在等待回信",
+    });
     const waiting = (await listWorks(runtime)).find((work) => work.employeeId === a.id)!;
     expect(waiting.awaitedMailWorkIds).toHaveLength(1);
     await stopWork(resume, waiting.id);
@@ -563,22 +622,7 @@ describe("durable mail delivery", () => {
     const dir = mkdtempDataDir("emit-mail-exec-");
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
-    const { runtime, resume } = await openRuntime(dir);
-    cleanups.push(async () => {
-      await runtime.close();
-    });
-    await runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
-    await setupWorkspace(runtime, {
-      userName: "测试者",
-      defaultExecutionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
-      approval: { kind: "llm", model: { providerId: "fake", modelId: "fake-reviewer" }, effort: "off", criteriaVersion: 3 },
-    });
-    await createEmployee(runtime, {
-      name: "甲",
-      role: "研究",
-      executionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
-    } satisfies EmployeeDraftDTO);
-    const a = employeeNamed(await listEmployees(runtime), "甲");
+    const { runtime, resume, employee: a } = await openMailRuntimeWithEmployee(dir, fixture.baseUrl, "甲");
     for (const employee of await listEmployees(runtime)) await installEmployeeExtension(resume, employee);
     const workContext = await createWorkContextFixture(runtime, "邮件测试", { paths: [workDir], defaultPath: workDir });
     const room = await createRoom(runtime, { kind: "mail", name: "邮件测试", workContextId: workContext.id });
@@ -634,22 +678,7 @@ describe("durable mail delivery", () => {
     const dir = mkdtempDataDir("emit-mail-await-");
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
-    const { runtime, resume } = await openRuntime(dir);
-    cleanups.push(async () => {
-      await runtime.close();
-    });
-    await runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
-    await setupWorkspace(runtime, {
-      userName: "测试者",
-      defaultExecutionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
-      approval: { kind: "llm", model: { providerId: "fake", modelId: "fake-reviewer" }, effort: "off", criteriaVersion: 3 },
-    });
-    await createEmployee(runtime, {
-      name: "甲",
-      role: "研究",
-      executionModel: { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" },
-    } satisfies EmployeeDraftDTO);
-    const a = employeeNamed(await listEmployees(runtime), "甲");
+    const { runtime, resume, employee: a } = await openMailRuntimeWithEmployee(dir, fixture.baseUrl, "甲");
     const workContext = await createWorkContextFixture(runtime, "邮件测试");
     const room = await createRoom(runtime, { kind: "mail", name: "邮件测试", workContextId: workContext.id });
 

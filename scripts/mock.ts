@@ -138,6 +138,7 @@ async function snapshotDatabase(sourcePath: string, targetPath: string, signal: 
   } catch (error) {
     throw new Error(
       `Unable to open source database read-only ${sourcePath}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
   try {
@@ -382,13 +383,14 @@ async function main(): Promise<void> {
   }
 
   const abort = new AbortController();
-  let child: ChildProcess | undefined;
+  const childState: { process?: ChildProcess } = {};
   let shuttingDown = false;
   const handleSignal = (signalName: "SIGINT" | "SIGTERM"): void => {
     // Cleanup runs once: either the initializer aborts, or the running service
     // is asked to shut down and the exit path below cleans up.
     if (shuttingDown) return;
     shuttingDown = true;
+    const child = childState.process;
     if (child !== undefined) {
       child.kill(signalName);
       return;
@@ -421,11 +423,12 @@ async function main(): Promise<void> {
   }
 
   printReady(workspace, options);
-  child = spawn(
+  const child = spawn(
     process.execPath,
     ["--import", "tsx", "src/server/main.ts", "--data-dir", workspace.dataDir, "--host", options.host, "--port", String(options.port)],
     { cwd: REPO_ROOT, stdio: "inherit", env: process.env },
   );
+  childState.process = child;
 
   const appExit = Promise.withResolvers<number>();
   child.once("error", appExit.reject);

@@ -148,7 +148,7 @@ function safeUrl(url: string): string | undefined {
 }
 
 export function ProviderManager(): ReactNode {
-  const { state, refreshModels, setError } = useApp();
+  const { state, refreshModels } = useApp();
   const { messages } = useI18n();
   const [search, setSearch] = useState("");
   const [configuredOnly, setConfiguredOnly] = useState(false);

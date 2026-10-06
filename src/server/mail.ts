@@ -45,7 +45,7 @@ import { markFailed, type Resume } from "./work.ts";
 import { findWork, isTerminal, WakeBudgetExceededError, enqueueWorksIn } from "./work-queue.ts";
 import { commitTerminal } from "./work-dispatch.ts";
 import { renderMailContinuation } from "./prompts/index.ts";
-import { AppError, type AppText } from "./app-text.ts";
+import { AppError } from "./app-text.ts";
 import { appMessages } from "./messages.ts";
 import type { LocalizedText } from "../shared/i18n.ts";
 import type { MessageDTO } from "../shared/contracts.ts";

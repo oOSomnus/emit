@@ -98,6 +98,22 @@ export type FixtureAnswer = {
   /** Omit the generated OpenAI [DONE] marker without changing the generated finish reason. */
   omitDone?: boolean;
 };
+
+/** A reasoning-only completion with no visible final answer. */
+export function emptyThinkingAnswer(canary: string, model = "fake-chat"): FixtureAnswer {
+  const base = { id: "empty-thinking", object: "chat.completion.chunk", created: 0, model };
+  return {
+    chunks: [
+      new TextEncoder().encode(
+        [
+          `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { reasoning_content: canary }, finish_reason: null }] })}\n\n`,
+          `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
+          "data: [DONE]\n\n",
+        ].join(""),
+      ),
+    ],
+  };
+}
 export type Fixture = { baseUrl: string; requests: FixtureRequest[]; close: () => Promise<void> };
 export type HttpRuntimeFixture = {
   runtime: EmitRuntime;
@@ -266,10 +282,9 @@ export function mkdtempDataDir(prefix: string): string {
 
 /** Build the process-wide task handles and register their extensions before resume. */
 export function buildResume(runtime: EmitRuntime, mcp: McpManager): Resume {
-  let resume: Resume;
   const dispatch = buildWorkDispatchTask(() => resume);
   const mail: MailTasks = buildMailTasks(() => resume);
-  resume = { runtime, mcp, dispatch, mail };
+  const resume: Resume = { runtime, mcp, dispatch, mail };
   runtime.registry.install(buildWorkDispatchExtension(dispatch));
   runtime.registry.install(buildMailExtension(mail));
   return resume;

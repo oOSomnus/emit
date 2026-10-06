@@ -1,4 +1,5 @@
 import type { WorkContextDTO, WorkNoteDTO } from "../../src/shared/contracts.ts";
+import { type Page } from "@playwright/test";
 import { expect, navigateWorkspace, onboarded, test, type BrowserE2eFixture } from "./fixtures.ts";
 
 async function api<T>(app: BrowserE2eFixture, path: string, method = "GET", body?: unknown): Promise<T> {
@@ -7,8 +8,27 @@ async function api<T>(app: BrowserE2eFixture, path: string, method = "GET", body
   return response.body;
 }
 
+async function createAndWaitForNote(
+  page: Page,
+  app: BrowserE2eFixture,
+  workContextId: string,
+  title: string,
+  body: string,
+): Promise<WorkContextDTO> {
+  await page.getByRole("button", { name: "New note", exact: true }).click();
+  await page.getByLabel("Note title", { exact: true }).fill(title);
+  await page.getByRole("textbox", { name: "Note body", exact: true }).fill(body);
+  await page.getByRole("button", { name: "Save note", exact: true }).click();
+  await expect.poll(async () => {
+    const updated = await api<WorkContextDTO>(app, `/api/work-contexts/${workContextId}`);
+    return updated.notes.find((note) => note.title === title)?.id;
+  }).toBeDefined();
+  return api<WorkContextDTO>(app, `/api/work-contexts/${workContextId}`);
+}
+
+
 test("work page keeps a narrow list beside the wide editable content", async ({ app, page }) => {
-  const research = await api<WorkContextDTO>(app, "/api/work-contexts", "POST", {
+  await api<WorkContextDTO>(app, "/api/work-contexts", "POST", {
     name: "Research",
     goal: "Compare sources",
     instructions: "Keep citations",
@@ -111,15 +131,7 @@ test("work drafts and notes survive concurrent server changes", async ({ app, pa
   await expect(page.locator(".work-context-list").getByText("Test Workspace renamed", { exact: true })).toBeVisible();
   await expect(goal).toHaveValue("Unsaved goal");
 
-  await page.getByRole("button", { name: "New note", exact: true }).click();
-  await page.getByLabel("Note title", { exact: true }).fill("Evidence");
-  await page.getByRole("textbox", { name: "Note body", exact: true }).fill("Source A supports the claim.");
-  await page.getByRole("button", { name: "Save note", exact: true }).click();
-  await expect.poll(async () => {
-    const updated = await api<WorkContextDTO>(app, `/api/work-contexts/${research.id}`);
-    return updated.notes.find((note) => note.title === "Evidence")?.id;
-  }).toBeDefined();
-  const researchWithNote = await api<WorkContextDTO>(app, `/api/work-contexts/${research.id}`);
+  const researchWithNote = await createAndWaitForNote(page, app, research.id, "Evidence", "Source A supports the claim.");
   const evidence = researchWithNote.notes.find((note) => note.title === "Evidence");
   expect(evidence).toBeDefined();
   const savedNote = await api<WorkNoteDTO>(app, `/api/work-contexts/${research.id}/notes/${evidence!.id}`);
@@ -253,15 +265,7 @@ test("the shared notes frame stays fully visible at the bottom of the work page"
   }
 
   // A real note, saved through the UI, keeps the same frame contract.
-  await page.getByRole("button", { name: "New note", exact: true }).click();
-  await page.getByLabel("Note title", { exact: true }).fill("Evidence");
-  await page.getByRole("textbox", { name: "Note body", exact: true }).fill("Source A supports the claim.");
-  await page.getByRole("button", { name: "Save note", exact: true }).click();
-  await expect.poll(async () => {
-    const updated = await api<WorkContextDTO>(app, `/api/work-contexts/${research.id}`);
-    return updated.notes.find((note) => note.title === "Evidence")?.id;
-  }).toBeDefined();
-  const researchWithNote = await api<WorkContextDTO>(app, `/api/work-contexts/${research.id}`);
+  const researchWithNote = await createAndWaitForNote(page, app, research.id, "Evidence", "Source A supports the claim.");
   const evidence = researchWithNote.notes.find((note) => note.title === "Evidence")!;
   const savedNote = await api<WorkNoteDTO>(app, `/api/work-contexts/${research.id}/notes/${evidence.id}`);
   expect(savedNote.body).toBe("Source A supports the claim.");

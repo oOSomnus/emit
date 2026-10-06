@@ -19,3 +19,36 @@ GITHUB_STATUS_REPORTER: false
 FILEIO_REPORTER: false
 
 SHOW_ELAPSED_TIME: true
+
+# TypeScript standard is replaced by the project ESLint flat config below, which
+# runs the recommended JavaScript and typescript-eslint presets over the server,
+# web, script, and test sources.
+DISABLE_LINTERS:
+  - TYPESCRIPT_STANDARD
+
+# Run the repository-local ESLint (installed from the lockfile) so the flat
+# config's bare imports and plugins resolve from node_modules instead of
+# MegaLinter's bundled install.
+TYPESCRIPT_ES_CONFIG_FILE: eslint.config.mjs
+TYPESCRIPT_ES_CLI_EXECUTABLE: [node_modules/.bin/eslint]
+TSX_ESLINT_CONFIG_FILE: eslint.config.mjs
+TSX_ESLINT_CLI_EXECUTABLE: [node_modules/.bin/eslint]
+JAVASCRIPT_ES_CONFIG_FILE: eslint.config.mjs
+JAVASCRIPT_ES_CLI_EXECUTABLE: [node_modules/.bin/eslint]
+JAVASCRIPT_ES_FILE_EXTENSIONS: [".js", ".mjs", ".cjs"]
+
+# zizmor authenticates with the workflow's read-only token to resolve the
+# `uses:` refs it audits; the token is not granted any new permission.
+ACTION_ZIZMOR_UNSECURED_ENV_VARIABLES:
+  - GITHUB_TOKEN
+
+# Formatting and documentation checks block the workflow instead of reporting
+# warnings only, so real violations cannot pass as a green run.
+JSON_PRETTIER_DISABLE_ERRORS: false
+MARKDOWN_MARKDOWNLINT_DISABLE_ERRORS: false
+MARKDOWN_MARKDOWN_TABLE_FORMATTER_DISABLE_ERRORS: false
+YAML_PRETTIER_DISABLE_ERRORS: false
+
+# package-lock.json is generated dependency metadata: duplicate detection and
+# link checking skip it, while the dependency and secret scanners still read it.
+SPELL_LYCHEE_FILTER_REGEX_EXCLUDE: '(^|/)package-lock\.json$'

@@ -95,7 +95,7 @@ export async function openEventStream(url: string): Promise<{
       try {
         event = JSON.parse(data) as ServerEvent;
       } catch (error) {
-        throw new Error(`Event stream contained invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`Event stream contained invalid JSON: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
       }
       dispatch(event);
       return;

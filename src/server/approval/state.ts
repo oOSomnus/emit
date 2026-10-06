@@ -20,7 +20,7 @@
  */
 
 import { createHash } from "node:crypto";
-import type { ConversationId, EntryId, TaskId as HarnessTaskId } from "@earendil-works/pi-durable";
+import type { ConversationId, TaskId as HarnessTaskId } from "@earendil-works/pi-durable";
 import type { LocalizedText } from "../../shared/i18n.ts";
 import type { ApprovalDTO, ApprovalEvidenceDTO } from "../../shared/contracts.ts";
 import {

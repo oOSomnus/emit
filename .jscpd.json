@@ -1,9 +1,12 @@
 {
   "threshold": 0,
+  "minTokens": 150,
   "reporters": ["html", "markdown"],
   "ignore": [
     "**/node_modules/**",
     "**/.git/**",
+    "**/.agents/**",
+    "package-lock.json",
     "**/.rbenv/**",
     "**/.venv/**",
     "**/*cache*/**",

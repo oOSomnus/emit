@@ -1,19 +1,15 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ApprovalDTO, EmployeeDTO, McpServerDTO, SkillDTO, WorkDTO, WorkExecutionDTO, WorkStatusDTO } from "../../src/shared/contracts.ts";
 import { mcpToolName, mcpToolReference } from "../../src/server/mcp.ts";
+import { FAKE_KEY_ENV, waitForFixture, type FixtureAnswer } from "../helpers/emit-fixture.ts";
 import {
-  FAKE_KEY_ENV,
-  startFixture,
-  startHttpRuntime,
-  waitForFixture,
-  type FixtureAnswer,
-  type FixtureRequest,
-  type HttpRuntimeFixture,
-} from "../helpers/emit-fixture.ts";
-import { seedTestWorkspace } from "../helpers/workspace-fixture.ts";
+  jsonInit as json,
+  openSeededApiFixture,
+  requestJson as request,
+  type SeededApiFixture as TestApi,
+} from "../helpers/api-fixture.ts";
 
 const cleanup: Array<() => Promise<void> | void> = [];
 let previousApiKey: string | undefined;
@@ -35,40 +31,6 @@ afterEach(async () => {
   else process.env[FAKE_KEY_ENV] = previousApiKey;
 });
 
-type ApiWorkspace = { workContextId: string; employeeIds: readonly string[]; channelId: string; mailRoomId: string };
-type ApiResponse<T> = { status: number; body: T };
-type TestApi = { root: string; http: HttpRuntimeFixture; workspace: ApiWorkspace };
-
-async function request<T>(url: string, path: string, init?: RequestInit): Promise<ApiResponse<T>> {
-  const response = await fetch(new URL(path, url), { ...init, signal: init?.signal ?? AbortSignal.timeout(10_000) });
-  const text = await response.text();
-  let body: T;
-  try {
-    body = JSON.parse(text) as T;
-  } catch {
-    body = text as T;
-  }
-  return { status: response.status, body };
-}
-
-function json(method: string, body?: unknown): RequestInit {
-  return {
-    method,
-    ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
-  };
-}
-
-async function openApi(prefix: string, decide: (request: FixtureRequest) => FixtureAnswer): Promise<TestApi> {
-  const root = mkdtempSync(join(tmpdir(), prefix));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-  const fixture = await startFixture(decide);
-  cleanup.push(() => fixture.close());
-  const http = await startHttpRuntime(join(root, "data"));
-  cleanup.push(() => http.close());
-  const workspace = await seedTestWorkspace({ url: http.url, providerBaseUrl: fixture.baseUrl, root });
-  http.runtime.resume();
-  return { root, http, workspace };
-}
 
 function lowRiskReview(): FixtureAnswer {
   return {
@@ -183,7 +145,11 @@ async function waitForWorkBranch(api: TestApi, id: string): Promise<WorkStatusDT
 
 describe("skills and stdio MCP API contract", () => {
   it("imports valid skills with diagnostics, deduplicates repeated imports, and deletes the skill", async () => {
-    const api = await openApi("emit-api-skills-", (request) => request.model === "fake-reviewer" ? lowRiskReview() : { content: "ready" });
+    const api = await openSeededApiFixture({
+      prefix: "emit-api-skills-",
+      cleanups: cleanup,
+      decide: (_root, request) => request.model === "fake-reviewer" ? lowRiskReview() : { content: "ready" },
+    });
     const skillRoot = join(api.root, "skills");
     const validDirectory = join(skillRoot, "fixture-guide");
     const invalidDirectory = join(skillRoot, "malformed");
@@ -227,14 +193,18 @@ describe("skills and stdio MCP API contract", () => {
   it("discovers both stdio tools, gates hinted read-only tools until trusted, and exposes connection/call failures", async () => {
     let serverId = "";
     let errorServerId = "";
-    const api = await openApi("emit-api-mcp-", (request) => {
-      if (request.model === "fake-reviewer") return highRiskReview();
-      const markers = [...request.prompt.matchAll(/MCP_TOOL_(?:UNTRUSTED_ECHO|TRUSTED_ECHO|SHOUT|ERROR_CALL)/g)];
-      const marker = markers.at(-1)?.[0];
-      if (marker === undefined || request.prompt.includes('"role":"tool"')) return { content: "MCP result handled." };
-      if (marker === "MCP_TOOL_SHOUT") return { toolCall: { name: mcpToolName(serverId, "shout"), args: { message: "be loud" } } };
-      if (marker === "MCP_TOOL_ERROR_CALL") return { toolCall: { name: mcpToolName(errorServerId, "echo_notes"), args: { path: "error.txt" } } };
-      return { toolCall: { name: mcpToolName(serverId, "echo_notes"), args: { path: marker } } };
+    const api = await openSeededApiFixture({
+      prefix: "emit-api-mcp-",
+      cleanups: cleanup,
+      decide: (_root, request) => {
+        if (request.model === "fake-reviewer") return highRiskReview();
+        const markers = [...request.prompt.matchAll(/MCP_TOOL_(?:UNTRUSTED_ECHO|TRUSTED_ECHO|SHOUT|ERROR_CALL)/g)];
+        const marker = markers.at(-1)?.[0];
+        if (marker === undefined || request.prompt.includes('"role":"tool"')) return { content: "MCP result handled." };
+        if (marker === "MCP_TOOL_SHOUT") return { toolCall: { name: mcpToolName(serverId, "shout"), args: { message: "be loud" } } };
+        if (marker === "MCP_TOOL_ERROR_CALL") return { toolCall: { name: mcpToolName(errorServerId, "echo_notes"), args: { path: "error.txt" } } };
+        return { toolCall: { name: mcpToolName(serverId, "echo_notes"), args: { path: marker } } };
+      },
     });
     const normal = await request<McpServerDTO>(api.http.url, "/api/mcp", json("POST", {
       name: "fixture",
@@ -349,15 +319,19 @@ describe("skills and stdio MCP API contract", () => {
 
   it("keeps MCP trust and raw tool identity consistent across lossy display names", async () => {
     let serverId = "";
-    const api = await openApi("emit-api-mcp-identity-", (request) => {
-      if (request.model === "fake-reviewer") return highRiskReview();
-      const markers = [...request.prompt.matchAll(/MCP_IDENTITY_CASE:(\d)/g)];
-      const marker = markers.at(-1);
-      if (marker === undefined || request.prompt.includes('"role":"tool"')) return { content: "Identity case handled." };
-      const index = Number(marker[1]);
-      const raw = IDENTITY_RAW_TOOLS[index];
-      if (raw === undefined) return { content: "Identity case handled." };
-      return { toolCall: { name: mcpToolName(serverId, raw), args: { path: `identity-${index}` } } };
+    const api = await openSeededApiFixture({
+      prefix: "emit-api-mcp-identity-",
+      cleanups: cleanup,
+      decide: (_root, request) => {
+        if (request.model === "fake-reviewer") return highRiskReview();
+        const markers = [...request.prompt.matchAll(/MCP_IDENTITY_CASE:(\d)/g)];
+        const marker = markers.at(-1);
+        if (marker === undefined || request.prompt.includes('"role":"tool"')) return { content: "Identity case handled." };
+        const index = Number(marker[1]);
+        const raw = IDENTITY_RAW_TOOLS[index];
+        if (raw === undefined) return { content: "Identity case handled." };
+        return { toolCall: { name: mcpToolName(serverId, raw), args: { path: `identity-${index}` } } };
+      },
     });
     const created = await request<McpServerDTO>(api.http.url, "/api/mcp", json("POST", {
       name: "fixture",

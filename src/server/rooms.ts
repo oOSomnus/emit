@@ -572,13 +572,13 @@ export async function ensureEmployeeDm(
   },
 ): Promise<{ room: RoomRecord; created: boolean }> {
   const expected = sortedParticipants(input.participantIds[0], input.participantIds[1]);
-  const candidates = (await listRooms(runtime)).filter(
-    (room) =>
-      room.kind === "dm" &&
-      room.workContextId === input.workContextId &&
-      sameParticipants(room.dmParticipantIds, expected),
-  );
   const result = await runtime.harness.commit(async (tx) => {
+    const candidates = (await listRooms(runtime)).filter(
+      (room) =>
+        room.kind === "dm" &&
+        room.workContextId === input.workContextId &&
+        sameParticipants(room.dmParticipantIds, expected),
+    );
     for (const candidate of candidates) {
       const doc = await tx.doc(RoomDoc, candidate.id, { id: candidate.id });
       if (

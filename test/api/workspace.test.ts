@@ -1,21 +1,18 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { FastifyInstance } from "fastify";
 import type { BootstrapDTO, ChatSelectionDTO, EmployeeDTO, WorkContextDTO, WorkNoteDTO } from "../../src/shared/contracts.ts";
 import type { HttpRuntimeFixture } from "../helpers/emit-fixture.ts";
+import { providerConfig, type Fixture, type FixtureRequest } from "../helpers/emit-fixture.ts";
 import {
-  FAKE_KEY_ENV,
-  providerConfig,
-  startFixture,
-  startHttpRuntime,
-  type Fixture,
-  type FixtureRequest,
-} from "../helpers/emit-fixture.ts";
+  injectRequest as call,
+  parseInject as json,
+  startRawApiFixture,
+  type ApiFixtureCleanups,
+} from "../helpers/api-fixture.ts";
 import { seedTestWorkspace } from "../helpers/workspace-fixture.ts";
 
-const cleanups: Array<() => Promise<void>> = [];
+const cleanups: ApiFixtureCleanups = [];
 const executionModel: ChatSelectionDTO = { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" };
 const reviewerModel = { model: { providerId: "fake", modelId: "fake-reviewer" }, effort: "off" };
 const reviewerAnswer = JSON.stringify({
@@ -32,67 +29,19 @@ function answer(request: FixtureRequest) {
   return { content: "API fixture response" };
 }
 
-async function startApi(): Promise<{ root: string; http: HttpRuntimeFixture; provider: Fixture }> {
-  const previousKey = process.env[FAKE_KEY_ENV];
-  process.env[FAKE_KEY_ENV] = "api-workspace-fixture-key";
-  const root = mkdtempSync(join(tmpdir(), "emit-api-workspace-"));
-  let provider: Fixture | undefined;
-  let http: HttpRuntimeFixture | undefined;
-  try {
-    const startedProvider = await startFixture(answer);
-    provider = startedProvider;
-    const startedHttp = await startHttpRuntime(join(root, "data"));
-    http = startedHttp;
-    const fixture = { root, http: startedHttp, provider: startedProvider };
-    cleanups.push(async () => {
-      try {
-        await fixture.http.close();
-      } finally {
-        try {
-          await fixture.provider.close();
-        } finally {
-          if (previousKey === undefined) delete process.env[FAKE_KEY_ENV];
-          else process.env[FAKE_KEY_ENV] = previousKey;
-          rmSync(root, { recursive: true, force: true });
-        }
-      }
-    });
-    return fixture;
-  } catch (error) {
-    try {
-      await http?.close();
-    } finally {
-      try {
-        await provider?.close();
-      } finally {
-        if (previousKey === undefined) delete process.env[FAKE_KEY_ENV];
-        else process.env[FAKE_KEY_ENV] = previousKey;
-        rmSync(root, { recursive: true, force: true });
-      }
-    }
-    throw error;
-  }
+async function startApi() {
+  return startRawApiFixture({
+    prefix: "emit-api-workspace-",
+    keyValue: "api-workspace-fixture-key",
+    cleanups,
+    decide: answer,
+  });
 }
 
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-type InjectResult = { statusCode: number; body: string };
-
-async function call(server: FastifyInstance, method: Method, url: string, payload?: unknown): Promise<InjectResult> {
-  const response = await server.inject({
-    method,
-    url,
-    ...(payload === undefined ? {} : { headers: { "content-type": "application/json" }, payload: JSON.stringify(payload) }),
-  });
-  return { statusCode: response.statusCode, body: response.body };
-}
-
-function json<T>(response: InjectResult): T {
-  return JSON.parse(response.body) as T;
-}
 
 async function seed(http: HttpRuntimeFixture, provider: Fixture, root: string) {
   return seedTestWorkspace({ url: http.url, providerBaseUrl: provider.baseUrl, root });

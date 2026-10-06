@@ -1,18 +1,19 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { WorkDTO, WorkExecutionDTO, WorkStatusDTO } from "../../src/shared/contracts.ts";
 import {
   FAKE_KEY_ENV,
-  startFixture,
-  startHttpRuntime,
+  emptyThinkingAnswer,
   waitForFixture,
   type FixtureAnswer,
   type FixtureRequest,
-  type HttpRuntimeFixture,
 } from "../helpers/emit-fixture.ts";
-import { seedTestWorkspace } from "../helpers/workspace-fixture.ts";
+import {
+  jsonInit as json,
+  openSeededApiFixture,
+  requestJson as request,
+} from "../helpers/api-fixture.ts";
 
 const cleanup: Array<() => Promise<void> | void> = [];
 let previousApiKey: string | undefined;
@@ -34,42 +35,6 @@ afterEach(async () => {
   else process.env[FAKE_KEY_ENV] = previousApiKey;
 });
 
-type ApiWorkspace = { workContextId: string; employeeIds: readonly string[]; channelId: string; mailRoomId: string };
-type ApiResponse<T> = { status: number; body: T };
-
-async function request<T>(url: string, path: string, init?: RequestInit): Promise<ApiResponse<T>> {
-  const response = await fetch(new URL(path, url), { ...init, signal: init?.signal ?? AbortSignal.timeout(10_000) });
-  const text = await response.text();
-  let body: T;
-  try {
-    body = JSON.parse(text) as T;
-  } catch {
-    body = text as T;
-  }
-  return { status: response.status, body };
-}
-
-function json(method: string, body?: unknown): RequestInit {
-  return {
-    method,
-    ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
-  };
-}
-
-async function openApi(
-  prefix: string,
-  decide: (request: FixtureRequest) => FixtureAnswer,
-): Promise<{ http: HttpRuntimeFixture; workspace: ApiWorkspace }> {
-  const root = mkdtempSync(join(tmpdir(), prefix));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-  const fixture = await startFixture(decide);
-  cleanup.push(() => fixture.close());
-  const http = await startHttpRuntime(join(root, "data"));
-  cleanup.push(() => http.close());
-  const workspace = await seedTestWorkspace({ url: http.url, providerBaseUrl: fixture.baseUrl, root });
-  http.runtime.resume();
-  return { http, workspace };
-}
 
 function answerFor(root: string, request: FixtureRequest): FixtureAnswer {
   if (request.model === "fake-reviewer") {
@@ -140,15 +105,11 @@ async function sendToAlice(url: string, roomId: string, employeeId: string, body
 
 describe("execution HTTP contract", () => {
   it("pages a real transcript with an opaque cursor and keeps every step once, oldest first", async () => {
-    const root = mkdtempSync(join(tmpdir(), "emit-api-execution-pages-"));
-    cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-    const fixture = await startFixture((request) => answerFor(root, request));
-    cleanup.push(() => fixture.close());
-    const http = await startHttpRuntime(join(root, "data"));
-    cleanup.push(() => http.close());
-    const workspace = await seedTestWorkspace({ url: http.url, providerBaseUrl: fixture.baseUrl, root });
-    http.runtime.resume();
-
+    const { root, http, workspace } = await openSeededApiFixture({
+      prefix: "emit-api-execution-pages-",
+      cleanups: cleanup,
+      decide: (root, request) => answerFor(root, request),
+    });
     const redactionContent = `token: API_EXECUTION_SECRET_CANARY\nVISIBLE_FILE_DATA\n${"界".repeat(3_000)}`;
     writeFileSync(join(root, "work", "canary.txt"), redactionContent, "utf8");
     const redactionWorkId = await sendToAlice(http.url, workspace.channelId, workspace.employeeIds[0]!, "API_READ_CANARY");
@@ -214,13 +175,11 @@ describe("execution HTTP contract", () => {
   }, 120_000);
 
   it("returns an empty execution timeline for accepted queued work before its conversation starts", async () => {
-    const root = mkdtempSync(join(tmpdir(), "emit-empty-execution-"));
-    cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-    const provider = await startFixture();
-    cleanup.push(() => provider.close());
-    const http = await startHttpRuntime(join(root, "data"));
-    cleanup.push(() => http.close());
-    const workspace = await seedTestWorkspace({ url: http.url, providerBaseUrl: provider.baseUrl, root });
+    const { http, workspace } = await openSeededApiFixture({
+      prefix: "emit-empty-execution-",
+      cleanups: cleanup,
+      resume: false,
+    });
     const id = await sendToAlice(http.url, workspace.channelId, workspace.employeeIds[0]!, "Queued request");
     const result = await request<WorkExecutionDTO>(http.url, `/api/works/${id}/execution`);
     expect(result.status).toBe(200);
@@ -242,24 +201,15 @@ describe("execution HTTP contract", () => {
         };
       }
       const marker = [...request.prompt.matchAll(/API_FAULT_(?:400|401|429|500|EMPTY_THINKING)-[A-Z]+/g)].at(-1)?.[0];
-      if (marker?.includes("EMPTY_THINKING")) {
-        const base = { id: "empty-thinking", object: "chat.completion.chunk", created: 0, model: "fake-chat" };
-        return {
-          chunks: [
-            new TextEncoder().encode(
-              [
-                `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { reasoning_content: "PRIVATE_EMPTY_REPLY_THINKING" }, finish_reason: null }] })}\n\n`,
-                `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
-                "data: [DONE]\n\n",
-              ].join(""),
-            ),
-          ],
-        };
-      }
+      if (marker?.includes("EMPTY_THINKING")) return emptyThinkingAnswer("PRIVATE_EMPTY_REPLY_THINKING");
       const status = marker === undefined ? undefined : Number(marker.match(/400|401|429|500/)?.[0]);
       return status === undefined ? { content: "Unexpected fixture request" } : { httpStatus: status };
     };
-    const { http, workspace } = await openApi("emit-api-provider-faults-", fixtureForFault);
+    const { http, workspace } = await openSeededApiFixture({
+      prefix: "emit-api-provider-faults-",
+      cleanups: cleanup,
+      decide: (_root, request) => fixtureForFault(request),
+    });
     const id = await sendToAlice(http.url, workspace.channelId, workspace.employeeIds[0]!, `API_FAULT_${code}-CASE`);
     await waitForWorkStatus(http.url, id, "failed");
     const execution = await request<WorkExecutionDTO>(http.url, `/api/works/${id}/execution`);
@@ -292,7 +242,11 @@ describe("execution HTTP contract", () => {
       }
       return { content: "Unexpected fixture request" };
     };
-    const { http, workspace } = await openApi("emit-api-tool-error-", faultFixture);
+    const { http, workspace } = await openSeededApiFixture({
+      prefix: "emit-api-tool-error-",
+      cleanups: cleanup,
+      decide: (_root, request) => faultFixture(request),
+    });
     const workId = await sendToAlice(http.url, workspace.channelId, workspace.employeeIds[0]!, "API_TOOL_ERROR");
     await waitForWorkStatus(http.url, workId, "succeeded");
     const execution = await request<WorkExecutionDTO>(http.url, `/api/works/${workId}/execution`);

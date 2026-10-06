@@ -133,9 +133,6 @@ function contextDirectory(request: FixtureRequest): DirectoryEntry[] {
   return match === null ? [] : (JSON.parse(match[1]!) as DirectoryEntry[]);
 }
 
-function toolText(result: ToolExecutionResult): string {
-  return (result.content ?? []).map((part) => (part.type === "text" ? part.text : "")).join("\n");
-}
 
 async function executeCollaborationTool(
   resume: Resume,

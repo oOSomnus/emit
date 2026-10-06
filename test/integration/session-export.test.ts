@@ -12,7 +12,10 @@ import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ApiErrorBody, SessionExportReceiptDTO, WorkDTO, WorkStatusDTO } from "../../src/shared/contracts.ts";
+import type { ApiErrorBody, SessionExportReceiptDTO, SessionExportRequestDTO, WorkDTO, WorkStatusDTO } from "../../src/shared/contracts.ts";
+import type { JsonValue } from "@earendil-works/chord";
+import type { ConversationRecord, EntryRecord, StoredDocument, SubmissionRecord, TaskRecord } from "@earendil-works/pi-durable";
+import { RoomMessageEntry } from "../../src/server/documents.ts";
 import { findRoom } from "../../src/server/rooms.ts";
 import { listWorks } from "../../src/server/work.ts";
 import {
@@ -47,6 +50,39 @@ afterEach(async () => {
 });
 
 type ApiWorkspace = { workContextId: string; employeeIds: readonly string[]; channelId: string; mailRoomId: string };
+type SessionExportSnapshot = {
+  format: "emit.session-debug";
+  schemaVersion: 1;
+  capturedAt: number;
+  scope: SessionExportRequestDTO;
+  conversations: Array<{
+    id: number;
+    parent?: ConversationRecord["parent"];
+    owner?: ConversationRecord["owner"];
+    role: "room" | "execution";
+    coverage: "full" | "related";
+    entryIds: number[];
+    maxEntryId: number | null;
+  }>;
+  entries: EntryRecord[];
+  tasks: TaskRecord<JsonValue, JsonValue, JsonValue>[];
+  submissions: SubmissionRecord[];
+  documents: StoredDocument[];
+  artifacts: Array<{
+    entryId: number;
+    toolCallId: string;
+    path: string;
+    readAt: number;
+    status: "included" | "missing" | "unsafe" | "unparsed" | "read-error";
+    reason?: string;
+    encoding?: "utf8" | "base64";
+    sensitive?: true;
+    content?: string;
+    bytes?: number;
+  }>;
+  missing: Array<{ kind: string; id: string; reason: string }>;
+  redaction: { marker: string; applied: true };
+};
 
 async function request<T>(url: string, path: string, init?: RequestInit): Promise<{ status: number; body: T }> {
   const response = await fetch(new URL(path, url), { ...init, signal: init?.signal ?? AbortSignal.timeout(10_000) });
@@ -80,7 +116,7 @@ async function openExportWorkspace(): Promise<{ http: HttpRuntimeFixture; worksp
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const fixture = await startFixture((request: FixtureRequest): FixtureAnswer => {
     if (request.model === "fake-reviewer") return { content: lowVerdict };
-    let messages: Array<{ role?: string }> = [];
+    let messages: Array<{ role?: string }>;
     try {
       messages = JSON.parse(request.prompt) as Array<{ role?: string }>;
     } catch {
@@ -112,11 +148,11 @@ async function waitForWorkStatus(url: string, id: string, status: WorkStatusDTO)
 }
 
 /** One export snapshot, parsed from its downloaded file. */
-async function downloadSnapshot(url: string, receipt: SessionExportReceiptDTO): Promise<Record<string, any>> {
+async function downloadSnapshot(url: string, receipt: SessionExportReceiptDTO): Promise<SessionExportSnapshot> {
   const response = await fetch(new URL(receipt.downloadUrl, url), { signal: AbortSignal.timeout(10_000) });
   expect(response.status).toBe(200);
   expect(response.headers.get("content-disposition")).toContain(receipt.filename);
-  return (await response.json()) as Record<string, any>;
+  return (await response.json()) as SessionExportSnapshot;
 }
 
 describe("session export HTTP contract", () => {
@@ -155,43 +191,42 @@ describe("session export HTTP contract", () => {
     // The requested room is complete; the unrelated mail room never leaks in.
     const room = await findRoom(http.runtime, workspace.channelId);
     const mailRoom = await findRoom(http.runtime, workspace.mailRoomId);
-    const roomConversation = snapshot.conversations.find((entry: { id: number }) => entry.id === room?.conversationId);
+    const roomConversation = snapshot.conversations.find((entry) => entry.id === room?.conversationId);
     expect(roomConversation).toMatchObject({ role: "room", coverage: "full" });
-    expect(roomConversation.entryIds.length).toBeGreaterThan(0);
-    expect(snapshot.conversations.some((entry: { id: number }) => entry.id === mailRoom?.conversationId)).toBe(false);
+    expect(roomConversation!.entryIds.length).toBeGreaterThan(0);
+    expect(snapshot.conversations.some((entry) => entry.id === mailRoom?.conversationId)).toBe(false);
 
     // The real transcript, including the tool call the model made.
-    const toolEntries = snapshot.entries.filter((entry: { model?: Array<{ role?: string; toolName?: string }> }) =>
+    const toolEntries = snapshot.entries.filter((entry) =>
       (entry.model ?? []).some((modelMessage) => modelMessage.role === "toolResult" && modelMessage.toolName === "run_shell"),
     );
     expect(toolEntries).toHaveLength(1);
     const userEntry = snapshot.entries.find(
-      (entry: { data?: { body?: string } }) => entry.data?.body === "EXPORT_SHELL_MARKER",
+      (entry) => RoomMessageEntry.is(entry) && entry.data.body === "EXPORT_SHELL_MARKER",
     );
     expect(userEntry).toBeDefined();
 
     // The work's execution conversation and task travel with the room export.
     const work = (await listWorks(http.runtime)).find((candidate) => candidate.id === workId)!;
-    expect(snapshot.conversations.some((entry: { id: number }) => entry.id === work.conversationId)).toBe(true);
-    expect(snapshot.tasks.some((task: { conversationId: number }) => task.conversationId === work.conversationId)).toBe(true);
+    expect(snapshot.conversations.some((entry) => entry.id === work.conversationId)).toBe(true);
+    expect(snapshot.tasks.some((task) => task.conversationId === work.conversationId)).toBe(true);
     expect(snapshot.submissions.length).toBeGreaterThan(0);
 
     // The documents that scope the selection, and nothing from another room.
     expect(
       snapshot.documents.some(
-        (doc: { record: { kind: string; key?: string } }) =>
-          doc.record.kind === "emit.room" && doc.record.key === workspace.channelId,
+        (doc) => doc.record.kind === "emit.room" && doc.record.key === workspace.channelId,
       ),
     ).toBe(true);
-    expect(snapshot.documents.some((doc: { record: { kind: string } }) => doc.record.kind === "emit.employee")).toBe(true);
+    expect(snapshot.documents.some((doc) => doc.record.kind === "emit.employee")).toBe(true);
 
     // The spilled full shell output is included verbatim, not summarized.
-    const artifact = snapshot.artifacts.find((entry: { status: string }) => entry.status === "included");
+    const artifact = snapshot.artifacts.find((entry) => entry.status === "included");
     expect(artifact).toBeDefined();
-    expect(artifact.encoding).toBe("utf8");
-    expect(artifact.content).toContain("\n2500\n");
-    expect(artifact.content.startsWith("1\n")).toBe(true);
-    expect(artifact.path.startsWith(tmpdir())).toBe(true);
+    expect(artifact!.encoding).toBe("utf8");
+    expect(artifact!.content).toContain("\n2500\n");
+    expect(artifact!.content!.startsWith("1\n")).toBe(true);
+    expect(artifact!.path.startsWith(tmpdir())).toBe(true);
 
     // A work-scoped export covers that work's execution and no room transcript.
     const byWork = await request<SessionExportReceiptDTO>(
@@ -203,18 +238,20 @@ describe("session export HTTP contract", () => {
     cleanup.push(() => rmSync(dirname(byWork.body.path), { recursive: true, force: true }));
     const workSnapshot = await downloadSnapshot(http.url, byWork.body);
     expect(workSnapshot.scope).toEqual({ workId });
-    expect(workSnapshot.conversations.some((entry: { role: string }) => entry.role === "execution")).toBe(true);
+    expect(workSnapshot.conversations.some((entry) => entry.role === "execution")).toBe(true);
     // The room the work came from contributes only its relevant entries: the
     // message that started the work, never the whole transcript.
-    const relatedRoom = workSnapshot.conversations.find((entry: { role: string }) => entry.role === "room");
+    const relatedRoom = workSnapshot.conversations.find((entry) => entry.role === "room");
     expect(relatedRoom).toMatchObject({ coverage: "related" });
-    expect(relatedRoom.entryIds).toContain(Number(work.sourceEntryId));
+    expect(relatedRoom!.entryIds).toContain(Number(work.sourceEntryId));
     expect(
-      workSnapshot.entries.some((entry: { data?: { body?: string } }) => entry.data?.body === "EXPORT_SHELL_MARKER"),
+      workSnapshot.entries.some(
+        (entry) => RoomMessageEntry.is(entry) && entry.data.body === "EXPORT_SHELL_MARKER",
+      ),
     ).toBe(true);
     expect(
-      workSnapshot.entries.some((entry: { model?: Array<{ toolName?: string }> }) =>
-        (entry.model ?? []).some((modelMessage) => modelMessage.toolName === "run_shell"),
+      workSnapshot.entries.some((entry) =>
+        (entry.model ?? []).some((modelMessage) => modelMessage.role === "toolResult" && modelMessage.toolName === "run_shell"),
       ),
     ).toBe(true);
   }, 90_000);

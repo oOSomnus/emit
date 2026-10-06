@@ -17,7 +17,7 @@ async function requestJson<T>(baseUrl: string, method: "POST" | "PUT", path: str
   try {
     return JSON.parse(responseBody) as T;
   } catch (error) {
-    throw new Error(`${method} ${path} returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`${method} ${path} returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
 }
 

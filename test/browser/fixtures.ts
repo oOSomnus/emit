@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test as base, type Page } from "@playwright/test";
-import { FAKE_KEY_ENV, providerConfig } from "../helpers/emit-fixture.ts";
-import type { E2eFixture } from "../helpers/e2e-fixture.ts";
+import { FAKE_KEY_ENV } from "../helpers/emit-fixture.ts";
+import { createFixtureOperations, type E2eFixture } from "../helpers/e2e-fixture.ts";
 import { startOAuthTokenServer, type OAuthTokenServerFixture } from "../helpers/oauth-token-server.ts";
 import { startEmitProcess, type EmitProcessFixture } from "../helpers/process-fixture.ts";
 import { startProviderProcess, type ProviderProcessFixture } from "../helpers/provider-process.ts";
@@ -62,6 +62,41 @@ function createBrowserOriginAccess(initial: readonly string[]): BrowserOrigins {
 }
 
 type BrowserFixtures = { app: BrowserE2eFixture };
+type BrowserProvider = {
+  readonly url: string;
+  close(): Promise<void>;
+};
+
+function browserAppCommon<TProvider extends BrowserProvider>(
+  root: string,
+  provider: TProvider,
+  emit: EmitProcessFixture,
+) {
+  const originAccess = createBrowserOriginAccess([emit.url, provider.url]);
+  return {
+    root,
+    workRoot: join(root, "work"),
+    outsideRoot: join(root, "outside"),
+    provider,
+    emit,
+    get browserOrigins() { return originAccess.browserOrigins; },
+    allowOrigin(origin: string) { originAccess.allowOrigin(origin); },
+    ...createFixtureOperations(root, emit, () => provider.close()),
+  };
+}
+
+async function cleanUpBrowserStartup(
+  root: string,
+  emit: EmitProcessFixture | undefined,
+  provider: BrowserProvider | undefined,
+): Promise<void> {
+  try { await emit?.stop(); }
+  finally {
+    try { await provider?.close(); }
+    finally { rmSync(root, { recursive: true, force: true }); }
+  }
+}
+
 
 /** A real, isolated Emit process serving the built browser application. */
 export function createBrowserApp(): Promise<BrowserE2eFixture>;
@@ -89,41 +124,12 @@ export async function createBrowserApp(
     });
     const instance = emit;
     const fake = provider;
-    const originAccess = createBrowserOriginAccess([instance.url, fake.url]);
-    let closing: Promise<void> | undefined;
-    const common = {
-      root,
-      workRoot: join(root, "work"),
-      outsideRoot: join(root, "outside"),
-      provider: fake,
-      emit: instance,
-      get browserOrigins() { return originAccess.browserOrigins; },
-      allowOrigin(origin: string) { originAccess.allowOrigin(origin); },
-      async request<T>(path: string, method = "GET", body?: unknown): Promise<{ status: number; body: T }> {
-        const response = await fetch(new URL(path, instance.url), {
-          method,
-          ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
-          signal: AbortSignal.timeout(10_000),
-        });
-        return { status: response.status, body: await response.json() as T };
-      },
-      close(): Promise<void> {
-        closing ??= (async () => {
-          try { await instance.stop(); }
-          finally {
-            try { await fake.close(); }
-            finally { rmSync(root, { recursive: true, force: true }); }
-          }
-        })();
-        return closing;
-      },
-    };
+    const common = browserAppCommon(root, fake, instance);
     if (options.seed === false) return common;
     const workspace = await seedTestWorkspace({ url: instance.url, providerBaseUrl: fake.baseUrl, root });
     return Object.assign(common, { workspace });
   } catch (error) {
-    try { await emit?.stop(); }
-    finally { try { await provider?.close(); } finally { rmSync(root, { recursive: true, force: true }); } }
+    await cleanUpBrowserStartup(root, emit, provider);
     throw error;
   }
 }
@@ -147,38 +153,9 @@ export async function createOAuthBrowserApp(): Promise<OAuthBrowserApp> {
     });
     const instance = emit;
     const fake = provider;
-    const originAccess = createBrowserOriginAccess([instance.url, fake.url]);
-    let closing: Promise<void> | undefined;
-    return {
-      root,
-      workRoot: join(root, "work"),
-      outsideRoot: join(root, "outside"),
-      provider: fake,
-      emit: instance,
-      get browserOrigins() { return originAccess.browserOrigins; },
-      allowOrigin(origin: string) { originAccess.allowOrigin(origin); },
-      async request<T>(path: string, method = "GET", body?: unknown): Promise<{ status: number; body: T }> {
-        const response = await fetch(new URL(path, instance.url), {
-          method,
-          ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
-          signal: AbortSignal.timeout(10_000),
-        });
-        return { status: response.status, body: await response.json() as T };
-      },
-      close(): Promise<void> {
-        closing ??= (async () => {
-          try { await instance.stop(); }
-          finally {
-            try { await fake.close(); }
-            finally { rmSync(root, { recursive: true, force: true }); }
-          }
-        })();
-        return closing;
-      },
-    };
+    return browserAppCommon(root, fake, instance);
   } catch (error) {
-    try { await emit?.stop(); }
-    finally { try { await provider?.close(); } finally { rmSync(root, { recursive: true, force: true }); } }
+    await cleanUpBrowserStartup(root, emit, provider);
     throw error;
   }
 }
@@ -223,7 +200,6 @@ export async function onboarded(page: Page, app: BrowserE2eFixture): Promise<voi
  * asserts on screen.
  */
 export async function navigateWorkspace(page: Page, label: string): Promise<void> {
-  const language = await page.locator("html").getAttribute("lang");
   const drawerOpen = await page.locator(".shell").evaluate((element) => element.classList.contains("nav-open"));
   if (!drawerOpen) {
     const open = page.getByRole("button", { name: /^(Open navigation|打开导航)$/ });

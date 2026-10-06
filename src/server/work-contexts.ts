@@ -264,7 +264,8 @@ export function toWorkNoteDTO(record: WorkNoteRecord): WorkNoteDTO {
 }
 
 function toWorkNoteSummary(record: WorkNoteRecord): WorkNoteSummaryDTO {
-  const { body: _body, ...summary } = toWorkNoteDTO(record);
+  const summary = toWorkNoteDTO(record);
+  Reflect.deleteProperty(summary, "body");
   return summary;
 }
 

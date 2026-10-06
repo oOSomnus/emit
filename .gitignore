@@ -34,3 +34,8 @@ credentials.json
 
 megalinter-reports/
 *.megalinter-setup.bak
+
+# Agent tooling installed into this checkout (MegaLinter skills and their lock
+# file) stays local: it is not part of the application or its CI inputs.
+.agents/
+skills-lock.json

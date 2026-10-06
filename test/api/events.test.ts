@@ -1,27 +1,25 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ApprovalDTO, AppConfigDTO, EmployeeDTO, McpServerDTO, ServerEvent, SkillDTO, WorkContextDTO, WorkDTO } from "../../src/shared/contracts.ts";
 import {
   FAKE_KEY_ENV,
-  startFixture,
-  startHttpRuntime,
   waitForFixture,
-  type Fixture,
   type FixtureAnswer,
   type FixtureRequest,
-  type HttpRuntimeFixture,
 } from "../helpers/emit-fixture.ts";
 import { openEventStream } from "../helpers/sse-client.ts";
-import { seedTestWorkspace } from "../helpers/workspace-fixture.ts";
+import {
+  jsonInit as json,
+  openSeededApiFixture,
+  requestJson as request,
+  type ApiResponse,
+} from "../helpers/api-fixture.ts";
 
 type EventStreamReader = {
   next(predicate: (event: ServerEvent) => boolean, timeoutMs?: number): Promise<ServerEvent>;
   close(): Promise<void>;
 };
-type ApiWorkspace = { workContextId: string; employeeIds: readonly string[]; channelId: string; mailRoomId: string };
-type ApiResponse<T> = { status: number; body: T };
 
 const cleanup: Array<() => Promise<void> | void> = [];
 let previousApiKey: string | undefined;
@@ -43,24 +41,6 @@ afterEach(async () => {
   else process.env[FAKE_KEY_ENV] = previousApiKey;
 });
 
-async function request<T>(url: string, path: string, init?: RequestInit): Promise<ApiResponse<T>> {
-  const response = await fetch(new URL(path, url), { ...init, signal: init?.signal ?? AbortSignal.timeout(10_000) });
-  const text = await response.text();
-  let body: T;
-  try {
-    body = JSON.parse(text) as T;
-  } catch {
-    body = text as T;
-  }
-  return { status: response.status, body };
-}
-
-function json(method: string, body?: unknown): RequestInit {
-  return {
-    method,
-    ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
-  };
-}
 
 function eventFor(request: FixtureRequest, root: string): FixtureAnswer {
   if (request.model === "fake-reviewer") {
@@ -115,16 +95,6 @@ async function waitForWorkStatus(url: string, workId: string, status: string): P
   }, `SSE work ${workId} to become ${status}`, 45_000);
 }
 
-async function waitForPendingApproval(url: string, workId: string): Promise<ApprovalDTO> {
-  let approval: ApprovalDTO | undefined;
-  await waitForFixture(async () => {
-    const response = await request<{ approvals: ApprovalDTO[] }>(url, "/api/approvals");
-    approval = response.body.approvals.find((item) => item.workId === workId && item.status === "pending-human");
-    return approval !== undefined;
-  }, `SSE approval for ${workId}`, 45_000);
-  if (approval === undefined) throw new Error(`No approval appeared for ${workId}`);
-  return approval;
-}
 
 async function trackedStream(url: string): Promise<EventStreamReader> {
   const stream = await openEventStream(`${url}/api/events`);
@@ -134,14 +104,11 @@ async function trackedStream(url: string): Promise<EventStreamReader> {
 
 describe("real application SSE", () => {
   it("fans out real actions to two clients, survives one disconnect, resyncs through GET, and ends on server close", async () => {
-    const root = mkdtempSync(join(tmpdir(), "emit-api-events-"));
-    cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-    const fixture = await startFixture((request) => eventFor(request, root));
-    cleanup.push(() => fixture.close());
-    const http: HttpRuntimeFixture = await startHttpRuntime(join(root, "data"));
-    cleanup.push(() => http.close());
-    const workspace: ApiWorkspace = await seedTestWorkspace({ url: http.url, providerBaseUrl: fixture.baseUrl, root });
-    http.runtime.resume();
+    const { root, http, workspace } = await openSeededApiFixture({
+      prefix: "emit-api-events-",
+      cleanups: cleanup,
+      decide: (root, request) => eventFor(request, root),
+    });
     const first = await trackedStream(http.url);
     const second = await trackedStream(http.url);
 

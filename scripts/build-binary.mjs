@@ -40,7 +40,7 @@ const packageJsonReadExpression = 'readFileSync(getPackageJsonPath(), "utf-8")';
     try {
       require.resolve(specifier);
     } catch (error) {
-      throw new Error(`Node is missing ${specifier}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Node is missing ${specifier}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
   }
   for (const tool of ["node", "npm"]) {

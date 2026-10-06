@@ -10,6 +10,7 @@
 make install         # 按 lockfile 安装依赖
 make dev             # 构建前端，然后用 tsx watch 启动 src/server/main.ts
 make typecheck       # 分别检查服务端、前端、浏览器测试三个 TypeScript 环境
+make lint            # 用 ESLint 检查源码、脚本与测试
 make build           # typecheck + vite build
 make test            # 日常 Vitest：core、integration、api、e2e 四个 project
 make                 # 原生单文件构建（dist/emit，Node SEA）
@@ -26,17 +27,20 @@ make mock            # 从真实配置复制出的临时工作区，用真实模
 
 日常层可分别运行 `npm run test:unit`、`test:integration`、`test:api`、`test:e2e`；`test:coverage` 统计服务端/共享逻辑及纯前端 helper。`npm run test:gate` 顺序执行 build、日常覆盖率、两个 Chromium project、原生构建及原生 smoke，保留每个可运行层的退出码。`npm run test:fault` 与 `npm run test:stress` 必须手动启动，不混入 `npm test` 或 watch。压力默认 8 并发、500 次操作或 60 秒、最多 3 次重启；更重的负载需要显式设置 `EMIT_TEST_*`。
 
+`npm run lint`（或 `make lint`）用 ESLint 的 recommended JavaScript 与 typescript-eslint 预设检查 `src`、`scripts`、`test`，不允许任何警告；类型检查仍由三个 tsconfig 负责。复制粘贴重复由 jscpd 通过 `.jscpd.json` 统计，只报告 150 tokens 及以上的重复块。两条门禁都在 GitHub Actions 上运行：`.github/workflows/test.yml` 执行 `npm run test:gate`，
+`.github/workflows/mega-linter.yml` 对整个代码库运行 MegaLinter（stylelint、ESLint、jscpd、拼写、链接、密钥、workflow 审计），并把 `megalinter-reports/` 作为 artifact 上传。
+
 ### 分层测试矩阵
 
-| 层 | 入口 | 行为边界 |
-| --- | --- | --- |
-| L1：规格与性质 | `npm run test:unit` | 地址解析、审批策略、目录规范化、执行记录、国际化、种子固定的随机输入及边界值 |
-| L2：真实运行时 | `npm run test:integration` | SQLite 持久化、审批状态机、并发竞争、历史分页、任务上限、目录替换后的权限失效 |
-| L3：HTTP/SSE | `npm run test:api` | 非法输入不能落库、事件与最终状态一致、邮件投递、执行记录脱敏、原生认证与刷新 |
-| L4：进程与原生 | `npm run test:e2e` / `test:native` | SIGKILL 恢复、独占锁、唯一回复、协作图、目录隔离、实际 shell/MCP、OpenCode Go 会话、无 checkout 原生启动 |
-| L5：浏览器 | `npm run test:browser` | 真实 UI 上手、聊天、审批、邮件、设置、移动导航、主题/语言、断线恢复 |
-| L6：故障注入 | `npm run test:fault` | 上游错误、损坏或截断流、MCP 异常、SSE 生命周期、进程中断后的安全收敛 |
-| L7：压力与状态模型 | `npm run test:stress` | 并发负载、历史与事件扇出、随机操作序列、重复重启；输出实际延迟、错误和内存测量 |
+| 层                 | 入口                               | 行为边界                                                                                                 |
+|--------------------|------------------------------------|----------------------------------------------------------------------------------------------------------|
+| L1: 规格与性质     | `npm run test:unit`                | 地址解析, 审批策略, 目录规范化, 执行记录, 国际化, 种子固定的随机输入及边界值                             |
+| L2: 真实运行时     | `npm run test:integration`         | SQLite 持久化, 审批状态机, 并发竞争, 历史分页, 任务上限, 目录替换后的权限失效                            |
+| L3: HTTP/SSE       | `npm run test:api`                 | 非法输入不能落库, 事件与最终状态一致, 邮件投递, 执行记录脱敏, 原生认证与刷新                             |
+| L4: 进程与原生     | `npm run test:e2e` / `test:native` | SIGKILL 恢复, 独占锁, 唯一回复, 协作图, 目录隔离, 实际 shell/MCP, OpenCode Go 会话, 无 checkout 原生启动 |
+| L5: 浏览器         | `npm run test:browser`             | 真实 UI 上手, 聊天, 审批, 邮件, 设置, 移动导航, 主题/语言, 断线恢复                                      |
+| L6: 故障注入       | `npm run test:fault`               | 上游错误, 损坏或截断流, MCP 异常, SSE 生命周期, 进程中断后的安全收敛                                     |
+| L7: 压力与状态模型 | `npm run test:stress`              | 并发负载, 历史与事件扇出, 随机操作序列, 重复重启; 输出实际延迟, 错误和内存测量                           |
 
 日常门禁不遇错即停：节点层失败仍继续浏览器和原生层；构建前提失败则明确记录 blocked，最终非零退出。节点层摘要在 `test-results/<project>/summary.json`，统一门禁摘要在 `test-results/gate/results.json`；覆盖率在 `coverage/`，浏览器 JUnit、失败截图/trace/video 与 HTML 在 `test-results/browser/` 和 `playwright-report/`。红色断言表示仍存在的行为缺陷，不允许用 skip、自动重试或反向钉住当前错误来变绿。
 
@@ -50,15 +54,15 @@ make mock            # 从真实配置复制出的临时工作区，用真实模
 
 只接受下列测试旋钮，未知 `EMIT_TEST_*` 或越界/非整数值直接失败：
 
-| 变量 | 默认 | 允许范围/用途 |
-| --- | --- | --- |
-| `EMIT_TEST_SEED` | `20261004` | 有符号 32 位整数；固定随机序列 |
-| `EMIT_TEST_PROPERTY_RUNS` | `200` | `1..100000`；随机性质次数 |
-| `EMIT_TEST_CONCURRENCY` | `8` | `1..128`；并发客户端/工作 |
-| `EMIT_TEST_OPERATIONS` | `500` | `1..100000`；操作数 |
-| `EMIT_TEST_DURATION_MS` | `60000` | `1000..3600000`；负载时间上界 |
-| `EMIT_TEST_RESTARTS` | `3` | `0..100`；拥有进程的重启次数 |
-| `EMIT_TEST_PATH` | 未设置 | fast-check 失败报告中的收缩路径 |
+| 变量                      | 默认       | 允许范围/用途                   |
+|---------------------------|------------|---------------------------------|
+| `EMIT_TEST_SEED`          | `20261004` | 有符号 32 位整数; 固定随机序列  |
+| `EMIT_TEST_PROPERTY_RUNS` | `200`      | `1..100000`; 随机性质次数       |
+| `EMIT_TEST_CONCURRENCY`   | `8`        | `1..128`; 并发客户端/工作       |
+| `EMIT_TEST_OPERATIONS`    | `500`      | `1..100000`; 操作数             |
+| `EMIT_TEST_DURATION_MS`   | `60000`    | `1000..3600000`; 负载时间上界   |
+| `EMIT_TEST_RESTARTS`      | `3`        | `0..100`; 拥有进程的重启次数    |
+| `EMIT_TEST_PATH`          | 未设置     | fast-check 失败报告中的收缩路径 |
 
 ```bash
 # 随机性质的重负载；不是日常门禁默认值。
@@ -86,7 +90,8 @@ EMIT_TEST_SEED=20261004 EMIT_TEST_PATH='0:1:2' npm run test:unit -- test/core/pr
 
 ## 原生单文件
 
-`make` 为当前 OS/架构生成 `dist/emit`（Windows 为 `dist/emit.exe`）——不做交叉编译，也没有发布矩阵。`scripts/build-binary.mjs` 用 esbuild 打包 `src/server/main.ts`（`platform: node`、`format: cjs`，除 Node 内建模块外全部内嵌），把 `import.meta.url`/`import.meta.dirname` 重写为可执行文件路径，只把 `@earendil-works/pi-coding-agent` 映射到技能加载器，并把该包自身的元数据固化进它的 config，使二进制不会去读自己旁边的 `package.json`。随后把 `src/server/prompts/**` 与 `dist/web` 的文件清单作为 SEA 资源嵌入，用与被复制进产物的同一个 `node` 生成 blob，再用 postject 注入。`src/server/pi-modules.ts` 在启动时注册 pi-ai 的静态 OAuth flow 与 Bedrock 模块，因为它们的变量说明符导入无法被打包。构建需要 Node >= 22.19（SEA 与内建 SQLite）和 GNU make；缺少前提会直接失败，而不是产出残缺产物。
+`make` 为当前 OS/架构生成 `dist/emit`（Windows 为 `dist/emit.exe`）——不做交叉编译，也没有发布矩阵。`scripts/build-binary.mjs` 用 esbuild 打包 `src/server/main.ts`（`platform: node`、`format: cjs`，除 Node 内建模块外全部内嵌），把 `import.meta.url`/`import.meta.dirname` 重写为可执行文件路径，只把 `@earendil-works/pi-coding-agent` 映射到技能加载器，并把该包自身的元数据固化进它的 config，使二进制不会去读自己旁边的 `package.json`。随后把 `src/server/prompts/**` 与 `dist/web`
+的文件清单作为 SEA 资源嵌入，用与被复制进产物的同一个 `node` 生成 blob，再用 postject 注入。`src/server/pi-modules.ts` 在启动时注册 pi-ai 的静态 OAuth flow 与 Bedrock 模块，因为它们的变量说明符导入无法被打包。构建需要 Node >= 22.19（SEA 与内建 SQLite）和 GNU make；缺少前提会直接失败，而不是产出残缺产物。
 
 `test/native-binary.smoke.mjs`（由 `make smoke` 运行）在隔离环境中验证真实可执行文件：`--help`、默认与显式端口分配（含端口被占用）、内嵌前端与 SPA 回退、重启后的持久化与缓存修复、经打包 Pi loader 的技能导入、SSE 关闭，以及 `--web-root` 覆盖。它绝不触碰真实数据目录。
 

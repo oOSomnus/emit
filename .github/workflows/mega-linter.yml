@@ -26,23 +26,36 @@ jobs:
     steps:
       # Git Checkout
       - name: Checkout Code
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # VALIDATE_ALL_CODEBASE is true, so full history is not required, but
           # keep depth 0 to let linters inspect any revision they need.
           fetch-depth: 0
 
+      # The project-local ESLint binary and the flat config imports resolve
+      # from the installed dependency tree, so install it (and run the Pi
+      # Durable postinstall patch) before linting.
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.23.2"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
       # MegaLinter
       - name: MegaLinter
-        uses: oxsecurity/megalinter/flavors/javascript@v10.1.0
+        uses: oxsecurity/megalinter/flavors/javascript@9949bad031045f366be2467e00e8371a7328a2e2 # v10.1.0
         id: ml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Upload MegaLinter reports
       - name: Archive MegaLinter reports
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: megalinter-reports

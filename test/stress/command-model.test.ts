@@ -21,7 +21,7 @@ type Command = fc.AsyncCommand<ContextModel, ContextSystem>;
 class PatchContextCommand implements Command {
   constructor(readonly goal: string, readonly instructions: string) {}
 
-  check(_model: Readonly<ContextModel>): boolean {
+  check(): boolean {
     return true;
   }
 

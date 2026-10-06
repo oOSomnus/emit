@@ -43,7 +43,7 @@ import {
 import { readApp } from "../src/server/workspace.ts";
 import type { ApprovalRecord } from "../src/server/documents.ts";
 import type { EmitRuntime } from "../src/server/runtime.ts";
-import type { ChatSelectionDTO, MessageDTO, WorkContextDraftDTO } from "../src/shared/contracts.ts";
+import type { MessageDTO, WorkContextDraftDTO } from "../src/shared/contracts.ts";
 import {
   FAKE_KEY_ENV,
   createWorkContextFixture,
@@ -79,7 +79,6 @@ afterEach(async () => {
 });
 
 const userAuthor = { type: "user" as const, id: "user", name: "Test User", address: "" };
-const executionModel: ChatSelectionDTO = { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" };
 
 function fakeAnswer(request: FixtureRequest) {
   if (request.model === "fake-reviewer") {
