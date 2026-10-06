@@ -31,3 +31,6 @@ coverage/
 test-results/
 playwright-report/
 credentials.json
+
+megalinter-reports/
+*.megalinter-setup.bak

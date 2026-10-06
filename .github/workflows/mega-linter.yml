@@ -1,0 +1,54 @@
+# MegaLinter GitHub Action configuration file
+# More info at https://megalinter.io
+---
+name: MegaLinter
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  megalinter:
+    name: MegaLinter
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      # Git Checkout
+      - name: Checkout Code
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          # VALIDATE_ALL_CODEBASE is true, so full history is not required, but
+          # keep depth 0 to let linters inspect any revision they need.
+          fetch-depth: 0
+
+      # MegaLinter
+      - name: MegaLinter
+        uses: oxsecurity/megalinter/flavors/javascript@v10.1.0
+        id: ml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Upload MegaLinter reports
+      - name: Archive MegaLinter reports
+        uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: megalinter-reports
+          include-hidden-files: true
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            megalinter-reports/
+            mega-linter.log
