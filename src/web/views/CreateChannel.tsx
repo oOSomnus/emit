@@ -7,14 +7,21 @@
  * because the narrow-screen rail is transformed and would clip it.
  */
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { RoomDTO } from "../../shared/contracts.ts";
 import { errorDisplay, type DisplayText } from "../../shared/i18n.ts";
 import { api } from "../api.ts";
 import { useI18n } from "../i18n.tsx";
 import { useApp } from "../state.tsx";
-import { EmployeeAvatar, IconButton } from "./ui.tsx";
+import {
+  EmployeeAvatar,
+  EmployeePickerDetails,
+  IconButton,
+  useDialogFocusRestore,
+  useDialogFocusTrap,
+  useEmployeePicker,
+} from "./ui.tsx";
 
 export function CreateChannel({
   workContextId,
@@ -34,32 +41,10 @@ export function CreateChannel({
   const [error, setError] = useState<DisplayText | undefined>(undefined);
   const dialogRef = useRef<HTMLElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
-  const restoreFocus = useRef(true);
-
-  useEffect(() => {
-    const previousFocus = document.activeElement;
-    nameRef.current?.focus();
-    return () => {
-      if (restoreFocus.current && previousFocus instanceof HTMLElement && previousFocus.isConnected) {
-        previousFocus.focus();
-      }
-    };
-  }, []);
+  const restoreFocus = useDialogFocusRestore(nameRef);
 
   const workContext = state.workContexts.find((entry) => entry.id === workContextId);
-  const enabledEmployees = state.employees.filter((employee) => employee.enabled);
-  const query = search.trim().toLowerCase();
-  const visible = useMemo(
-    () =>
-      enabledEmployees.filter(
-        (employee) =>
-          query.length === 0 ||
-          employee.name.toLowerCase().includes(query) ||
-          employee.role.toLowerCase().includes(query) ||
-          employee.address.toLowerCase().includes(query),
-      ),
-    [enabledEmployees, query],
-  );
+  const { enabledEmployees, visible } = useEmployeePicker(state.employees, search);
   const unavailableSelectedIds = selectedIds.filter((id) => {
     const employee = state.employees.find((entry) => entry.id === id);
     return employee === undefined || !employee.enabled;
@@ -98,30 +83,7 @@ export function CreateChannel({
     }
   };
 
-  const handleDialogKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      // The narrow-screen rail also listens for Escape; a closed dialog must
-      // not also close the navigation behind it.
-      event.stopPropagation();
-      if (!busy) onClose();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-      "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])",
-    );
-    if (focusable === undefined || focusable.length === 0) return;
-    const first = focusable[0]!;
-    const last = focusable[focusable.length - 1]!;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
+  const handleDialogKeyDown = useDialogFocusTrap(dialogRef, busy, onClose, true);
 
   return createPortal(
     <div className="directory-editor-backdrop" onKeyDown={handleDialogKeyDown}>
@@ -197,14 +159,7 @@ export function CreateChannel({
                         disabled={busy}
                         onChange={() => toggle(employee.id)}
                       />
-                      <EmployeeAvatar employeeId={employee.id} />
-                      <span className="member-option-text">
-                        <strong>{employee.name}</strong>
-                        {employee.role.length > 0 ? <span className="member-option-meta">{employee.role}</span> : null}
-                        {employee.address.length > 0 ? (
-                          <span className="member-option-meta member-option-address">{employee.address}</span>
-                        ) : null}
-                      </span>
+                      <EmployeePickerDetails employee={employee} />
                     </label>
                   </li>
                 ))}

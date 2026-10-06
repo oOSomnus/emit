@@ -8,13 +8,13 @@ CLI options, environment variables, data files, credentials, locking, and crash 
 
 `make dev` builds the web UI and starts the backend with `tsx watch`. `make start` builds `dist/web` and then runs the TypeScript server. `make help` lists every workflow; the underlying npm scripts remain the internal implementation.
 
-| Option | Meaning | Default | Environment |
-| --- | --- | --- | --- |
-| `--data-dir <dir>` | Directory holding the database, credentials, and lock | `~/.emit` | `EMIT_DATA_DIR` |
-| `--host <address>` | Listen address | `127.0.0.1` | `EMIT_HOST` |
-| `--port <port>` | Listen port; `0` picks a free one | auto (`0`) | `EMIT_PORT` |
-| `--web-root <dir>` | Built front-end directory | `dist/web` from the source tree; the single-file binary serves its embedded frontend | — |
-| `--help`, `-h` | Print usage and exit | — | — |
+| Option             | Meaning                                               | Default                                                                              | Environment     |
+|--------------------|-------------------------------------------------------|--------------------------------------------------------------------------------------|-----------------|
+| `--data-dir <dir>` | Directory holding the database, credentials, and lock | `~/.emit`                                                                            | `EMIT_DATA_DIR` |
+| `--host <address>` | Listen address                                        | `127.0.0.1`                                                                          | `EMIT_HOST`     |
+| `--port <port>`    | Listen port; `0` picks a free one                     | auto (`0`)                                                                           | `EMIT_PORT`     |
+| `--web-root <dir>` | Built front-end directory                             | `dist/web` from the source tree; the single-file binary serves its embedded frontend | —               |
+| `--help`, `-h`     | Print usage and exit                                  | —                                                                                    | —               |
 
 `make` builds `dist/emit`, a native single-file executable (Node SEA) that embeds the server, prompts, and web UI and accepts the same options; it needs no Node installation. The startup log prints the address the server actually bound.
 
@@ -50,7 +50,8 @@ make start ARGS='--data-dir /absolute/path/to/data --port 8787'
 - Every work runs in its own execution conversation; the room's public record lives in the room's own conversation, so they do not pollute each other.
 - An answer and "work completed" are written in the same commit: a crash leaves both unwritten, and recovery re-delivers instead of producing a half state.
 - On startup the process resumes running tasks first, then marks work that has no live task and no unsettled submission as failed and explains why in its original session.
-- Recovery follows each tool's replay declaration. `read_file`, `load_skill`, and `send_mail` declare `replay=safe`, so an interrupted call may be re-run (mail is deduplicated by a durable receipt); tools that do not declare it (file writes/edits, Shell, ...) and MCP tools with `replay=unsafe` are not re-run automatically after an interruption, and the model sees the interrupted call and decides what to do next. External side effects are not promised exactly-once.
+- Recovery follows each tool's replay declaration. `read_file`, `load_skill`, and `send_mail` declare `replay=safe`, so an interrupted call may be re-run (mail is deduplicated by a durable receipt); tools that do not declare it (file writes/edits, Shell, ...) and MCP tools with `replay=unsafe` are not re-run automatically after an interruption, and the model sees the
+  interrupted call and decides what to do next. External side effects are not promised exactly-once.
 
 ## Upgrading from earlier data models
 

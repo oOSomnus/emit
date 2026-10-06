@@ -404,7 +404,8 @@ export function buildMessageTools(resume: Resume, employee: EmployeeRecord): Too
       ),
       mentionAll: Type.Optional(Type.Boolean({ description: toolTextResources.send_message.parameters.mentionAll })),
     }),
-    execute: async (args, api, context) => {
+    execute: async (args, api, _context) => {
+      void _context;
       const hasTo = typeof args.to === "string" && args.to.trim().length > 0;
       const hasRoom = typeof args.roomId === "string" && args.roomId.trim().length > 0;
       if (hasTo === hasRoom) return toolError("Provide exactly one of to or roomId");
@@ -473,7 +474,7 @@ export function buildMessageTools(resume: Resume, employee: EmployeeRecord): Too
     execute: async (args, api) => {
       const active = await activeContext(api.conversationId, runtime);
       if (typeof active === "string") return toolError(active);
-      const { work, workContext, room } = active;
+      const { workContext, room } = active;
       if (room === undefined || room.kind !== "channel" || room.workContextId !== workContext.id) {
         return toolError(appMessages.workContexts.inviteChannelOnly.text);
       }

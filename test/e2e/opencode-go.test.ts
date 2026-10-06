@@ -1,18 +1,13 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { AppConfigDTO, AuthSessionDTO, BootstrapDTO, EmployeeDTO, MessageDTO, ModelInfoDTO, ProviderStatusDTO, RoomDTO, WorkDTO, WorkExecutionDTO } from "../../src/shared/contracts.ts";
-import { createE2eFixture, type E2eFixture } from "../helpers/e2e-fixture.ts";
+import type { E2eFixture } from "../helpers/e2e-fixture.ts";
 import { FAKE_KEY_ENV, providerConfig, waitForFixture } from "../helpers/emit-fixture.ts";
 import { startEmitProcess } from "../helpers/process-fixture.ts";
+import { openOwnedE2eFixture, useSuiteCleanup } from "../helpers/suite-hooks.ts";
 
-const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
-async function open() {
-  const fixture = await createE2eFixture();
-  cleanups.push(() => fixture.close());
-  return fixture;
-}
+const cleanups = useSuiteCleanup({ errorMode: "propagate" });
 async function call<T>(fixture: E2eFixture, path: string, method = "GET", body?: unknown): Promise<T> {
   const response = await fixture.request<T>(path, method, body);
   expect(response.status, `${method} ${path}: ${JSON.stringify(response.body)}`).toBe(200);
@@ -40,7 +35,7 @@ async function goSessions(fixture: E2eFixture): Promise<GoRequest[]> {
 
 describe("real-process native key wizards and OpenCode Go", () => {
   it("authenticates a new custom provider through the native secret wizard despite the seeded fake key", async () => {
-    const fixture = await open();
+    const fixture = await openOwnedE2eFixture(cleanups);
     // A distinct provider and absent environment variable prevent the initial fake key from satisfying this wizard.
     const custom = { ...providerConfig(fixture.provider.baseUrl), id: "wizard-fixture", name: "向导测试接口", apiKeyEnv: "EMIT_TEST_WIZARD_KEY" };
     const created = await call<{ statuses: ProviderStatusDTO[] }>(fixture, "/api/providers/custom", "PUT", { providers: [providerConfig(fixture.provider.baseUrl), custom] });
@@ -62,7 +57,7 @@ describe("real-process native key wizards and OpenCode Go", () => {
   }, 90_000);
 
   it("requires an independent reviewer at onboarding, rejects its removal, and generates a Chinese employee address", async () => {
-    const fixture = await open();
+    const fixture = await openOwnedE2eFixture(cleanups);
     await fixture.emit.stop();
     const empty = await startEmitProcess({ root: fixture.root, dataDir: join(fixture.root, "onboarding-data"), env: {
       [FAKE_KEY_ENV]: "local-onboarding-fixture-key", EMIT_TEST_ALLOWED_ORIGINS: JSON.stringify([fixture.provider.url]),
@@ -98,7 +93,7 @@ describe("real-process native key wizards and OpenCode Go", () => {
   }, 90_000);
 
   it("stores the Go key and sends distinct check/work sessions with stable multi-turn request headers", async () => {
-    const fixture = await open();
+    const fixture = await openOwnedE2eFixture(cleanups);
     const key = "private-go-wizard-key-canary";
     await keyWizard(fixture, "opencode-go", key);
     const goModel = { providerId: "opencode-go", modelId: "deepseek-v4.1-flash" };

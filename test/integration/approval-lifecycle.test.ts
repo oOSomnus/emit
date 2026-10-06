@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { decideApproval, findApproval, gateToolCall, invalidateStaleGrants, invalidateWorkContextDirectoryGrants, listApprovals, verifyGrant, type ApprovalRequest } from "../../src/server/approval/state.ts";
 import { sendQueuedMessage } from "../../src/server/channel-messages.ts";
 import type { ApprovalRecord, EmployeeRecord, RoomRecord, WorkContextRecord } from "../../src/server/documents.ts";
@@ -20,30 +20,12 @@ import {
   setupFixtureWorkspace,
   startFixture,
   waitForFixture,
-  type Fixture,
   type FixtureAnswer,
   type FixtureRequest,
 } from "../helpers/emit-fixture.ts";
+import { useSuiteCleanup } from "../helpers/suite-hooks.ts";
 
-const cleanups: Array<() => Promise<void> | void> = [];
-let previousApiKey: string | undefined;
-
-beforeEach(() => {
-  previousApiKey = process.env[FAKE_KEY_ENV];
-  process.env[FAKE_KEY_ENV] = "local-fixture-key";
-});
-
-afterEach(async () => {
-  for (const close of cleanups.splice(0).reverse()) {
-    try {
-      await close();
-    } catch {
-      // Cleanup must not replace the assertion that failed.
-    }
-  }
-  if (previousApiKey === undefined) delete process.env[FAKE_KEY_ENV];
-  else process.env[FAKE_KEY_ENV] = previousApiKey;
-});
+const cleanups = useSuiteCleanup({ key: { env: FAKE_KEY_ENV, value: "local-fixture-key" }, errorMode: "ignore" });
 
 const userAuthor = { type: "user" as const, id: "user", name: "Test User", address: "" };
 const highVerdict = JSON.stringify({

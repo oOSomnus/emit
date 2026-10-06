@@ -31,7 +31,6 @@ import type {
   SubmissionRecord,
   TaskId,
   TaskRecord,
-  Tx,
 } from "@earendil-works/pi-durable";
 import type { EmitRuntime } from "./runtime.ts";
 import { AppError, type AppText } from "./app-text.ts";
@@ -51,7 +50,6 @@ import {
   WorkContextMutationReceiptDoc,
   WorkDoc,
   type ApprovalRecord,
-  type MailFlagRecord,
   type MailSendReceiptRecord,
   type MessageSendReceiptRecord,
   type RoomRecord,
@@ -646,7 +644,6 @@ export class SessionExportService {
         if (collab !== undefined) addDocument(collab);
       }
       for (const [key, doc] of session.mailFlags) {
-        const flag = valueOf<MailFlagRecord>(doc);
         const separator = key.indexOf("|");
         const roomId = separator === -1 ? "" : key.slice(0, separator);
         const entryId = separator === -1 ? "" : key.slice(separator + 1);

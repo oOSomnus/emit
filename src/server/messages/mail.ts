@@ -7,7 +7,6 @@
  * in both languages.
  */
 
-import type { LocalizedText } from "../../shared/i18n.ts";
 import { appText, type AppText } from "../app-text.ts";
 
 export const mailMessages = {

@@ -44,7 +44,6 @@ import {
   WorkDoc,
   type EmployeeRecord,
   type MailEnvelope,
-  type MailSendReceiptRecord,
   type RoomMessageData,
   type RoomRecord,
   type WorkRecord,
@@ -53,14 +52,12 @@ import type { McpManager } from "./mcp.ts";
 import type { MailTasks } from "./mail.ts";
 import type { WorkDispatchTask } from "./work-dispatch.ts";
 import { buildEmployeeExtension, toThinkingLevel } from "./agents.ts";
-import { cancelApprovalsForWork, type ToolRisk } from "./approval/state.ts";
+import { cancelApprovalsForWork } from "./approval/state.ts";
 import {
   ROOM_PAGE_SIZE,
-  ROOM_WINDOW_LIMIT,
   RoomDirectoryError,
   appendRoomMessageIn,
   appendRoomMessage,
-  ensureEmployeeDm,
   findRoom,
   isSentMailEntry,
   mailEnvelope,
@@ -72,13 +69,12 @@ import {
   toMessageDTO,
   type MailAddress,
 } from "./rooms.ts";
-import { buildMessageTools, sendQueuedMessage } from "./channel-messages.ts";
+import { buildMessageTools } from "./channel-messages.ts";
 import { toWorkDTO } from "./dto.ts";
 import { listEmployees, resolveEmployee } from "./workspace.ts";
 import { listSkills } from "./skills.ts";
 import { toolError, toolText } from "./tools.ts";
 import {
-  HISTORY_BODY_LIMIT,
   HISTORY_MESSAGE_LIMIT,
   renderDelegationContinuation,
   renderToolResult,
@@ -96,7 +92,6 @@ import {
   enqueueWorksIn,
   findWork,
   isTerminal,
-  type WorkKind,
 } from "./work-queue.ts";
 
 /** One process's shared handles; the task sets resolve lazily to break the import cycle. */
@@ -415,6 +410,8 @@ async function consumeAwaitedReplies(resume0: Resume, conversationId: Conversati
   }
 }
 
+type DeliveryDecision = "already-settled" | "paused" | "failed" | "answer";
+
 async function deliverAnswer(
   resume0: Resume,
   conversationId: ConversationId,
@@ -422,7 +419,6 @@ async function deliverAnswer(
   context: Context,
 ): Promise<undefined> {
   const { runtime } = resume0;
-  if (text.length === 0) return undefined;
   const binding = await runtime.harness.snapshot(ConversationContextDoc, conversationId, context);
   if (binding === undefined || binding.workId.length === 0) return undefined;
 
@@ -438,8 +434,24 @@ async function deliverAnswer(
     return undefined;
   }
 
+  const noAnswer = text.length === 0 ? appMessages.work.runNoAnswer() : undefined;
   if (work.kind === "delegation") {
-    await deliverToParent(runtime, work, employee, text, context);
+    if (noAnswer === undefined) {
+      await deliverToParent(runtime, work, employee, text, context);
+      return undefined;
+    }
+    const decision = await runtime.harness.commit(async (tx) => {
+      const doc = await tx.doc(WorkDoc, work.id, { id: work.id });
+      return decideDeliveryIn(tx, resume0, doc, text, noAnswer);
+    }, context);
+    if (decision === "failed") {
+      await publishFailure(resume0, work.id, noAnswer);
+    } else if (decision === "paused" || decision === "already-settled") {
+      const updated = await runtime.readFamily(WorkDoc, work.id, { id: work.id });
+      if (updated !== undefined) {
+        runtime.emit({ type: "work", work: toWorkDTO(updated, employee.name, await roomName(runtime, updated.roomId)) });
+      }
+    }
     return undefined;
   }
 
@@ -464,15 +476,8 @@ async function deliverAnswer(
 
   const outcome = await runtime.harness.commit(async (tx) => {
     const doc = await tx.doc(WorkDoc, work.id, { id: work.id });
-    if (isTerminal(doc.status)) return undefined;
-    // A work that asked for a reply cannot finish while one is still owed:
-    // the answer stays in the work record and the resumed run delivers the
-    // real final answer once the reply has been read.
-    if (doc.awaitedMailWorkIds.length > 0) {
-      doc.status = "waiting-mail";
-      doc.answer = text;
-      return { waiting: true as const };
-    }
+    const decision = await decideDeliveryIn(tx, resume0, doc, text, noAnswer);
+    if (decision !== "answer") return { decision } as const;
     const appended =
       replyAlreadySent
         ? undefined
@@ -514,14 +519,19 @@ async function deliverAnswer(
       );
       doc.mailResumeTaskId = String(taskId);
     }
-    return { waiting: false as const, entry: appended };
+    return { decision, entry: appended } as const;
   }, context);
+
+  if (outcome.decision === "failed") {
+    if (noAnswer !== undefined) await publishFailure(resume0, work.id, noAnswer);
+    return undefined;
+  }
 
   const updated = await runtime.readFamily(WorkDoc, work.id, { id: work.id });
   if (updated !== undefined) {
     runtime.emit({ type: "work", work: toWorkDTO(updated, employee.name, room.name) });
   }
-  if (outcome === undefined || outcome.waiting || outcome.entry === undefined) return undefined;
+  if (outcome.decision !== "answer" || outcome.entry === undefined) return undefined;
   const dto = toMessageDTO(outcome.entry);
   if (dto !== undefined) {
     dto.roomId = room.id;
@@ -904,20 +914,26 @@ async function handOffToAwaitingParent(
   child.mailResumeTaskId = String(taskId);
 }
 
-export async function markFailed(resume0: Resume, work: WorkRecord, reason: AppText): Promise<void> {
-  const runtime = resume0.runtime;
-  await runtime.harness.commit(async (tx) => {
-    const doc = await tx.doc(WorkDoc, work.id, { id: work.id });
-    if (isTerminal(doc.status)) return;
-    doc.status = "failed";
-    doc.finishedAt = Date.now();
-    doc.error = reason.text;
-    doc.errorLocalized = reason.localized;
-    // A failure is an outcome too: the parent waiting for this child must hear
-    // that it failed instead of waiting forever.
-    await handOffToAwaitingParent(tx, resume0, doc, "failed", reason);
-  }, runtime.ctx);
-  const updated = await runtime.readFamily(WorkDoc, work.id, { id: work.id });
+async function failWorkIn(
+  tx: Tx,
+  resume0: Resume,
+  doc: Draft<WorkRecord>,
+  reason: AppText,
+): Promise<boolean> {
+  if (isTerminal(doc.status)) return false;
+  doc.status = "failed";
+  doc.finishedAt = Date.now();
+  doc.error = reason.text;
+  doc.errorLocalized = reason.localized;
+  // A failure is an outcome too: the parent waiting for this child must hear
+  // that it failed instead of waiting forever.
+  await handOffToAwaitingParent(tx, resume0, doc, "failed", reason);
+  return true;
+}
+
+async function publishFailure(resume0: Resume, workId: string, reason: AppText): Promise<void> {
+  const { runtime } = resume0;
+  const updated = await runtime.readFamily(WorkDoc, workId, { id: workId });
   if (updated === undefined) return;
   const employee = await runtime.readFamily(EmployeeDoc, updated.employeeId, { id: updated.employeeId });
   runtime.emit({ type: "work", work: toWorkDTO(updated, employee?.name ?? "", await roomName(runtime, updated.roomId)) });
@@ -932,10 +948,39 @@ export async function markFailed(resume0: Resume, work: WorkRecord, reason: AppT
       author: { type: "system", id: "system", name: appMessages.rooms.systemAuthorName[CANONICAL_LOCALE] },
       body: failBody.text,
       bodyLocalized: failBody.localized,
-      workId: work.id,
+      workId,
       notice: true,
     }),
   );
+}
+
+async function decideDeliveryIn(
+  tx: Tx,
+  resume0: Resume,
+  doc: Draft<WorkRecord>,
+  text: string,
+  noAnswer: AppText | undefined,
+): Promise<DeliveryDecision> {
+  if (isTerminal(doc.status)) return "already-settled";
+  if (doc.awaitedMailWorkIds.length > 0) {
+    doc.status = "waiting-mail";
+    if (text.length > 0) doc.answer = text;
+    return "paused";
+  }
+  if (noAnswer !== undefined) {
+    const failed = await failWorkIn(tx, resume0, doc, noAnswer);
+    return failed ? "failed" : "already-settled";
+  }
+  return "answer";
+}
+
+export async function markFailed(resume0: Resume, work: WorkRecord, reason: AppText): Promise<void> {
+  const runtime = resume0.runtime;
+  const failed = await runtime.harness.commit(async (tx) => {
+    const doc = await tx.doc(WorkDoc, work.id, { id: work.id });
+    return failWorkIn(tx, resume0, doc, reason);
+  }, runtime.ctx);
+  if (failed) await publishFailure(resume0, work.id, reason);
 }
 
 /**
@@ -1101,7 +1146,7 @@ export function buildCollaborationTools(resume0: Resume, employee: EmployeeRecor
       if (workContext === undefined || workContext.directories.version !== callerWork.directoryScope.version) {
         throw new AppError(appMessages.work.directoryChanged());
       }
-      let workIds: string[] = [];
+      let workIds: string[];
       try {
         workIds = await runtime.harness.commit(async (tx) => {
           // The pre-check above is not enough: re-read the context inside the

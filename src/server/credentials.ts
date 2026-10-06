@@ -53,7 +53,10 @@ export function readCredentials(dataDir: string): CredentialsFile {
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
-    throw new Error(`Unable to read credentials file ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `Unable to read credentials file ${path}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error(`Credentials file ${path} must be an object`);
@@ -155,11 +158,13 @@ export class EmitCredentialStore implements CredentialStore {
   }
 
   async read(providerId: string, _options?: AuthOperationOptions): Promise<Credential | undefined> {
+    void _options;
     const credential = this.#file.auth[providerId];
     return credential === undefined ? undefined : structuredClone(credential);
   }
 
   async list(_options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
+    void _options;
     return Object.entries(this.#file.auth).map(([providerId, credential]) => ({
       providerId,
       type: credential.type,

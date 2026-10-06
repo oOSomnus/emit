@@ -1,0 +1,96 @@
+# MegaLinter GitHub Action configuration file
+# More info at https://megalinter.io
+---
+name: MegaLinter
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  megalinter:
+    name: MegaLinter
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      # Git Checkout
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # VALIDATE_ALL_CODEBASE is true, so full history is not required, but
+          # keep depth 0 to let linters inspect any revision they need.
+          fetch-depth: 0
+
+      # The project-local ESLint binary and the flat config imports resolve
+      # from the installed dependency tree, so install it (and run the Pi
+      # Durable postinstall patch) before linting.
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.23.2"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # grype downloads its vulnerability database on every run - the slowest
+      # linter input (~80 s). Cache what it keeps in the container's home
+      # directory (~/.cache/grype, mounted from ${{ runner.temp }}/_github_home)
+      # for a week: grype refreshes a database older than its update TTL on its
+      # own, so a restored cache still self-heals.
+      - name: Prepare grype database cache key
+        id: grype-db
+        run: |
+          mkdir -p "$RUNNER_TEMP/_github_home/.cache/grype"
+          echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache grype vulnerability database
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/_github_home/.cache/grype
+          key: grype-db-${{ runner.os }}-${{ steps.grype-db.outputs.week }}
+          restore-keys: grype-db-${{ runner.os }}-
+
+      # MegaLinter
+      - name: MegaLinter
+        uses: oxsecurity/megalinter/flavors/javascript@9949bad031045f366be2467e00e8371a7328a2e2 # v10.1.0
+        id: ml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The container writes the database as root, so the runner cannot read it
+      # when actions/cache saves the path in its post step. Widen the modes (and
+      # keep them on directories, hence X) before the job ends.
+      - name: Make the grype database readable for the cache
+        if: always()
+        run: |
+          cache_dir="$RUNNER_TEMP/_github_home/.cache/grype"
+          if [ -d "$cache_dir" ]; then
+            sudo chmod -R a+rX "$cache_dir"
+          fi
+
+      # Upload MegaLinter reports
+      - name: Archive MegaLinter reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: megalinter-reports
+          include-hidden-files: true
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            megalinter-reports/
+            mega-linter.log

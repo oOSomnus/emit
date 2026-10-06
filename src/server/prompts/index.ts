@@ -50,6 +50,16 @@ function filled(
   return fill(fragment(file, id), { file, fragment: id }, vars);
 }
 
+function wholePrompt(
+  file: "approval-system.md" | "approval-user.md" | "address-system.md" | "address-user.md",
+): string {
+  const resource = readResource(file);
+  const title = /^# [^\n]+\n\n/.exec(resource);
+  if (title === null) throw new Error(`Prompt resource ${file} is missing a title`);
+  return resource.slice(title[0].length);
+}
+
+
 // --- Employee identity, workspace context, skills -------------------------
 
 export function renderEmployeeIdentity(input: {
@@ -397,11 +407,11 @@ export const toolTextResources: Record<BuiltinToolName, ToolTextResource> = Obje
 // --- Approval review -------------------------------------------------------
 
 export function renderApprovalSystem(): string {
-  return readResource("approval-system.md").trim();
+  return wholePrompt("approval-system.md").trim();
 }
 
 export function renderApprovalUser(caseJson: string): string {
-  return fill(readResource("approval-user.md"), { file: "approval-user.md" }, { caseJson });
+  return fill(wholePrompt("approval-user.md"), { file: "approval-user.md" }, { caseJson });
 }
 
 export const APPROVAL_CONTEXT_LABELS = [
@@ -476,12 +486,12 @@ export function classifierQuestions(): ClassifierQuestions {
 // --- Address suggestion and connection probes ------------------------------
 
 export function renderAddressSystem(): string {
-  return readResource("address-system.md").trim();
+  return wholePrompt("address-system.md").trim();
 }
 
 export function renderAddressUser(input: { name: string; role: string }): string {
   return fill(
-    readResource("address-user.md"),
+    wholePrompt("address-user.md"),
     { file: "address-user.md" },
     {
       name: input.name,

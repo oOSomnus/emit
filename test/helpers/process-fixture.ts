@@ -120,7 +120,7 @@ export async function startEmitProcess(options: StartEmitProcessOptions): Promis
       } catch (cleanupError) {
         throw new Error(
           `Emit process failed to start and cleanup failed: ${errorMessage(cleanupError)}\n${redactOutput(instance.output, sensitiveEnvValues)}`,
-          { cause: error },
+          { cause: cleanupError },
         );
       }
       throw new Error(

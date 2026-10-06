@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { WorkContextDoc, type EmployeeRecord, type RoomRecord } from "../src/server/documents.ts";
 import { sendQueuedMail } from "../src/server/mail.ts";
 import { buildMessageTools, sendQueuedMessage } from "../src/server/channel-messages.ts";
@@ -43,72 +43,37 @@ import {
 import { readApp } from "../src/server/workspace.ts";
 import type { ApprovalRecord } from "../src/server/documents.ts";
 import type { EmitRuntime } from "../src/server/runtime.ts";
-import type { ChatSelectionDTO, MessageDTO, WorkContextDraftDTO } from "../src/shared/contracts.ts";
+import type { MessageDTO, WorkContextDraftDTO } from "../src/shared/contracts.ts";
 import {
+  answerFixtureRequest,
   FAKE_KEY_ENV,
   createWorkContextFixture,
   mkdtempDataDir,
+  openFixtureRuntime,
   openRuntime,
-  providerConfig,
   readFixtureRoomMessages,
   setupFixtureWorkspace,
   startFixture,
   waitForFixture,
-  type Fixture,
   type FixtureRequest,
 } from "./helpers/emit-fixture.ts";
+import { useSuiteCleanup } from "./helpers/suite-hooks.ts";
 
-const cleanup: Array<() => Promise<void> | void> = [];
-let previousApiKey: string | undefined;
-
-beforeEach(() => {
-  previousApiKey = process.env[FAKE_KEY_ENV];
-  process.env[FAKE_KEY_ENV] = "local-fixture-key";
-});
-
-afterEach(async () => {
-  for (const close of cleanup.splice(0).reverse()) {
-    try {
-      await close();
-    } catch {
-      // Cleanup is best effort and must not hide the assertion that failed.
-    }
-  }
-  if (previousApiKey === undefined) delete process.env[FAKE_KEY_ENV];
-  else process.env[FAKE_KEY_ENV] = previousApiKey;
+const cleanup = useSuiteCleanup({
+  key: { env: FAKE_KEY_ENV, value: "local-fixture-key" },
+  errorMode: "ignore",
 });
 
 const userAuthor = { type: "user" as const, id: "user", name: "Test User", address: "" };
-const executionModel: ChatSelectionDTO = { model: { providerId: "fake", modelId: "fake-chat" }, effort: "off" };
 
 function fakeAnswer(request: FixtureRequest) {
-  if (request.model === "fake-reviewer") {
-    return {
-      content: JSON.stringify({
-        outcome: "allow",
-        risk: "low",
-        rationale: "Local test action",
-        readOnly: true,
-        userAuthorization: "unknown",
-      }),
-    };
-  }
-  return { content: "The fixture completed this request." };
+  return answerFixtureRequest(request, () => "The fixture completed this request.");
 }
 
 function employeeNamed(employees: readonly EmployeeRecord[], name: string): EmployeeRecord {
   const employee = employees.find((candidate) => candidate.name === name);
   if (employee === undefined) throw new Error(`Missing employee ${name}`);
   return employee;
-}
-
-async function openTestRuntime(fixture: Fixture, prefix: string) {
-  const dataDir = mkdtempDataDir(prefix);
-  cleanup.push(() => rmSync(dataDir, { recursive: true, force: true }));
-  const opened = await openRuntime(dataDir);
-  cleanup.push(() => opened.runtime.close());
-  await opened.runtime.storeCustomProviders([providerConfig(fixture.baseUrl)]);
-  return { ...opened, dataDir };
 }
 
 async function awaitWorks(runtime: EmitRuntime, workIds: readonly string[]): Promise<void> {
@@ -230,7 +195,7 @@ describe("work context persistence and model input", () => {
   it("keeps each room on its work, isolates transcript history, shares notes explicitly, and survives restarts", async () => {
     const fixture = await startFixture(fakeAnswer);
     cleanup.push(() => fixture.close());
-    const { runtime, resume, dataDir } = await openTestRuntime(fixture, "emit-context-isolation-");
+    const { runtime, resume, dataDir } = await openFixtureRuntime(fixture, cleanup, "emit-context-isolation-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Alpha", "Beta", "Gamma"]);
     const alpha = employeeNamed(employees, "Alpha");
     const beta = employeeNamed(employees, "Beta");
@@ -497,7 +462,7 @@ describe("work context persistence and model input", () => {
   it("enforces optimistic versions, real directory/resource boundaries, and verifiable note sources", async () => {
     const fixture = await startFixture(fakeAnswer);
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-context-versions-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-context-versions-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Owner", "Other"]);
     const owner = employeeNamed(employees, "Owner");
     const other = employeeNamed(employees, "Other");
@@ -706,7 +671,7 @@ describe("work context persistence and model input", () => {
   it("invalidates only changed work directories while note and goal changes preserve grants", async () => {
     const fixture = await startFixture(fakeAnswer);
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-context-grants-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-context-grants-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Worker"]);
     const worker = employeeNamed(employees, "Worker");
     const roots = mkdtempSync(join(tmpdir(), "emit-context-grants-roots-"));
@@ -789,7 +754,7 @@ describe("work context persistence and model input", () => {
   it("replays employee note saves once and rejects conflicting or cross-work writes", async () => {
     const fixture = await startFixture(fakeAnswer);
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-context-note-replay-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-context-note-replay-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["Writer"]);
     const writer = employeeNamed(employees, "Writer");
     const workContext = await createWorkContextFixture(runtime, "Note replay context");
@@ -873,7 +838,7 @@ describe("work context persistence and model input", () => {
   it("filters mail history by visibility and never reads beyond the triggering entry", async () => {
     const fixture = await startFixture(fakeAnswer);
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-context-history-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-context-history-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["ToEmployee", "CcEmployee"]);
     const recipient = employeeNamed(employees, "ToEmployee");
     const ccOnly = employeeNamed(employees, "CcEmployee");
@@ -989,7 +954,7 @@ describe("work context persistence and model input", () => {
   it("keeps mail and private conversation bindings distinct inside each work", async () => {
     const fixture = await startFixture(fakeAnswer);
     cleanup.push(() => fixture.close());
-    const { runtime, resume } = await openTestRuntime(fixture, "emit-context-dm-pairs-");
+    const { runtime, resume } = await openFixtureRuntime(fixture, cleanup, "emit-context-dm-pairs-");
     const employees = await setupFixtureWorkspace(runtime, resume, ["A", "B", "C"]);
     const [a, b, c] = employees;
     const workX = await createWorkContextFixture(runtime, "Pair X");

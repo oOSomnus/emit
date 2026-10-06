@@ -71,7 +71,7 @@ export function applyPiDurablePatch(packageDir) {
 	try {
 		manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 	} catch (error) {
-		throw new Error(`Cannot read ${PACKAGE_NAME} package manifest at ${manifestPath}: ${error.message}`);
+		throw new Error(`Cannot read ${PACKAGE_NAME} package manifest at ${manifestPath}: ${error.message}`, { cause: error });
 	}
 	if (manifest.name !== PACKAGE_NAME || manifest.version !== PACKAGE_VERSION) {
 		throw new Error(
@@ -87,7 +87,7 @@ export function applyPiDurablePatch(packageDir) {
 		try {
 			source = readFileSync(filePath, "utf8");
 		} catch (error) {
-			throw new Error(`Cannot read patch target ${filePath}: ${error.message}`);
+			throw new Error(`Cannot read patch target ${filePath}: ${error.message}`, { cause: error });
 		}
 		const originalCount = countOccurrences(source, patch.original);
 		const patchedCount = countOccurrences(source, patch.patched);
@@ -106,7 +106,7 @@ export function applyPiDurablePatch(packageDir) {
 		try {
 			writeFileSync(edit.filePath, edit.contents);
 		} catch (error) {
-			throw new Error(`Cannot write patch target ${edit.filePath}: ${error.message}`);
+			throw new Error(`Cannot write patch target ${edit.filePath}: ${error.message}`, { cause: error });
 		}
 	}
 }

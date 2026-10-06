@@ -1,8 +1,8 @@
 /** Small shared pieces: icons, chips, model pickers, and time formatting. */
 
-import { useEffect, useId, useMemo, useState, type ReactNode, type Ref } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref, type RefObject } from "react";
 import { api } from "../api.ts";
-import type { CheckResultDTO, ModelInfoDTO, WorkStatusDTO } from "../../shared/contracts.ts";
+import type { CheckResultDTO, EmployeeDTO, ModelInfoDTO, WorkStatusDTO } from "../../shared/contracts.ts";
 import { errorDisplay, type DisplayText, type Locale } from "../../shared/i18n.ts";
 import { useI18n } from "../i18n.tsx";
 import { messagesFor } from "../messages.ts";
@@ -46,6 +46,89 @@ export function EmployeeAvatar({ employeeId, size = 32 }: { employeeId: string; 
         />
       ))}
     </svg>
+  );
+}
+
+/** Search enabled employees by name, role, or address for directory pickers. */
+export function useEmployeePicker(employees: readonly EmployeeDTO[], search: string): {
+  enabledEmployees: EmployeeDTO[];
+  visible: EmployeeDTO[];
+} {
+  const enabledEmployees = employees.filter((employee) => employee.enabled);
+  const query = search.trim().toLowerCase();
+  const visible = useMemo(
+    () =>
+      enabledEmployees.filter(
+        (employee) =>
+          query.length === 0 ||
+          employee.name.toLowerCase().includes(query) ||
+          employee.role.toLowerCase().includes(query) ||
+          employee.address.toLowerCase().includes(query),
+      ),
+    [enabledEmployees, query],
+  );
+  return { enabledEmployees, visible };
+}
+
+/** Focus a dialog's initial control and restore the opener unless navigation takes over. */
+export function useDialogFocusRestore<T extends HTMLElement>(target: RefObject<T | null>): RefObject<boolean> {
+  const restoreFocus = useRef(true);
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    target.current?.focus();
+    return () => {
+      if (restoreFocus.current && previousFocus instanceof HTMLElement && previousFocus.isConnected) {
+        previousFocus.focus();
+      }
+    };
+  }, []);
+  return restoreFocus;
+}
+
+/** Keep keyboard focus inside a dialog and apply its Escape-key behavior. */
+export function useDialogFocusTrap<T extends HTMLElement>(
+  dialogRef: RefObject<T | null>,
+  busy: boolean,
+  onClose: () => void,
+  stopPropagationOnEscape: boolean,
+): (event: KeyboardEvent<HTMLElement>) => void {
+  return (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (stopPropagationOnEscape) event.stopPropagation();
+      if (!busy) onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+      "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])",
+    );
+    if (focusable === undefined || focusable.length === 0) return;
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+}
+
+/** Render the employee identity shared by member directory rows. */
+export function EmployeePickerDetails({ employee }: { employee: EmployeeDTO }): ReactNode {
+  return (
+    <>
+      <EmployeeAvatar employeeId={employee.id} />
+      <span className="member-option-text">
+        <strong>{employee.name}</strong>
+        {employee.role.length > 0 ? <span className="member-option-meta">{employee.role}</span> : null}
+        {employee.address.length > 0 ? (
+          <span className="member-option-meta member-option-address">{employee.address}</span>
+        ) : null}
+      </span>
+    </>
   );
 }
 

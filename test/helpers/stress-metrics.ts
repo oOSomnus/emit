@@ -117,7 +117,7 @@ export async function stressRequest<T>(
       body = JSON.parse(text) as T;
     } catch (error) {
       if (accepted) metrics.recordError();
-      throw new Error(`${method} ${path} returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`${method} ${path} returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
     if (!accepted) {
       throw new Error(`${method} ${path} returned HTTP ${response.status}: ${text}`);

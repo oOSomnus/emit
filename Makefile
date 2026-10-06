@@ -12,7 +12,7 @@
 
 .DEFAULT_GOAL := all
 .PHONY: all binary native smoke help install dev dev-web dev-server start \
-        build build-web typecheck test test-watch test-api test-fault test-stress \
+        build build-web typecheck lint test test-watch test-api test-fault test-stress \
         test-gate patch e2e e2e-web mock clean nuke
 
 ARGS ?=
@@ -56,6 +56,9 @@ build-web: node_modules/.emit-deps
 
 typecheck: node_modules/.emit-deps
 	npm run typecheck
+
+lint: node_modules/.emit-deps
+	npm run lint -- $(ARGS)
 
 test: node_modules/.emit-deps
 	npm test -- $(ARGS)
@@ -115,6 +118,7 @@ help:
 	@echo "  make build          typecheck and build frontend"
 	@echo "  make build-web      build frontend only"
 	@echo "  make typecheck      typecheck server, frontend, and browser tests"
+	@echo "  make lint           lint sources, scripts, and tests with ESLint"
 	@echo "  make test           run vitest; pass filters via ARGS"
 	@echo "  make test-watch     run vitest in watch mode"
 	@echo "  make patch          reapply the Pi Durable patch"

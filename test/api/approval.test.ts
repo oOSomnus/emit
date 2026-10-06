@@ -1,18 +1,14 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ApprovalDTO, WorkDTO, WorkStatusDTO } from "../../src/shared/contracts.ts";
+import { FAKE_KEY_ENV, waitForFixture, type FixtureAnswer, type FixtureRequest } from "../helpers/emit-fixture.ts";
 import {
-  FAKE_KEY_ENV,
-  startFixture,
-  startHttpRuntime,
-  waitForFixture,
-  type FixtureAnswer,
-  type FixtureRequest,
-  type HttpRuntimeFixture,
-} from "../helpers/emit-fixture.ts";
-import { seedTestWorkspace } from "../helpers/workspace-fixture.ts";
+  jsonInit as json,
+  openSeededApiFixture,
+  requestJson as request,
+  type SeededApiFixture as TestApi,
+} from "../helpers/api-fixture.ts";
 
 const cleanup: Array<() => Promise<void> | void> = [];
 let previousApiKey: string | undefined;
@@ -34,40 +30,6 @@ afterEach(async () => {
   else process.env[FAKE_KEY_ENV] = previousApiKey;
 });
 
-type ApiWorkspace = { workContextId: string; employeeIds: readonly string[]; channelId: string; mailRoomId: string };
-type ApiResponse<T> = { status: number; body: T };
-type TestApi = { root: string; http: HttpRuntimeFixture; workspace: ApiWorkspace };
-
-async function request<T>(url: string, path: string, init?: RequestInit): Promise<ApiResponse<T>> {
-  const response = await fetch(new URL(path, url), { ...init, signal: init?.signal ?? AbortSignal.timeout(10_000) });
-  const text = await response.text();
-  let body: T;
-  try {
-    body = JSON.parse(text) as T;
-  } catch {
-    body = text as T;
-  }
-  return { status: response.status, body };
-}
-
-function json(method: string, body?: unknown): RequestInit {
-  return {
-    method,
-    ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
-  };
-}
-
-async function openApi(prefix: string): Promise<TestApi> {
-  const root = mkdtempSync(join(tmpdir(), prefix));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-  const fixture = await startFixture((request) => approvalAnswer(root, request));
-  cleanup.push(() => fixture.close());
-  const http = await startHttpRuntime(join(root, "data"));
-  cleanup.push(() => http.close());
-  const workspace = await seedTestWorkspace({ url: http.url, providerBaseUrl: fixture.baseUrl, root });
-  http.runtime.resume();
-  return { root, http, workspace };
-}
 
 function approvalAnswer(root: string, request: FixtureRequest): FixtureAnswer {
   if (request.model === "fake-reviewer") {
@@ -136,7 +98,11 @@ async function waitForTerminalWork(api: TestApi, id: string): Promise<WorkDTO> {
 
 describe("approval HTTP lifecycle", () => {
   it("approves only through the approved decision and performs the authorized file effect once", async () => {
-    const api = await openApi("emit-api-approval-approved-");
+    const api = await openSeededApiFixture({
+      prefix: "emit-api-approval-approved-",
+      cleanups: cleanup,
+      decide: (root, request) => approvalAnswer(root, request),
+    });
     const workId = await sendWork(api, "API_APPROVAL_APPROVED");
     const approval = await pendingApproval(api, workId);
     const file = join(api.root, "work", "approved.txt");
@@ -162,7 +128,11 @@ describe("approval HTTP lifecycle", () => {
   }, 60_000);
 
   it("rejects a pending tool call without applying its file effect", async () => {
-    const api = await openApi("emit-api-approval-rejected-");
+    const api = await openSeededApiFixture({
+      prefix: "emit-api-approval-rejected-",
+      cleanups: cleanup,
+      decide: (root, request) => approvalAnswer(root, request),
+    });
     const workId = await sendWork(api, "API_APPROVAL_REJECTED");
     const approval = await pendingApproval(api, workId);
     const file = join(api.root, "work", "rejected.txt");
@@ -179,7 +149,11 @@ describe("approval HTTP lifecycle", () => {
   }, 60_000);
 
   it("cancels an undecided approval when its work is stopped and rejects a late decision", async () => {
-    const api = await openApi("emit-api-approval-stopped-");
+    const api = await openSeededApiFixture({
+      prefix: "emit-api-approval-stopped-",
+      cleanups: cleanup,
+      decide: (root, request) => approvalAnswer(root, request),
+    });
     const workId = await sendWork(api, "API_APPROVAL_STOPPED");
     const approval = await pendingApproval(api, workId);
     const file = join(api.root, "work", "stopped.txt");

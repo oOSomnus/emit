@@ -105,6 +105,7 @@ export class EmitRuntime {
       throw new Error(
         `The data directory is locked by another Emit process (${lockPath}). Stop it first; if you are sure no other Emit process is running` +
           ` (for example, because it was forcefully terminated last time), remove the lock directory and try again.${error instanceof Error ? ` (${error.message})` : ""}`,
+        { cause: error },
       );
     }
 
@@ -240,8 +241,9 @@ export class EmitRuntime {
   async readFamily<T extends JsonObject, I extends JsonValue>(
     token: SessionDocFamilyToken<T, I>,
     key: string,
-    seed: I,
+    _seed: I,
   ): Promise<T | undefined> {
+    void _seed;
     const value = await this.harness.snapshot(token, key, this.ctx);
     return (value ?? undefined) as T | undefined;
   }

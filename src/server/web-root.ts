@@ -73,6 +73,7 @@ function readEmbeddedManifest(): string[] {
   } catch (error) {
     throw new Error(
       `Embedded web manifest is missing: ${MANIFEST_ASSET} (${error instanceof Error ? error.message : String(error)})`,
+      { cause: error },
     );
   }
   const manifest = validateManifest(parseManifest(raw, MANIFEST_ASSET), MANIFEST_ASSET);
@@ -103,6 +104,7 @@ function parseManifest(raw: string, label: string): unknown {
   } catch (error) {
     throw new Error(
       `Web manifest ${label} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
 }
@@ -133,6 +135,7 @@ function readAssetBytes(relativePath: string): Buffer {
   } catch (error) {
     throw new Error(
       `Embedded web asset is missing: web/${relativePath} (${error instanceof Error ? error.message : String(error)})`,
+      { cause: error },
     );
   }
 }

@@ -13,7 +13,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -290,7 +290,7 @@ describe("custom provider validation", () => {
 
     expect(
       captureThrownError(() =>
-        normalizeCustomProviders([{ ...base, baseUrl: "https://user:pass@x.test/v1" }], builtins),
+        normalizeCustomProviders([{ ...base, baseUrl: "https://YOUR_USERNAME:YOUR_PASSWORD@x.test/v1" }], builtins),
       ),
     ).toBeInstanceOf(AppError);
     expect(

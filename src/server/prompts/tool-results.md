@@ -1,3 +1,5 @@
+# Tool results
+
 ## read-too-large
 File too large ({{size}} bytes; limit {{max}}). Use run_shell or read it in segments first.
 

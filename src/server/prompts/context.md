@@ -1,3 +1,5 @@
+# Workspace context
+
 ## collaboration
 Collaboration limits: at most {{maxDepth}} levels of delegation and {{maxCrossEmployeeWakes}} cross-employee wakes.
 

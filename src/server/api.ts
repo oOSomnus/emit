@@ -23,7 +23,6 @@ import type {
   WorkNotePatchDTO,
 } from "../shared/contracts.ts";
 import type { EmitRuntime } from "./runtime.ts";
-import type { McpManager } from "./mcp.ts";
 import {
   createEmployee,
   findEmployee,
@@ -65,7 +64,6 @@ import {
 import {
   installEmployeeExtension,
   listWorks,
-  reconcileWorks,
   stopWork,
   type Resume,
 } from "./work.ts";
@@ -118,7 +116,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   // close would wait for it forever; connections are dropped on shutdown.
   const app = Fastify({ logger: false, bodyLimit: MAX_BODY, forceCloseConnections: true });
 
-  // A rejected input answers 400 with its reason; anything else stays a 500.
+  // A rejected input answers with its reason; non-client errors stay 500.
   app.setErrorHandler((error, _request, reply) => {
     const message = fromError(error);
     if (error instanceof ValidationError) return reply.code(400).send(messageBody(message));
@@ -127,6 +125,12 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
     }
     if (error instanceof ProviderAuthError) return reply.code(error.status).send(messageBody(message));
     if (error instanceof SessionExportError) return reply.code(error.status).send(messageBody(message));
+    if (typeof error === "object" && error !== null && "statusCode" in error) {
+      const { statusCode } = error;
+      if (typeof statusCode === "number" && Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 500) {
+        return reply.code(statusCode).send(messageBody(message));
+      }
+    }
     return reply.code(500).send(messageBody(message));
   });
 

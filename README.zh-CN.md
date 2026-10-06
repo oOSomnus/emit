@@ -53,12 +53,12 @@ make smoke           # 重新构建并运行原生二进制冒烟测试
 
 ## 文档
 
-| 主题 | 文档 |
-| --- | --- |
-| 使用指南 —— 员工、协作、会话、邮件与外观 | [docs/usage.zh-CN.md](docs/usage.zh-CN.md) |
-| 运行维护 —— CLI、数据文件、凭据与恢复 | [docs/operations.zh-CN.md](docs/operations.zh-CN.md) |
-| 安全与审批 —— 审批模型与安全性质 | [docs/security.zh-CN.md](docs/security.zh-CN.md) |
-| 开发指南 —— 脚本、提示词与冒烟测试 | [docs/development.zh-CN.md](docs/development.zh-CN.md) |
+| 主题                                     | 文档                                                   |
+|------------------------------------------|--------------------------------------------------------|
+| 使用指南 —— 员工, 协作, 会话, 邮件与外观 | [docs/usage.zh-CN.md](docs/usage.zh-CN.md)             |
+| 运行维护 —— CLI, 数据文件, 凭据与恢复    | [docs/operations.zh-CN.md](docs/operations.zh-CN.md)   |
+| 安全与审批 —— 审批模型与安全性质         | [docs/security.zh-CN.md](docs/security.zh-CN.md)       |
+| 开发指南 —— 脚本, 提示词与冒烟测试       | [docs/development.zh-CN.md](docs/development.zh-CN.md) |
 
 历史变更记录：[CHANGELOG.md](CHANGELOG.md)（英文）。
 

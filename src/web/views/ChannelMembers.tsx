@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { RoomDTO } from "../../shared/contracts.ts";
 import { errorDisplay, type DisplayText } from "../../shared/i18n.ts";
 import { ApiError, api } from "../api.ts";
 import { useI18n } from "../i18n.tsx";
 import { useApp } from "../state.tsx";
-import { EmployeeAvatar, IconButton } from "./ui.tsx";
+import { EmployeeAvatar, IconButton, useDialogFocusTrap } from "./ui.tsx";
 
 export function ChannelMembers({ room, onClose }: { room: RoomDTO; onClose: () => void }): ReactNode {
   const { state, dispatch } = useApp();
@@ -17,6 +17,7 @@ export function ChannelMembers({ room, onClose }: { room: RoomDTO; onClose: () =
   const [error, setError] = useState<DisplayText | undefined>(undefined);
   const [conflict, setConflict] = useState(false);
   const dialogRef = useRef<HTMLElement>(null);
+  const handleDialogKeyDown = useDialogFocusTrap(dialogRef, busy, onClose, false);
   const dirty =
     draftMemberIds.length !== baseMemberIds.length || baseMemberIds.some((id) => !draftMemberIds.includes(id));
   const available = state.employees.filter(
@@ -102,27 +103,6 @@ export function ChannelMembers({ room, onClose }: { room: RoomDTO; onClose: () =
     }
   };
 
-  const handleDialogKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      if (!busy) onClose();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-      "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])",
-    );
-    if (focusable === undefined || focusable.length === 0) return;
-    const first = focusable[0]!;
-    const last = focusable[focusable.length - 1]!;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
 
   return (
     <div className="directory-editor-backdrop" onKeyDown={handleDialogKeyDown}>

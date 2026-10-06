@@ -6,6 +6,34 @@ import { startEmitProcess, type EmitProcessFixture } from "./process-fixture.ts"
 import { startProviderProcess } from "./provider-process.ts";
 import { seedTestWorkspace } from "./workspace-fixture.ts";
 
+export function createFixtureOperations(
+  root: string,
+  emit: EmitProcessFixture,
+  closeProvider: () => Promise<void>,
+) {
+  let closing: Promise<void> | undefined;
+  return {
+    async request<T>(path: string, method = "GET", body?: unknown): Promise<{ status: number; body: T }> {
+      const response = await fetch(new URL(path, emit.url), {
+        method,
+        ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      return { status: response.status, body: await response.json() as T };
+    },
+    close(): Promise<void> {
+      closing ??= (async () => {
+        try { await emit.stop(); }
+        finally {
+          try { await closeProvider(); }
+          finally { rmSync(root, { recursive: true, force: true }); }
+        }
+      })();
+      return closing;
+    },
+  };
+}
+
 export async function createE2eFixture() {
   const root = mkdtempSync(join(tmpdir(), "emit-e2e-"));
   let provider: Awaited<ReturnType<typeof startProviderProcess>> | undefined;
@@ -19,23 +47,10 @@ export async function createE2eFixture() {
     const instance = emit;
     const fake = provider;
     const workspace = await seedTestWorkspace({ url: instance.url, providerBaseUrl: fake.baseUrl, root });
-    let closing: Promise<void> | undefined;
+    const operations = createFixtureOperations(root, instance, () => fake.close());
     return {
       root, workRoot: join(root, "work"), outsideRoot: join(root, "outside"), provider: fake, emit: instance, workspace,
-      async request<T>(path: string, method = "GET", body?: unknown): Promise<{ status: number; body: T }> {
-        const response = await fetch(new URL(path, instance.url), { method,
-          ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
-          signal: AbortSignal.timeout(10_000),
-        });
-        return { status: response.status, body: await response.json() as T };
-      },
-      close(): Promise<void> {
-        closing ??= (async () => {
-          try { await instance.stop(); }
-          finally { try { await fake.close(); } finally { rmSync(root, { recursive: true, force: true }); } }
-        })();
-        return closing;
-      },
+      ...operations,
     };
   } catch (error) {
     try { await emit?.stop(); }
