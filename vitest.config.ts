@@ -142,7 +142,7 @@ export default defineConfig({
       project(
         "e2e",
         ["test/mock.test.ts", "test/e2e/**/*.test.ts"],
-        1,
+        process.env.CI === "true" ? 2 : 1,
         90_000,
       ),
       project("fault", ["test/fault/**/*.test.ts"], 1, 120_000),

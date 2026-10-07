@@ -43,6 +43,7 @@ export type State = {
   skills: SkillDTO[];
   models: ModelInfoDTO[];
   providers: ProviderStatusDTO[];
+  llmCallRevisionByWorkId: Record<string, number>;
   customProviders: CustomProviderConfigDTO[];
   mcpServers: BootstrapDTO["mcpServers"];
   activeRoomId: string | undefined;
@@ -78,6 +79,7 @@ const initialState: State = {
   messages: [],
   view: "chat",
   notice: undefined,
+  llmCallRevisionByWorkId: {},
   mailRevision: 0,
   storagePath: "",
 };
@@ -111,7 +113,8 @@ type Action =
   | { type: "messages"; messages: MessageDTO[] }
   | { type: "message"; roomId: string; message: MessageDTO }
   | { type: "notice"; text: DisplayText }
-  | { type: "mailChanged" };
+  | { type: "mailChanged" }
+  | { type: "llmCall"; workId: string };
 
 function upsert<T extends { id: string }>(list: readonly T[], item: T): T[] {
   const index = list.findIndex((entry) => entry.id === item.id);
@@ -264,6 +267,14 @@ function reducer(state: State, action: Action): State {
       return { ...state, notice: { id: Date.now(), text: action.text } };
     case "mailChanged":
       return { ...state, mailRevision: state.mailRevision + 1 };
+    case "llmCall":
+      return {
+        ...state,
+        llmCallRevisionByWorkId: {
+          ...state.llmCallRevisionByWorkId,
+          [action.workId]: (state.llmCallRevisionByWorkId[action.workId] ?? 0) + 1,
+        },
+      };
     default:
       return state;
   }
@@ -398,6 +409,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         case "approval":
           dispatch({ type: "approval", approval: event.approval });
           void refreshWork();
+          break;
+        case "llm-call":
+          dispatch({ type: "llmCall", workId: event.workId });
           break;
         case "approvals":
           // Approval changes move a work item between "running" and

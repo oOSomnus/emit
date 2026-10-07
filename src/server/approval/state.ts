@@ -47,6 +47,7 @@ import type {
 import { readRoomMessageWindow } from "../rooms.ts";
 import type { MessageDTO } from "../../shared/contracts.ts";
 import type { EmitRuntime } from "../runtime.ts";
+import { withLlmCallOwner, type LlmCallOwner } from "../llm-calls.ts";
 import type {
   ApprovalCase,
   ApprovalContextEntry,
@@ -898,21 +899,28 @@ async function evaluateAndPersist(input: GateContext, record: ApprovalRecord): P
 
   const evaluator =
     config.kind === "llm" ? createLlmEvaluator(runtime.catalog) : createClassifierEvaluator(runtime.catalog);
-  const outcome = await evaluator
-    .evaluate(approvalCase, config, {
+  const owner: LlmCallOwner = {
+    workId: binding.workId,
+    employeeId: employee.id,
+    conversationId: input.conversationId,
+    approvalId: record.id,
+    kind: config.kind === "llm" ? "approval-llm" : "approval-classifier",
+  };
+  const outcome = await withLlmCallOwner(owner, () =>
+    evaluator.evaluate(approvalCase, config, {
       evaluationId: record.id,
       contextWindow: selectedModel.contextWindow,
       ...(input.signal !== undefined ? { signal: input.signal } : {}),
-    })
-    .catch((error: unknown): EvaluationOutcome => {
-      const wrapped = fromError(error);
-      return {
-        status: "unavailable",
-        reason: "provider",
-        message: wrapped.text,
-        ...(wrapped.localized !== undefined ? { messageLocalized: wrapped.localized } : {}),
-      };
-    });
+    }),
+  ).catch((error: unknown): EvaluationOutcome => {
+    const wrapped = fromError(error);
+    return {
+      status: "unavailable",
+      reason: "provider",
+      message: wrapped.text,
+      ...(wrapped.localized !== undefined ? { messageLocalized: wrapped.localized } : {}),
+    };
+  });
 
   return persistOutcome(input, record, outcome);
 }

@@ -407,6 +407,122 @@ export type WorkExecutionDTO = {
   nextCursor?: string;
   approvals: ApprovalDTO[];
 };
+export type LlmCallKind = "employee" | "compaction" | "approval-llm" | "approval-classifier";
+
+export type LlmCallStatus = "running" | "returned" | "failed" | "aborted" | "deferred" | "interrupted";
+
+/** A compact, indexed view of one SDK model invocation. */
+export type LlmCallSummaryDTO = {
+  id: string;
+  workId: string;
+  sequence: number;
+  revision: number;
+  kind: LlmCallKind;
+  employeeId: string;
+  conversationId?: number;
+  approvalId?: string;
+  model: { providerId: string; modelId: string };
+  startedAt: number;
+  endedAt?: number;
+  status: LlmCallStatus;
+  stopReason?: string;
+  reasoning: string;
+  maxTokens?: number;
+  inputBytes: number;
+  outputBytes?: number;
+  messageCount: number;
+  toolCount: number;
+  usage?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    totalTokens: number;
+    reasoning?: number;
+    cost?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+  };
+  redactionApplied: true;
+  captureBoundary: "models-sdk";
+};
+
+/** JSON rendered as typed, recursively expandable fields instead of a text dump. */
+export type LlmJsonDTO =
+  | { type: "scalar"; value: string | number | boolean | null }
+  | { type: "object"; entries: { key: string; value: LlmJsonDTO }[] }
+  | { type: "array"; items: LlmJsonDTO[] };
+
+export type LlmContentDTO =
+  | { type: "text"; text: string; structured?: LlmJsonDTO }
+  | { type: "thinking"; text: string; redacted?: boolean }
+  | { type: "toolCall"; id: string; name: string; arguments: LlmJsonDTO }
+  | { type: "image"; mimeType: string; omitted: true; characters: number };
+
+export type LlmMessageDTO = {
+  position: number;
+  role: "user" | "assistant" | "toolResult";
+  timestamp?: number;
+  toolName?: string;
+  toolCallId?: string;
+  isError?: boolean;
+  content: LlmContentDTO[];
+};
+
+export type LlmToolDTO = {
+  name: string;
+  description: string;
+  parameters: LlmJsonDTO;
+  constrainedSampling?: LlmJsonDTO;
+};
+
+export type LlmCallInputDTO = {
+  system?: { content: string; sections: { key: string; text: string }[] };
+  systemUpdates: {
+    position: number;
+    timestamp?: number;
+    content: string;
+    sections: { key: string; text: string | null }[];
+    toolsAdded: LlmToolDTO[];
+    toolsRemoved: string[];
+  }[];
+  messages: LlmMessageDTO[];
+  tools: LlmToolDTO[];
+  classifier?: { state: LlmJsonDTO; questions: LlmJsonDTO };
+};
+
+export type LlmCallResponseDTO = {
+  receivedAt: number;
+  source: "request" | "poll";
+  type: "response" | "exception";
+  stopReason?: string;
+  content: LlmContentDTO[];
+  answers?: LlmJsonDTO;
+  errorMessage?: string;
+  diagnostics?: LlmJsonDTO;
+  metadata?: LlmJsonDTO;
+  usage?: LlmCallSummaryDTO["usage"];
+};
+
+export type LlmCallDetailDTO = LlmCallSummaryDTO & {
+  input: LlmCallInputDTO;
+  responses: LlmCallResponseDTO[];
+  recordingError?: string;
+  omitted: {
+    side: "input" | "output";
+    path: string;
+    kind: "image" | "opaque-signature" | "deferred-data";
+    characters: number;
+  }[];
+};
+
+export type LlmCallPageDTO = {
+  items: LlmCallSummaryDTO[];
+  nextCursor?: string;
+  captureHealth: { failedCount: number; accepting: boolean };
+};
+
+/** A timeline update carries only indexes; the payload is fetched on demand. */
+export type LlmCallEvent = { type: "llm-call"; workId: string; callId: string; revision: number };
+
 
 export type RiskLevel = "low" | "medium" | "high" | "critical" | "unknown";
 export type ReviewOutcome = "allow" | "deny";
@@ -657,9 +773,10 @@ export type ServerEvent =
   | { type: "work-context"; workContext: WorkContextDTO }
   | { type: "work"; work: WorkDTO }
   | { type: "approval"; approval: ApprovalDTO }
+  | LlmCallEvent
+  | { type: "approvals" }
   /** Live text and tool activity of one running work item. */
   | { type: "work-progress"; workId: string; progressText: string; tools: ToolActivityDTO[] }
-  | { type: "approvals" }
   | { type: "employee"; employee: EmployeeDTO }
   | { type: "employees" }
   | { type: "skills" }

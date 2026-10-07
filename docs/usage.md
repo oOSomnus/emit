@@ -24,6 +24,7 @@ Day-to-day behavior of employees, collaboration, sessions, mail, and the interfa
 
 - Employees can message each other, send mail, and delegate tasks. Collaboration is capped by delegation depth, cross-employee wake count, and model turns, and delegating a task back to the delegating supervisor is rejected because it would form a cycle. Reaching a limit stops with an explanation instead of continuing silently.
 - The final answer of delegated work is visible on the Work page; open `View execution` to read the real steps, tool calls, approvals, and final answer. The result also returns to the originating session.
+- The execution dialog also has an `LLM calls` timeline for the work. Expand an invocation to inspect its categorized recorded input (system instructions, message history, tool schemas, or classifier context) and output (response content, structured data, errors, and usage); redacted values and omitted payloads are identified in the record.
 
 ### Channels and direct messages
 

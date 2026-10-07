@@ -17,7 +17,8 @@ import { useApp } from "../state.tsx";
 import { Chip, IconButton, WorkStatus, timeAgo } from "./ui.tsx";
 import { MarkdownBody } from "./MarkdownBody.tsx";
 import { ACTIVE_WORK_STATUSES } from "./WorkView.tsx";
-import type { ApprovalDTO, WorkExecutionDTO, WorkExecutionStepDTO } from "../../shared/contracts.ts";
+import { LlmCallTimeline } from "./LlmCallTimeline.tsx";
+import type { ApprovalDTO, ToolActivityDTO, WorkExecutionDTO, WorkExecutionStepDTO } from "../../shared/contracts.ts";
 
 const REFRESH_INTERVAL_MS = 120;
 
@@ -56,6 +57,27 @@ function approvalTone(approval: ApprovalDTO): string {
   return "muted";
 }
 
+function pendingRecordedTools(
+  steps: readonly WorkExecutionStepDTO[],
+  fallbackName: string,
+): ToolActivityDTO[] {
+  const completedCallIds = new Set<string>();
+  for (const step of steps) {
+    if (step.kind === "tool-result" && step.toolCallId !== undefined) completedCallIds.add(step.toolCallId);
+  }
+
+  const pending: ToolActivityDTO[] = [];
+  for (const step of steps) {
+    if (step.kind !== "tool-call" || step.toolCallId === undefined || completedCallIds.has(step.toolCallId)) continue;
+    pending.push({
+      callId: step.toolCallId,
+      name: step.toolName ?? fallbackName,
+      status: step.taskStatus === "running" ? "running" : "pending",
+    });
+  }
+  return pending;
+}
+
 export function WorkExecution({ workId, onClose }: { workId: string; onClose: () => void }): ReactNode {
   const { state, dispatch, setError } = useApp();
   const { messages, text, locale } = useI18n();
@@ -65,6 +87,7 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [error, setLocalError] = useState<DisplayText>("");
+  const [executionView, setExecutionView] = useState<"steps" | "llmCalls">("steps");
   const requestSeq = useRef(0);
   const refreshTimer = useRef<number | undefined>(undefined);
   const historyRequested = useRef(false);
@@ -139,9 +162,8 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
 
   const shown = execution?.work ?? work;
 
-  // The live half of the record: the newest state of this work, rendered from
-  // the event stream while the run is still owed to somebody. The durable
-  // steps below remain the record; this block is a snapshot of the stream.
+  // The live half of the record combines best-effort events with unfinished
+  // durable tool calls, which remain visible if their event arrived too early.
   const liveWork = work ?? execution?.work;
   const lastAssistant = useMemo(() => {
     for (let index = steps.length - 1; index >= 0; index -= 1) {
@@ -159,7 +181,14 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
     !(lastAssistant?.text === liveWork.progressText && lastAssistant.truncated !== true)
       ? liveWork.progressText
       : undefined;
-  const liveTools = liveWork?.tools?.filter((tool) => tool.status !== "done") ?? [];
+  const liveTools = useMemo(() => {
+    const streamed = liveWork?.tools?.filter((tool) => tool.status !== "done") ?? [];
+    if (streamed.length === 0) return pendingRecordedTools(steps, messages.execution.toolFallback);
+
+    const streamedIds = new Set(streamed.map((tool) => tool.callId));
+    const recorded = pendingRecordedTools(steps, messages.execution.toolFallback);
+    return [...streamed, ...recorded.filter((tool) => !streamedIds.has(tool.callId))];
+  }, [liveWork?.tools, messages.execution.toolFallback, steps]);
   const showLive =
     liveWork !== undefined &&
     ACTIVE_WORK_STATUSES.includes(liveWork.status) &&
@@ -167,7 +196,7 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
 
   return (
     <div className="work-execution-backdrop">
-      <section className="work-execution" role="dialog" aria-modal="true" aria-labelledby="work-execution-title">
+      <section className={`work-execution${executionView === "llmCalls" ? " work-execution-llm" : ""}`} role="dialog" aria-modal="true" aria-labelledby="work-execution-title">
       <div className="work-execution-head">
         <h2 id="work-execution-title">{messages.execution.title}</h2>
         {shown !== undefined ? <WorkStatus status={shown.status} /> : null}
@@ -205,7 +234,16 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
           </p>
         ) : null}
 
-        {error !== "" ? (
+        <div className="execution-view-tabs" role="group" aria-label={messages.llmCalls.viewOptions}>
+          <button type="button" aria-pressed={executionView === "steps"} onClick={() => setExecutionView("steps")}>
+            {messages.execution.stepsTab}
+          </button>
+          <button type="button" aria-pressed={executionView === "llmCalls"} onClick={() => setExecutionView("llmCalls")}>
+            {messages.llmCalls.tab}
+          </button>
+        </div>
+
+        {executionView === "steps" && error !== "" ? (
           <p className="error-text">
             <Chip tone="error">{messages.execution.loadFailed}</Chip> {text(error)}
             <button type="button" className="link" onClick={() => void load()}>
@@ -214,13 +252,13 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
           </p>
         ) : null}
 
-        {execution !== undefined && cursor !== undefined ? (
+        {executionView === "steps" && execution !== undefined && cursor !== undefined ? (
           <button type="button" className="link" disabled={loadingOlder} onClick={() => void loadOlder()}>
             {loadingOlder ? messages.common.loading : messages.execution.loadOlder}
           </button>
         ) : null}
 
-        {showLive ? (
+        {executionView === "steps" && showLive ? (
           <section className="execution-live" aria-label={messages.execution.live}>
             <h3>{messages.execution.live}</h3>
             {liveTools.length > 0 ? (
@@ -239,7 +277,9 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
           </section>
         ) : null}
 
-        {execution === undefined && error === "" ? (
+        {executionView === "llmCalls" ? (
+          <LlmCallTimeline workId={workId} />
+        ) : execution === undefined && error === "" ? (
           <p className="hint">{messages.execution.loadingRecord}</p>
         ) : steps.length === 0 ? (
           <p className="hint">
@@ -267,7 +307,7 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
           </ol>
         )}
 
-        {execution !== undefined && execution.approvals.length > 0 ? (
+        {executionView === "steps" && execution !== undefined && execution.approvals.length > 0 ? (
           <div className="work-approvals">
             <h3>{messages.execution.approvalsTitle}</h3>
             <ul>

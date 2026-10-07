@@ -101,6 +101,7 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [sending, setSending] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pendingCaretRef = useRef<number | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const inputAreaRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -212,6 +213,17 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
   useLayoutEffect(() => {
     resizeInput();
   }, [draft, resizeInput]);
+
+  // Restore the suggestion caret after the controlled draft has committed.
+  // A frame callback can otherwise run in the middle of the next input edit.
+  useLayoutEffect(() => {
+    const input = textareaRef.current;
+    const caret = pendingCaretRef.current;
+    if (input === null || caret === null) return;
+    pendingCaretRef.current = null;
+    input.focus();
+    input.setSelectionRange(caret, caret);
+  }, [draft]);
 
   // Re-measure only when the composer's width changes; typing never rebuilds
   // the observer.
@@ -333,13 +345,10 @@ export function ChatComposer({ room }: ChatComposerProps): ReactNode {
       setMentionAll(false);
       setRecipientIds((ids) => (ids.includes(suggestion.id) ? ids : [...ids, suggestion.id]));
     }
+    pendingCaretRef.current = nextCaret;
     setDraft(next);
     closeMenu();
     setActiveSuggestionIndex(0);
-    requestAnimationFrame(() => {
-      input.focus();
-      input.setSelectionRange(nextCaret, nextCaret);
-    });
   };
 
   const onDraftChange = (value: string, caret: number): void => {

@@ -96,11 +96,116 @@ export const REDACTION_MARKER = "[REDACTED]";
 /** Marker replacing a circular reference in a walked JSON value. */
 export const CIRCULAR_MARKER = "[CIRCULAR]";
 
+const SENSITIVE_TEXT_ASSIGNMENT =
+  /(["']?)(?:api[_-]?key|access[_-]?key|private[_-]?key|token|password|passphrase|passwd|secret|credential|authorization|cookie)s?["']?\s*[:=]\s*/gi;
+
+function redactSensitiveCompositeValues(value: string): string {
+  type CompositeFrame = {
+    closing: "}" | "]";
+    redactionStart: number | undefined;
+    rangeCount: number;
+    mismatchGeneration: number;
+    resumeQuote: "\"" | "'" | undefined;
+  };
+  type RedactionRange = { start: number; end: number };
+
+  const stack: CompositeFrame[] = [];
+  const ranges: RedactionRange[] = [];
+  SENSITIVE_TEXT_ASSIGNMENT.lastIndex = 0;
+  let assignment = SENSITIVE_TEXT_ASSIGNMENT.exec(value);
+  let assignmentValueStart =
+    assignment === null ? -1 : assignment.index + assignment[0].length;
+  let mismatchGeneration = 0;
+  let quote: "\"" | "'" | undefined;
+  let escaped = false;
+
+  // Balance every composite once, so malformed earlier values do not force
+  // another scan of the remaining text for each later sensitive assignment.
+  for (let index = 0; index < value.length; index += 1) {
+    const hasSensitiveAssignment = assignmentValueStart === index;
+    if (hasSensitiveAssignment) {
+      assignment = SENSITIVE_TEXT_ASSIGNMENT.exec(value);
+      assignmentValueStart =
+        assignment === null ? -1 : assignment.index + assignment[0].length;
+    }
+
+    const character = value[index]!;
+    if (quote !== undefined) {
+      if (hasSensitiveAssignment && (character === "{" || character === "[")) {
+        const resumeQuote = quote;
+        quote = undefined;
+        stack.push({
+          closing: character === "{" ? "}" : "]",
+          redactionStart: index,
+          rangeCount: ranges.length,
+          mismatchGeneration,
+          resumeQuote,
+        });
+        continue;
+      }
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = undefined;
+      continue;
+    }
+
+    if (stack.length > 0 && (character === "\"" || character === "'")) {
+      quote = character;
+      continue;
+    }
+    if (character === "{" || character === "[") {
+      stack.push({
+        closing: character === "{" ? "}" : "]",
+        redactionStart: hasSensitiveAssignment ? index : undefined,
+        rangeCount: ranges.length,
+        mismatchGeneration,
+        resumeQuote: undefined,
+      });
+    } else if (character === "}" || character === "]") {
+      const frame = stack[stack.length - 1];
+      if (frame === undefined || frame.closing !== character) {
+        mismatchGeneration += 1;
+        continue;
+      }
+      stack.pop();
+      if (
+        frame.redactionStart !== undefined &&
+        frame.mismatchGeneration === mismatchGeneration
+      ) {
+        ranges.length = frame.rangeCount;
+        ranges.push({ start: frame.redactionStart, end: index + 1 });
+      }
+      if (frame.resumeQuote !== undefined) {
+        quote = frame.resumeQuote;
+        escaped = false;
+      }
+    }
+  }
+
+  for (let index = 0; index < stack.length; index += 1) {
+    const frame = stack[index]!;
+    if (frame.redactionStart === undefined) continue;
+    ranges.length = frame.rangeCount;
+    ranges.push({ start: frame.redactionStart, end: value.length });
+    break;
+  }
+  SENSITIVE_TEXT_ASSIGNMENT.lastIndex = 0;
+
+  if (ranges.length === 0) return value;
+  let output = "";
+  let copiedThrough = 0;
+  for (const range of ranges) {
+    output += value.slice(copiedThrough, range.start) + REDACTION_MARKER;
+    copiedThrough = range.end;
+  }
+  return output + value.slice(copiedThrough);
+}
+
 /** Remove obvious inline credentials before request text or arguments reach a reviewer or the page. */
 export function redactApprovalText(value: string): string {
-  return value
+  return redactSensitiveCompositeValues(value)
     .replace(
-      /((?:["']?)(?:api[_-]?key|access[_-]?key|private[_-]?key|token|password|passphrase|passwd|secret|credential|authorization|cookie)(?:["']?\s*[:=]\s*))("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|Bearer\s+[^\s,;}\]]+|[^\s,;}\]]+)/gi,
+      /((?:["']?)(?:api[_-]?key|access[_-]?key|private[_-]?key|token|password|passphrase|passwd|secret|credential|authorization|cookie)s?(?:["']?\s*[:=]\s*))("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|Bearer\s+[^\s,;}\]]+|[^\s,;}\]]+)/gi,
       `$1${REDACTION_MARKER}`,
     )
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, `Bearer ${REDACTION_MARKER}`)

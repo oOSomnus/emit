@@ -21,6 +21,7 @@ import { englishDirectories, chineseDirectories } from "./messages/directories.t
 import { englishEmployees, chineseEmployees } from "./messages/employees.ts";
 import { englishExecution, chineseExecution } from "./messages/execution.ts";
 import { englishLanguage, chineseLanguage } from "./messages/language.ts";
+import { englishLlmCalls, chineseLlmCalls } from "./messages/llm-calls.ts";
 import { englishMail, chineseMail } from "./messages/mail.ts";
 import { englishModel, chineseModel } from "./messages/model.ts";
 import { englishOnboarding, chineseOnboarding } from "./messages/onboarding.ts";
@@ -42,6 +43,7 @@ export const englishMessages = {
   mail: englishMail,
   work: englishWork,
   workContexts: englishWorkContexts,
+  llmCalls: englishLlmCalls,
   execution: englishExecution,
   approvals: englishApprovals,
   employees: englishEmployees,
@@ -63,6 +65,7 @@ export const chineseMessages: UiMessages = {
   chat: chineseChat,
   mail: chineseMail,
   work: chineseWork,
+  llmCalls: chineseLlmCalls,
   workContexts: chineseWorkContexts,
   execution: chineseExecution,
   approvals: chineseApprovals,

@@ -10,6 +10,7 @@ import { apiMessages } from "./messages/api.ts";
 import { approvalMessages } from "./messages/approval.ts";
 import { addressingMessages } from "./messages/addressing.ts";
 import { authMessages } from "./messages/auth.ts";
+import { llmCallMessages } from "./messages/llm-calls.ts";
 import { mcpMessages } from "./messages/mcp.ts";
 import { mailMessages } from "./messages/mail.ts";
 import { modelMessages } from "./messages/models.ts";
@@ -34,4 +35,5 @@ export const appMessages = {
   auth: authMessages,
   providers: providerMessages,
   mcp: mcpMessages,
+  llmCalls: llmCallMessages,
 };

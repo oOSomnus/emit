@@ -2,6 +2,7 @@
 
 export const englishExecution = {
   title: "Execution details",
+  stepsTab: "Execution steps",
   meta: {
     work(workId: string): string {
       return `Work ${workId}`;
@@ -62,6 +63,7 @@ export type ExecutionMessages = typeof englishExecution;
 
 export const chineseExecution: ExecutionMessages = {
   title: "执行详情",
+  stepsTab: "执行步骤",
   meta: {
     work(workId) {
       return `工作 ${workId}`;

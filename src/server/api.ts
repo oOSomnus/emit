@@ -72,6 +72,12 @@ import { sendQueuedMail } from "./mail.ts";
 import { sendQueuedMessage } from "./channel-messages.ts";
 import { WorkExecutionCursorError, readWorkExecution } from "./work-execution.ts";
 import {
+  LlmCallCorruptError,
+  LlmCallCursorError,
+  readWorkLlmCall,
+  readWorkLlmCalls,
+} from "./llm-calls.ts";
+import {
   findApproval,
   invalidateStaleGrants,
   invalidateWorkContextDirectoryGrants,
@@ -746,6 +752,35 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
   // -------------------------------------------------------------------- work
 
   app.get("/api/works", async () => workDTOs());
+  app.get("/api/works/:id/llm-calls", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const raw = (request.query as { cursor?: unknown }).cursor;
+    if (raw !== undefined && typeof raw !== "string") {
+      return reply.code(400).send(messageBody(appMessages.llmCalls.invalidCursor));
+    }
+    try {
+      const page = await readWorkLlmCalls(runtime, id, raw);
+      if (page === undefined) return reply.code(404).send(messageBody(apiMessages.workNotFound));
+      return page;
+    } catch (error) {
+      if (error instanceof LlmCallCursorError) return reply.code(400).send(messageBody(fromError(error)));
+      if (error instanceof LlmCallCorruptError) return reply.code(500).send(messageBody(fromError(error)));
+      throw error;
+    }
+  });
+
+  app.get("/api/works/:id/llm-calls/:callId", async (request, reply) => {
+    const { id, callId } = request.params as { id: string; callId: string };
+    try {
+      const detail = await readWorkLlmCall(runtime, id, callId);
+      if (detail === undefined) return reply.code(404).send(messageBody(appMessages.llmCalls.notFound));
+      return detail;
+    } catch (error) {
+      if (error instanceof LlmCallCorruptError) return reply.code(500).send(messageBody(fromError(error)));
+      throw error;
+    }
+  });
+
 
   /** The durable record of one work: what it did, what failed, what it waits for. */
   app.get("/api/works/:id/execution", async (request, reply) => {
