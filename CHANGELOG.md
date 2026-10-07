@@ -58,6 +58,7 @@
 - Continuous integration runs both gates on GitHub: `.github/workflows/test.yml` executes `npm run test:gate` (build, daily coverage, both Chromium projects, native build and native smoke) and `.github/workflows/mega-linter.yml` runs MegaLinter over the whole codebase on every push and pull
   request, uploading its reports as an artifact. Sources, scripts, and tests are linted by ESLint's recommended JavaScript and typescript-eslint presets (`npm run lint`, `make lint`) instead of `ts-standard`, type checking stays with the three project tsconfigs, and duplication is measured with jscpd at a
   150-token minimum so only substantial copy/paste blocks fail the run.
+- The mobile mailbox SSE recovery browser test now holds bootstrap past the initial event-stream connection and uses the shell-waiting navigation helper, covering the cold-start drawer race without retries or timing sleeps.
 - The stylesheet is now ordered by specificity inside every element family, so a later rule can no longer be silently shadowed by an earlier, more specific one (`stylelint-config-standard`'s `no-descending-specificity` passes on the whole file). The rendered result is unchanged: a computed-style sweep over both Chromium viewports, the coarse-pointer layout, the
   container-query boundaries, and the viewport fallback matches the pre-change stylesheet exactly.
 

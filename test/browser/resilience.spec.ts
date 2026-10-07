@@ -1,8 +1,9 @@
+import type { Route } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 import type { EmployeeDTO, MailboxItemDTO, MessageDTO, RoomDTO, WorkContextDTO } from "../../src/shared/contracts.ts";
 import { startLoopbackProxy } from "../helpers/loopback-proxy.ts";
 import { waitForFixture } from "../helpers/emit-fixture.ts";
-import { expect, onboarded, test, type BrowserE2eFixture } from "./fixtures.ts";
+import { expect, navigateWorkspace, onboarded, test, type BrowserE2eFixture } from "./fixtures.ts";
 
 async function openMailbox(page: Page, app: BrowserE2eFixture): Promise<void> {
   await onboarded(page, app);
@@ -10,9 +11,7 @@ async function openMailbox(page: Page, app: BrowserE2eFixture): Promise<void> {
 }
 
 async function showMailbox(page: Page): Promise<void> {
-  const openNavigation = page.getByRole("button", { name: "Open navigation" });
-  if (await openNavigation.isVisible()) await openNavigation.click();
-  await page.getByRole("button", { name: "Mailbox" }).click();
+  await navigateWorkspace(page, "Mailbox");
   await expect(page.getByRole("heading", { name: "Mailbox" })).toBeVisible();
 }
 
@@ -85,9 +84,19 @@ test("the browser reports an outage and recovers its mailbox from the restarted 
 
 test("the live mailbox reconnects to real backend mail after its SSE stream is interrupted", async ({ app, page }) => {
   const proxy = await startLoopbackProxy(app.emit.url);
+  const bootstrapUrl = `${proxy.url}/api/bootstrap`;
+  const bootstrapRequested = Promise.withResolvers<void>();
+  const releaseBootstrap = Promise.withResolvers<void>();
+  const bootstrapHandler = async (route: Route): Promise<void> => {
+    const response = await route.fetch();
+    bootstrapRequested.resolve();
+    await releaseBootstrap.promise;
+    await route.fulfill({ response });
+  };
   try {
     await app.allowOrigin(proxy.url);
     await onboarded(page, app);
+    await page.route(bootstrapUrl, bootstrapHandler);
     const proxyOrigin = new URL(proxy.url).origin;
     let mainFrameNavigations = 0;
     page.on("framenavigated", (frame) => {
@@ -99,7 +108,13 @@ test("the live mailbox reconnects to real backend mail after its SSE stream is i
     });
     await page.goto(proxy.url);
     await firstEventStream;
-    await showMailbox(page);
+    await bootstrapRequested.promise;
+    await expect(page.locator(".boot")).toBeVisible();
+    const mailboxOpened = showMailbox(page);
+    await expect(page.locator(".boot")).toBeVisible();
+    releaseBootstrap.resolve();
+    await mailboxOpened;
+    await page.unroute(bootstrapUrl, bootstrapHandler);
     await selectInboxFolder(page);
     expect(mainFrameNavigations).toBe(1);
 
@@ -147,7 +162,12 @@ test("the live mailbox reconnects to real backend mail after its SSE stream is i
     expect(mainFrameNavigations).toBe(1);
     expect(new URL(page.url()).origin).toBe(proxyOrigin);
   } finally {
-    await proxy.close();
+    releaseBootstrap.resolve();
+    try {
+      if (!page.isClosed()) await page.unroute(bootstrapUrl, bootstrapHandler);
+    } finally {
+      await proxy.close();
+    }
   }
 });
 
