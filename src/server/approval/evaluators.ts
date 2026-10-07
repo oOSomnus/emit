@@ -119,8 +119,8 @@ function redactSensitiveCompositeValues(value: string): string {
   let quote: "\"" | "'" | undefined;
   let escaped = false;
 
-  // Balance every composite once, so malformed earlier values cannot rescan
-  // the remaining text for each later sensitive assignment.
+  // Balance every composite once, so malformed earlier values do not force
+  // another scan of the remaining text for each later sensitive assignment.
   for (let index = 0; index < value.length; index += 1) {
     const hasSensitiveAssignment = assignmentValueStart === index;
     if (hasSensitiveAssignment) {
