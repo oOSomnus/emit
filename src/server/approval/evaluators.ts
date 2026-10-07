@@ -99,44 +99,98 @@ export const CIRCULAR_MARKER = "[CIRCULAR]";
 const SENSITIVE_TEXT_ASSIGNMENT =
   /(["']?)(?:api[_-]?key|access[_-]?key|private[_-]?key|token|password|passphrase|passwd|secret|credential|authorization|cookie)s?["']?\s*[:=]\s*/gi;
 
-function compositeValueEnd(value: string, start: number): number | undefined {
-  const opener = value[start];
-  if (opener !== "{" && opener !== "[") return undefined;
-  const closers: string[] = [opener === "{" ? "}" : "]"];
-  let inString = false;
+function redactSensitiveCompositeValues(value: string): string {
+  type CompositeFrame = {
+    closing: "}" | "]";
+    redactionStart: number | undefined;
+    rangeCount: number;
+    mismatchGeneration: number;
+    resumeQuote: "\"" | "'" | undefined;
+  };
+  type RedactionRange = { start: number; end: number };
+
+  const stack: CompositeFrame[] = [];
+  const ranges: RedactionRange[] = [];
+  SENSITIVE_TEXT_ASSIGNMENT.lastIndex = 0;
+  let assignment = SENSITIVE_TEXT_ASSIGNMENT.exec(value);
+  let assignmentValueStart =
+    assignment === null ? -1 : assignment.index + assignment[0].length;
+  let mismatchGeneration = 0;
+  let quote: "\"" | "'" | undefined;
   let escaped = false;
-  for (let index = start + 1; index < value.length; index += 1) {
+
+  // Balance every composite once, so malformed earlier values cannot rescan
+  // the remaining text for each later sensitive assignment.
+  for (let index = 0; index < value.length; index += 1) {
+    const hasSensitiveAssignment = assignmentValueStart === index;
+    if (hasSensitiveAssignment) {
+      assignment = SENSITIVE_TEXT_ASSIGNMENT.exec(value);
+      assignmentValueStart =
+        assignment === null ? -1 : assignment.index + assignment[0].length;
+    }
+
     const character = value[index]!;
-    if (inString) {
+    if (quote !== undefined) {
+      if (hasSensitiveAssignment && (character === "{" || character === "[")) {
+        const resumeQuote = quote;
+        quote = undefined;
+        stack.push({
+          closing: character === "{" ? "}" : "]",
+          redactionStart: index,
+          rangeCount: ranges.length,
+          mismatchGeneration,
+          resumeQuote,
+        });
+        continue;
+      }
       if (escaped) escaped = false;
       else if (character === "\\") escaped = true;
-      else if (character === "\"") inString = false;
+      else if (character === quote) quote = undefined;
       continue;
     }
-    if (character === "\"") inString = true;
-    else if (character === "{") closers.push("}");
-    else if (character === "[") closers.push("]");
-    else if (character === "}" || character === "]") {
-      if (closers.pop() !== character) return undefined;
-      if (closers.length === 0) return index + 1;
+
+    if (stack.length > 0 && (character === "\"" || character === "'")) {
+      quote = character;
+      continue;
+    }
+    if (character === "{" || character === "[") {
+      stack.push({
+        closing: character === "{" ? "}" : "]",
+        redactionStart: hasSensitiveAssignment ? index : undefined,
+        rangeCount: ranges.length,
+        mismatchGeneration,
+        resumeQuote: undefined,
+      });
+    } else if (character === "}" || character === "]") {
+      const frame = stack[stack.length - 1];
+      if (frame === undefined || frame.closing !== character) {
+        mismatchGeneration += 1;
+        continue;
+      }
+      stack.pop();
+      if (
+        frame.redactionStart !== undefined &&
+        frame.mismatchGeneration === mismatchGeneration
+      ) {
+        ranges.length = frame.rangeCount;
+        ranges.push({ start: frame.redactionStart, end: index + 1 });
+      }
+      if (frame.resumeQuote !== undefined) {
+        quote = frame.resumeQuote;
+        escaped = false;
+      }
     }
   }
-  return undefined;
-}
-
-function redactSensitiveCompositeValues(value: string): string {
   SENSITIVE_TEXT_ASSIGNMENT.lastIndex = 0;
+
+  if (ranges.length === 0) return value;
   let output = "";
   let copiedThrough = 0;
-  while (SENSITIVE_TEXT_ASSIGNMENT.exec(value) !== null) {
-    const start = SENSITIVE_TEXT_ASSIGNMENT.lastIndex;
-    const end = compositeValueEnd(value, start);
-    if (end === undefined) continue;
-    output += value.slice(copiedThrough, start) + REDACTION_MARKER;
-    copiedThrough = end;
-    SENSITIVE_TEXT_ASSIGNMENT.lastIndex = end;
+  for (const range of ranges) {
+    output += value.slice(copiedThrough, range.start) + REDACTION_MARKER;
+    copiedThrough = range.end;
   }
-  return copiedThrough === 0 ? value : output + value.slice(copiedThrough);
+  return output + value.slice(copiedThrough);
 }
 
 /** Remove obvious inline credentials before request text or arguments reach a reviewer or the page. */

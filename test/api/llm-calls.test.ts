@@ -103,17 +103,22 @@ describe("LLM call history HTTP contract", () => {
     const events = await openEventStream(`${http.url}/api/events`);
     cleanup.push(() => events.close());
 
+    // Exercise free-form values after JSON, including a malformed composite
+    // prefix before a later complete composite.
+    const userMessage = `${JSON.stringify({
+      task: "API_LLM_CALL_GATE",
+      visible: "INPUT_VISIBLE_CANARY",
+      password: "input-secret-canary",
+      credentials: { label: "input-nested-secret-canary", note: "brackets ] } inside a string" },
+      passwords: ["input-array-secret-canary", { note: "brackets ] } inside a string" }],
+    })}
+credentials: {note: '}', label: 'input-single-quoted-secret-canary'}
+${"password: { ".repeat(128)}password: {note: '}', label: 'input-later-composite-secret-canary'}`;
     const firstWorkId = await sendToEmployee(
       http.url,
       workspace.channelId,
       workspace.employeeIds[0]!,
-      JSON.stringify({
-        task: "API_LLM_CALL_GATE",
-        visible: "INPUT_VISIBLE_CANARY",
-        password: "input-secret-canary",
-        credentials: { label: "input-nested-secret-canary", note: "brackets ] } inside a string" },
-        passwords: ["input-array-secret-canary", { note: "brackets ] } inside a string" }],
-      }),
+      userMessage,
     );
     await waitForFixture(
       async () => provider.requests.some((entry) => entry.prompt.includes("API_LLM_CALL_GATE")),
@@ -158,6 +163,8 @@ describe("LLM call history HTTP contract", () => {
     expect(JSON.stringify(runningDetail.body)).not.toContain("input-secret-canary");
     expect(JSON.stringify(runningDetail.body)).not.toContain("input-nested-secret-canary");
     expect(JSON.stringify(runningDetail.body)).not.toContain("input-array-secret-canary");
+    expect(JSON.stringify(runningDetail.body)).not.toContain("input-single-quoted-secret-canary");
+    expect(JSON.stringify(runningDetail.body)).not.toContain("input-later-composite-secret-canary");
 
     const returnedEventPromise = events.next(
       (event) => event.type === "llm-call" && event.callId === running.id && event.revision > 1,
