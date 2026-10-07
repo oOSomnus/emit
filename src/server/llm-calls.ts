@@ -588,10 +588,14 @@ function captureText(
   role: "user" | "assistant" | "toolResult" | undefined,
 ): LlmContentDTO {
   const parsed = parseStructuredText(text, request, role);
+  if (!parsed.found) return { type: "text", text: redactApprovalText(text) };
+
+  const redacted = redactJsonValue(parsed.value);
   return {
     type: "text",
-    text: redactApprovalText(text),
-    ...(parsed.found ? { structured: redactedJsonTree(parsed.value) } : {}),
+    // Parsed JSON is the source of truth; never retain a second, less-redacted text copy.
+    text: JSON.stringify(redacted) ?? "null",
+    structured: toLlmJsonTree(redacted),
   };
 }
 

@@ -107,7 +107,13 @@ describe("LLM call history HTTP contract", () => {
       http.url,
       workspace.channelId,
       workspace.employeeIds[0]!,
-      "API_LLM_CALL_GATE password=input-secret-canary INPUT_VISIBLE_CANARY",
+      JSON.stringify({
+        task: "API_LLM_CALL_GATE",
+        visible: "INPUT_VISIBLE_CANARY",
+        password: "input-secret-canary",
+        credentials: { label: "input-nested-secret-canary", note: "brackets ] } inside a string" },
+        passwords: ["input-array-secret-canary", { note: "brackets ] } inside a string" }],
+      }),
     );
     await waitForFixture(
       async () => provider.requests.some((entry) => entry.prompt.includes("API_LLM_CALL_GATE")),
@@ -150,6 +156,8 @@ describe("LLM call history HTTP contract", () => {
     expect(inputText).toContain("INPUT_VISIBLE_CANARY");
     expect(inputText).toContain("[REDACTED]");
     expect(JSON.stringify(runningDetail.body)).not.toContain("input-secret-canary");
+    expect(JSON.stringify(runningDetail.body)).not.toContain("input-nested-secret-canary");
+    expect(JSON.stringify(runningDetail.body)).not.toContain("input-array-secret-canary");
 
     const returnedEventPromise = events.next(
       (event) => event.type === "llm-call" && event.callId === running.id && event.revision > 1,

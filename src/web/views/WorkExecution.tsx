@@ -18,7 +18,7 @@ import { Chip, IconButton, WorkStatus, timeAgo } from "./ui.tsx";
 import { MarkdownBody } from "./MarkdownBody.tsx";
 import { ACTIVE_WORK_STATUSES } from "./WorkView.tsx";
 import { LlmCallTimeline } from "./LlmCallTimeline.tsx";
-import type { ApprovalDTO, WorkExecutionDTO, WorkExecutionStepDTO } from "../../shared/contracts.ts";
+import type { ApprovalDTO, ToolActivityDTO, WorkExecutionDTO, WorkExecutionStepDTO } from "../../shared/contracts.ts";
 
 const REFRESH_INTERVAL_MS = 120;
 
@@ -55,6 +55,27 @@ function approvalTone(approval: ApprovalDTO): string {
   if (approval.status === "pending-human" || approval.status === "evaluating") return "warn";
   if (approval.status === "rejected" || approval.status === "blocked") return "error";
   return "muted";
+}
+
+function pendingRecordedTools(
+  steps: readonly WorkExecutionStepDTO[],
+  fallbackName: string,
+): ToolActivityDTO[] {
+  const completedCallIds = new Set<string>();
+  for (const step of steps) {
+    if (step.kind === "tool-result" && step.toolCallId !== undefined) completedCallIds.add(step.toolCallId);
+  }
+
+  const pending: ToolActivityDTO[] = [];
+  for (const step of steps) {
+    if (step.kind !== "tool-call" || step.toolCallId === undefined || completedCallIds.has(step.toolCallId)) continue;
+    pending.push({
+      callId: step.toolCallId,
+      name: step.toolName ?? fallbackName,
+      status: step.taskStatus === "running" ? "running" : "pending",
+    });
+  }
+  return pending;
 }
 
 export function WorkExecution({ workId, onClose }: { workId: string; onClose: () => void }): ReactNode {
@@ -141,9 +162,8 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
 
   const shown = execution?.work ?? work;
 
-  // The live half of the record: the newest state of this work, rendered from
-  // the event stream while the run is still owed to somebody. The durable
-  // steps below remain the record; this block is a snapshot of the stream.
+  // The live half of the record combines best-effort events with unfinished
+  // durable tool calls, which remain visible if their event arrived too early.
   const liveWork = work ?? execution?.work;
   const lastAssistant = useMemo(() => {
     for (let index = steps.length - 1; index >= 0; index -= 1) {
@@ -161,7 +181,14 @@ export function WorkExecution({ workId, onClose }: { workId: string; onClose: ()
     !(lastAssistant?.text === liveWork.progressText && lastAssistant.truncated !== true)
       ? liveWork.progressText
       : undefined;
-  const liveTools = liveWork?.tools?.filter((tool) => tool.status !== "done") ?? [];
+  const liveTools = useMemo(() => {
+    const streamed = liveWork?.tools?.filter((tool) => tool.status !== "done") ?? [];
+    if (streamed.length === 0) return pendingRecordedTools(steps, messages.execution.toolFallback);
+
+    const streamedIds = new Set(streamed.map((tool) => tool.callId));
+    const recorded = pendingRecordedTools(steps, messages.execution.toolFallback);
+    return [...streamed, ...recorded.filter((tool) => !streamedIds.has(tool.callId))];
+  }, [liveWork?.tools, messages.execution.toolFallback, steps]);
   const showLive =
     liveWork !== undefined &&
     ACTIVE_WORK_STATUSES.includes(liveWork.status) &&

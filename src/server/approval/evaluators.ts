@@ -96,11 +96,54 @@ export const REDACTION_MARKER = "[REDACTED]";
 /** Marker replacing a circular reference in a walked JSON value. */
 export const CIRCULAR_MARKER = "[CIRCULAR]";
 
+const SENSITIVE_TEXT_ASSIGNMENT =
+  /(["']?)(?:api[_-]?key|access[_-]?key|private[_-]?key|token|password|passphrase|passwd|secret|credential|authorization|cookie)s?["']?\s*[:=]\s*/gi;
+
+function compositeValueEnd(value: string, start: number): number | undefined {
+  const opener = value[start];
+  if (opener !== "{" && opener !== "[") return undefined;
+  const closers: string[] = [opener === "{" ? "}" : "]"];
+  let inString = false;
+  let escaped = false;
+  for (let index = start + 1; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === "\"") inString = false;
+      continue;
+    }
+    if (character === "\"") inString = true;
+    else if (character === "{") closers.push("}");
+    else if (character === "[") closers.push("]");
+    else if (character === "}" || character === "]") {
+      if (closers.pop() !== character) return undefined;
+      if (closers.length === 0) return index + 1;
+    }
+  }
+  return undefined;
+}
+
+function redactSensitiveCompositeValues(value: string): string {
+  SENSITIVE_TEXT_ASSIGNMENT.lastIndex = 0;
+  let output = "";
+  let copiedThrough = 0;
+  while (SENSITIVE_TEXT_ASSIGNMENT.exec(value) !== null) {
+    const start = SENSITIVE_TEXT_ASSIGNMENT.lastIndex;
+    const end = compositeValueEnd(value, start);
+    if (end === undefined) continue;
+    output += value.slice(copiedThrough, start) + REDACTION_MARKER;
+    copiedThrough = end;
+    SENSITIVE_TEXT_ASSIGNMENT.lastIndex = end;
+  }
+  return copiedThrough === 0 ? value : output + value.slice(copiedThrough);
+}
+
 /** Remove obvious inline credentials before request text or arguments reach a reviewer or the page. */
 export function redactApprovalText(value: string): string {
-  return value
+  return redactSensitiveCompositeValues(value)
     .replace(
-      /((?:["']?)(?:api[_-]?key|access[_-]?key|private[_-]?key|token|password|passphrase|passwd|secret|credential|authorization|cookie)(?:["']?\s*[:=]\s*))("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|Bearer\s+[^\s,;}\]]+|[^\s,;}\]]+)/gi,
+      /((?:["']?)(?:api[_-]?key|access[_-]?key|private[_-]?key|token|password|passphrase|passwd|secret|credential|authorization|cookie)s?(?:["']?\s*[:=]\s*))("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|Bearer\s+[^\s,;}\]]+|[^\s,;}\]]+)/gi,
       `$1${REDACTION_MARKER}`,
     )
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, `Bearer ${REDACTION_MARKER}`)

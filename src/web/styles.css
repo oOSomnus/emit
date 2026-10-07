@@ -1066,12 +1066,6 @@ ul {
   background: var(--bg-soft);
 }
 
-.llm-usage-cost > dd > dl > div {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-2);
-}
-
 .llm-system-sections > div {
   min-width: 0;
   display: grid;
@@ -1079,6 +1073,12 @@ ul {
   gap: var(--space-2);
   padding: var(--space-2);
   border-bottom: 1px solid var(--line);
+}
+
+.llm-usage-cost > dd > dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
 }
 
 .pane-header > div:first-child {
