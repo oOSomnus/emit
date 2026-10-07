@@ -19,7 +19,6 @@ import {
   type Message,
   type Model,
   type ModelsClassifierOptions,
-  type ModelsDeferredFetchOptions,
   type ModelsSimpleStreamOptions,
   type MutableModels,
   type SystemMessage,
@@ -50,6 +49,7 @@ import {
   EmployeeDoc,
   LlmCallDoc,
   LlmCallPayloadDoc,
+  WorkLlmCallIndexDoc,
   WorkDoc,
   type LlmCallPayloadRecord,
   type LlmCallRecord,
@@ -385,7 +385,7 @@ export function createObservedModels(models: MutableModels, observer: LlmCallObs
   };
 
   const fetchDeferred = (...args: Parameters<MutableModels["fetchDeferred"]>): Promise<AssistantMessage> => {
-    const [model, handle] = args;
+    const [, handle] = args;
     const observePoll = observerIsAccepting(observer);
     let promise: Promise<AssistantMessage>;
     try {
@@ -792,21 +792,52 @@ export async function readWorkLlmCalls(
 ): Promise<LlmCallPageDTO | undefined> {
   if ((await findWork(runtime, workId)) === undefined) return undefined;
   const beforeSequence = decodeLlmCallCursor(cursor);
-  const records = await runtime.listFamily(LlmCallDoc, (id) => ({ id }));
-  const matching = records
-    .filter(
-      ({ key, value }) =>
-        key === value.id &&
-        value.workId === workId &&
-        (beforeSequence === undefined || value.sequence < beforeSequence),
-    )
-    .sort((left, right) => right.value.sequence - left.value.sequence);
-  const page = matching.slice(0, LLM_CALL_PAGE_SIZE);
-  const last = page.at(-1)?.value.sequence;
+  const index = await runtime.readFamily(WorkLlmCallIndexDoc, workId, { workId });
+  if (index === undefined) {
+    return { items: [], captureHealth: runtime.llmCallCaptureHealth() };
+  }
+  if (index.workId !== workId) throw new LlmCallCorruptError();
+  if (!Array.isArray(index.calls)) throw new LlmCallCorruptError();
+
+  const calls = index.calls;
+  let end = calls.length;
+  if (beforeSequence !== undefined) {
+    let lower = 0;
+    let upper = calls.length;
+    while (lower < upper) {
+      const middle = lower + Math.floor((upper - lower) / 2);
+      const entry = calls[middle];
+      if (entry === undefined || entry === null || typeof entry !== "object" || !Number.isSafeInteger(entry.sequence)) {
+        throw new LlmCallCorruptError();
+      }
+      if (entry.sequence < beforeSequence) lower = middle + 1;
+      else upper = middle;
+    }
+    end = lower;
+  }
+  const start = Math.max(0, end - LLM_CALL_PAGE_SIZE);
+  const page = calls.slice(start, end).reverse();
+  const items: LlmCallSummaryDTO[] = [];
+  for (const entry of page) {
+    if (entry === null || typeof entry !== "object" || typeof entry.id !== "string" || !Number.isSafeInteger(entry.sequence)) {
+      throw new LlmCallCorruptError();
+    }
+    const header = await runtime.readFamily(LlmCallDoc, entry.id, { id: entry.id });
+    if (
+      header === undefined ||
+      header.id !== entry.id ||
+      header.workId !== workId ||
+      header.sequence !== entry.sequence
+    ) {
+      throw new LlmCallCorruptError();
+    }
+    items.push(summaryWithoutDeferredKey(header));
+  }
+  const nextSequence = start > 0 ? calls[start]?.sequence : undefined;
   return {
-    items: page.map(({ value }) => summaryWithoutDeferredKey(value)),
-    ...(matching.length > LLM_CALL_PAGE_SIZE && last !== undefined
-      ? { nextCursor: Buffer.from(JSON.stringify({ beforeSequence: last }), "utf8").toString("base64url") }
+    items,
+    ...(nextSequence !== undefined
+      ? { nextCursor: Buffer.from(JSON.stringify({ beforeSequence: nextSequence }), "utf8").toString("base64url") }
       : {}),
     captureHealth: runtime.llmCallCaptureHealth(),
   };
@@ -963,6 +994,9 @@ export function createLlmCallRecorder(runtime: EmitRuntime): LlmCallRecorder {
         await runtime.harness.commit(async (tx) => {
           const headerDoc = await tx.doc(LlmCallDoc, state.id, { id: state.id });
           const payloadDoc = await tx.doc(LlmCallPayloadDoc, state.id, { id: state.id });
+          const index = await tx.doc(WorkLlmCallIndexDoc, association.workId, { workId: association.workId });
+          index.workId = association.workId;
+          index.calls.push({ id: state.id, sequence });
           Object.assign(headerDoc, header);
           payloadDoc.id = state.id;
           payloadDoc.input = inputSnapshot.input;
@@ -1281,10 +1315,16 @@ export function createLlmCallRecorder(runtime: EmitRuntime): LlmCallRecorder {
   async function recover(): Promise<void> {
     const records = await runtime.listFamily(LlmCallDoc, (id) => ({ id }));
     const running: LlmCallRecord[] = [];
+    const callsByWork = new Map<string, { id: string; sequence: number }[]>();
     for (const { key, value } of records) {
       if (value.id !== key) {
         reportFailure();
         continue;
+      }
+      if (Number.isSafeInteger(value.sequence) && value.sequence > 0) {
+        const calls = callsByWork.get(value.workId) ?? [];
+        calls.push({ id: value.id, sequence: value.sequence });
+        callsByWork.set(value.workId, calls);
       }
       if (Number.isSafeInteger(value.sequence) && value.sequence > (nextSequenceByWork.get(value.workId) ?? 0)) {
         nextSequenceByWork.set(value.workId, value.sequence);
@@ -1299,6 +1339,24 @@ export function createLlmCallRecorder(runtime: EmitRuntime): LlmCallRecorder {
         continue;
       }
       running.push(value);
+    }
+    for (const [workId, calls] of callsByWork) {
+      calls.sort((left, right) => left.sequence - right.sequence);
+      const existing = await runtime.readFamily(WorkLlmCallIndexDoc, workId, { workId });
+      const consistent =
+        existing !== undefined &&
+        existing.workId === workId &&
+        Array.isArray(existing.calls) &&
+        existing.calls.length === calls.length &&
+        existing.calls.every((entry, index) => {
+          const expected = calls[index];
+          return entry !== null && typeof entry === "object" && entry.id === expected?.id && entry.sequence === expected?.sequence;
+        });
+      if (consistent) continue;
+      await runtime.updateFamily(WorkLlmCallIndexDoc, workId, { workId }, (draft) => {
+        draft.workId = workId;
+        draft.calls = calls;
+      });
     }
     if (running.length === 0) return;
     const events = await runtime.harness.commit(async (tx) => {

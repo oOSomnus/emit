@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Added a work-scoped LLM-call timeline to the execution record, with compact live summaries and categorized, redacted request/response details fetched on expansion. In-flight calls recover as interrupted without a fabricated response.
+- LLM-call history now paginates from a durable per-work call index rebuilt from existing headers at startup; live refreshes preserve loaded older pages, and detail revisions newer than summaries remain visible without repeated fetches.
 - Internal addresses moved to one fixed internal domain: the user and every employee are addressed as `localpart@emit` instead of `localpart@<workspace>.test`, so the address no longer depends on a workspace name. A name that is not usable as a local part is normalized and duplicates take a deterministic numeric suffix, exactly as before.
 - A workspace that stored the old addresses migrates once at startup, in one commit: the user keeps the local part of its stored address, employees follow in creation order, and the stored format is marked so a second start does not allocate again. The migration makes no model calls and changes no employee identity, model, configuration version, approval version, or work
   binding; an address it cannot attribute to exactly one identity refuses the start instead of guessing.

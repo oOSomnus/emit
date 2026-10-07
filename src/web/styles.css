@@ -173,6 +173,13 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.llm-call-timeline > h3,
+.llm-timeline-head h3,
+.llm-io-panel > h3 {
+  margin: 0;
+  font-size: var(--text-ui);
+}
+
 .sidebar section h3 {
   display: flex;
   justify-content: space-between;
@@ -258,6 +265,16 @@ button:disabled {
   color: var(--text-dim);
   font-weight: 400;
   white-space: normal;
+}
+
+.execution-view-tabs button {
+  min-height: 40px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
 }
 
 button:hover:not(:disabled) {
@@ -419,6 +436,28 @@ details summary {
   font-size: var(--text-meta);
   padding: 2px 0;
   user-select: none;
+}
+
+.llm-category > summary,
+.llm-json-node > summary,
+.llm-full-text > summary {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.llm-json-node > summary,
+.llm-full-text > summary {
+  min-height: 32px;
+  padding-inline: var(--space-2);
+  color: var(--text-dim);
+  font-size: var(--text-meta);
 }
 
 .compose-directories > summary {
@@ -1015,6 +1054,33 @@ ul {
   min-width: 0;
 }
 
+.llm-fields > div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(90px, 0.45fr) minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: baseline;
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-soft);
+}
+
+.llm-usage-cost > dd > dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+}
+
+.llm-system-sections > div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(110px, 0.35fr) minmax(0, 1fr);
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--line);
+}
+
 .pane-header > div:first-child {
   min-width: 0;
   flex: 1;
@@ -1497,6 +1563,13 @@ ul {
   background: var(--code-bg);
   border: 1px solid var(--line);
   border-radius: var(--radius);
+}
+
+.llm-call-title code,
+.llm-call-facts time,
+.llm-call-facts > span:not(.chip) {
+  color: var(--text-dim);
+  font-size: var(--text-meta);
 }
 
 .markdown-body pre code {
@@ -2124,6 +2197,23 @@ ul.plain {
   margin: 0;
   display: grid;
   gap: 6px;
+}
+
+.llm-json-list li {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.llm-omissions li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 ul.plain li {
@@ -2799,6 +2889,14 @@ ul.provider-list {
   min-width: 0;
 }
 
+.llm-fields dd code {
+  overflow-wrap: anywhere;
+}
+
+.llm-omissions li code {
+  overflow-wrap: anywhere;
+}
+
 .provider-detail ul.plain li code {
   max-width: 100%;
   overflow-wrap: anywhere;
@@ -3437,6 +3535,7 @@ ul.provider-list {
     scroll-behavior: auto !important;
   }
 }
+
 /* The execution record switches between tool steps and the SDK-call timeline. */
 .work-execution.work-execution-llm {
   width: min(1120px, 96vw);
@@ -3448,16 +3547,6 @@ ul.provider-list {
   gap: var(--space-2);
   border-bottom: 1px solid var(--line);
   flex: none;
-}
-
-.execution-view-tabs button {
-  min-height: 40px;
-  padding: 0 var(--space-3);
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-dim);
 }
 
 .execution-view-tabs button[aria-pressed="true"] {
@@ -3472,13 +3561,6 @@ ul.provider-list {
   display: grid;
   gap: var(--space-3);
   min-width: 0;
-}
-
-.llm-call-timeline > h3,
-.llm-timeline-head h3,
-.llm-io-panel > h3 {
-  margin: 0;
-  font-size: var(--text-ui);
 }
 
 .llm-timeline-head {
@@ -3538,6 +3620,7 @@ ul.provider-list {
 
 .llm-timeline-entry.status-running::before { background: var(--accent); }
 .llm-timeline-entry.status-failed::before { background: var(--error); }
+
 .llm-timeline-entry.status-deferred::before,
 .llm-timeline-entry.status-interrupted::before { background: var(--warn); }
 
@@ -3596,13 +3679,6 @@ ul.provider-list {
   overflow-wrap: anywhere;
 }
 
-.llm-call-title code,
-.llm-call-facts time,
-.llm-call-facts > span:not(.chip) {
-  color: var(--text-dim);
-  font-size: var(--text-meta);
-}
-
 .llm-call-chevron {
   color: var(--text-dim);
   font-size: 20px;
@@ -3623,18 +3699,6 @@ ul.provider-list {
   margin: 0;
 }
 
-.llm-fields > div {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(90px, 0.45fr) minmax(0, 1fr);
-  gap: var(--space-2);
-  align-items: baseline;
-  padding: var(--space-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--bg-soft);
-}
-
 .llm-fields dt {
   color: var(--text-dim);
   font-size: var(--text-meta);
@@ -3643,10 +3707,6 @@ ul.provider-list {
 .llm-fields dd {
   min-width: 0;
   margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.llm-fields dd code {
   overflow-wrap: anywhere;
 }
 
@@ -3663,12 +3723,6 @@ ul.provider-list {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-1);
   margin: 0;
-}
-
-.llm-usage-cost > dd > dl > div {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-2);
 }
 
 .llm-io-grid {
@@ -3690,20 +3744,6 @@ ul.provider-list {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg-soft);
-}
-
-.llm-category > summary,
-.llm-json-node > summary,
-.llm-full-text > summary {
-  min-height: 38px;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  color: var(--text);
-  cursor: pointer;
-  font-weight: 600;
-  overflow-wrap: anywhere;
 }
 
 .llm-category-count {
@@ -3740,15 +3780,6 @@ ul.provider-list {
   margin: 0;
   padding: 0;
   list-style: none;
-}
-
-.llm-system-sections > div {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(110px, 0.35fr) minmax(0, 1fr);
-  gap: var(--space-2);
-  padding: var(--space-2);
-  border-bottom: 1px solid var(--line);
 }
 
 .llm-system-sections dt {
@@ -3839,25 +3870,8 @@ ul.provider-list {
   overflow-wrap: anywhere;
 }
 
-.llm-json-node > summary,
-.llm-full-text > summary {
-  min-height: 32px;
-  padding-inline: var(--space-2);
-  color: var(--text-dim);
-  font-size: var(--text-meta);
-}
-
 .llm-json-list {
   padding: 0 var(--space-2) var(--space-2) var(--space-4);
-}
-
-.llm-json-list li {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  align-items: start;
-  gap: var(--space-2);
-  overflow-wrap: anywhere;
 }
 
 .llm-json-key,
@@ -3884,18 +3898,6 @@ ul.provider-list {
 
 .llm-image-omission h5 {
   grid-column: 1 / -1;
-}
-
-.llm-omissions li {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.llm-omissions li code {
-  overflow-wrap: anywhere;
 }
 
 .llm-response-exception {

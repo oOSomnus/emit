@@ -4,6 +4,7 @@ import type { LlmCallDetailDTO, LlmCallPageDTO, LlmContentDTO, LlmJsonDTO, WorkD
 import { FAKE_KEY_ENV, startHttpRuntime, waitForFixture, type FixtureAnswer, type FixtureRequest } from "../helpers/emit-fixture.ts";
 import { jsonInit as json, openSeededApiFixture, requestJson as request } from "../helpers/api-fixture.ts";
 import { openEventStream } from "../helpers/sse-client.ts";
+import { LlmCallDoc, WorkDoc, WorkLlmCallIndexDoc } from "../../src/server/documents.ts";
 
 const cleanup: Array<() => Promise<void> | void> = [];
 let previousApiKey: string | undefined;
@@ -236,11 +237,13 @@ describe("LLM call history HTTP contract", () => {
   }, 60_000);
 
   it("paginates only compact per-work metadata in begin sequence order", async () => {
-    const { http, workspace } = await openSeededApiFixture({
+    const fixture = await openSeededApiFixture({
       prefix: "emit-api-llm-calls-pages-",
       cleanups: cleanup,
       decide: (_root, request) => answerFor(request, Promise.resolve()),
     });
+    let http = fixture.http;
+    const { workspace } = fixture;
     const settings = await request(http.url, "/api/app", json("PATCH", {
       collaboration: { maxDepth: 3, maxCrossEmployeeWakes: 12, maxModelTurns: 80 },
     }));
@@ -280,5 +283,111 @@ describe("LLM call history HTTP contract", () => {
     expect(pageCount).toBe(2);
     expect(sequences).toHaveLength(56);
     expect(sequences).toEqual(Array.from({ length: 56 }, (_, index) => 56 - index));
+
+    await http.close();
+    http = await startHttpRuntime(join(fixture.root, "data"));
+    cleanup.push(() => http.close());
+    const firstAfterRestart = await request<LlmCallPageDTO>(http.url, `/api/works/${workId}/llm-calls`);
+    expect(firstAfterRestart.status).toBe(200);
+    expect(firstAfterRestart.body.items.map((call) => call.sequence)).toEqual(
+      Array.from({ length: 50 }, (_, index) => 56 - index),
+    );
+    const restartCursor = firstAfterRestart.body.nextCursor;
+    expect(restartCursor).toBeDefined();
+    const secondAfterRestart = await request<LlmCallPageDTO>(
+      http.url,
+      `/api/works/${workId}/llm-calls?cursor=${encodeURIComponent(restartCursor!)}`,
+    );
+    expect(secondAfterRestart.status).toBe(200);
+    expect(secondAfterRestart.body.items.map((call) => call.sequence)).toEqual([6, 5, 4, 3, 2, 1]);
+    expect(secondAfterRestart.body.nextCursor).toBeUndefined();
   }, 120_000);
+
+  it("rebuilds legacy per-work indexes before serving pages and reports indexed header corruption", async () => {
+    const fixture = await openSeededApiFixture({
+      prefix: "emit-api-llm-calls-index-migration-",
+      cleanups: cleanup,
+      resume: false,
+    });
+    const employeeId = fixture.workspace.employeeIds[0]!;
+    const { channelId, workContextId } = fixture.workspace;
+    const seedWork = async (id: string): Promise<void> => {
+      await fixture.http.runtime.updateFamily(WorkDoc, id, { id }, (draft) => {
+        draft.employeeId = employeeId;
+        draft.roomId = channelId;
+        draft.workContextId = workContextId;
+        draft.kind = "message";
+        draft.status = "succeeded";
+        draft.rootWorkId = id;
+      });
+    };
+    const seedCall = async (workId: string, id: string, sequence: number): Promise<void> => {
+      await fixture.http.runtime.updateFamily(LlmCallDoc, id, { id }, (draft) => {
+        Object.assign(draft, {
+          id,
+          workId,
+          sequence,
+          revision: 1,
+          kind: "employee",
+          employeeId,
+          model: { providerId: "fixture", modelId: "fake-chat" },
+          startedAt: sequence,
+          endedAt: sequence + 1,
+          status: "returned",
+          reasoning: "",
+          inputBytes: 1,
+          outputBytes: 1,
+          messageCount: 0,
+          toolCount: 0,
+          redactionApplied: true,
+          captureBoundary: "models-sdk",
+        });
+      });
+    };
+
+    await seedWork("legacy-work");
+    await seedWork("other-legacy-work");
+    await seedWork("empty-work");
+    await seedCall("legacy-work", "legacy-call-1", 1);
+    await seedCall("legacy-work", "legacy-call-2", 2);
+    await seedCall("legacy-work", "legacy-call-3", 3);
+    await seedCall("other-legacy-work", "other-call-1", 1);
+
+    await fixture.http.close();
+    const firstRestart = await startHttpRuntime(join(fixture.root, "data"));
+    cleanup.push(() => firstRestart.close());
+    const legacy = await request<LlmCallPageDTO>(firstRestart.url, "/api/works/legacy-work/llm-calls");
+    const other = await request<LlmCallPageDTO>(firstRestart.url, "/api/works/other-legacy-work/llm-calls");
+    const empty = await request<LlmCallPageDTO>(firstRestart.url, "/api/works/empty-work/llm-calls");
+    expect(legacy.status).toBe(200);
+    expect(legacy.body.items.map((call) => call.id)).toEqual(["legacy-call-3", "legacy-call-2", "legacy-call-1"]);
+    expect(other.status).toBe(200);
+    expect(other.body.items.map((call) => call.id)).toEqual(["other-call-1"]);
+    expect(empty.status).toBe(200);
+    expect(empty.body.items).toEqual([]);
+
+    await firstRestart.runtime.updateFamily(WorkLlmCallIndexDoc, "legacy-work", { workId: "legacy-work" }, (draft) => {
+      draft.calls = draft.calls.filter((call) => call.id !== "legacy-call-2");
+    });
+    await firstRestart.close();
+    const repaired = await startHttpRuntime(join(fixture.root, "data"));
+    cleanup.push(() => repaired.close());
+    const repairedPage = await request<LlmCallPageDTO>(repaired.url, "/api/works/legacy-work/llm-calls");
+    expect(repairedPage.status).toBe(200);
+    expect(repairedPage.body.items.map((call) => call.id)).toEqual(["legacy-call-3", "legacy-call-2", "legacy-call-1"]);
+
+    await repaired.runtime.updateFamily(WorkLlmCallIndexDoc, "legacy-work", { workId: "legacy-work" }, (draft) => {
+      draft.calls = [{ id: "missing-call", sequence: 4 }];
+    });
+    const corrupt = await request<{ message: string; messageLocalized?: { en: string; "zh-CN": string } }>(
+      repaired.url,
+      "/api/works/legacy-work/llm-calls",
+    );
+    expect(corrupt.status).toBe(500);
+    expect(corrupt.body.message).toBe("The LLM call record is incomplete");
+    expect(corrupt.body.messageLocalized).toEqual({
+      en: "The LLM call record is incomplete",
+      "zh-CN": "LLM 调用记录不完整",
+    });
+  }, 60_000);
 });

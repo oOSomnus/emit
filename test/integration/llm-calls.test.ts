@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { InMemoryCredentialStore, type Provider } from "@earendil-works/pi-ai";
 import { typesafeProvider } from "@earendil-works/pi-ai/providers/typesafe";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ApprovalDTO, LlmCallDetailDTO, LlmCallPageDTO, LlmJsonDTO, WorkDTO } from "../../src/shared/contracts.ts";
+import type { ApprovalDTO, LlmCallPageDTO, LlmJsonDTO, WorkDTO } from "../../src/shared/contracts.ts";
 import { createClassifierEvaluator } from "../../src/server/approval/evaluators.ts";
 import type { ApprovalCase, ApprovalEvaluatorConfig, EvaluationOutcome } from "../../src/server/approval/contracts.ts";
 import { ModelCatalog } from "../../src/server/models.ts";

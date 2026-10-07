@@ -28,7 +28,10 @@ type DetailError = { revision: number; message: DisplayText };
 
 function mergeSummaries(current: readonly LlmCallSummaryDTO[], incoming: readonly LlmCallSummaryDTO[]): LlmCallSummaryDTO[] {
   const byId = new Map(current.map((call) => [call.id, call]));
-  for (const call of incoming) byId.set(call.id, call);
+  for (const call of incoming) {
+    const existing = byId.get(call.id);
+    if (existing === undefined || call.revision >= existing.revision) byId.set(call.id, call);
+  }
   return [...byId.values()].sort((left, right) => left.sequence - right.sequence);
 }
 
@@ -518,7 +521,9 @@ export function LlmCallTimeline({ workId }: { workId: string }): ReactNode {
   const [detailLoading, setDetailLoading] = useState<Record<string, boolean | undefined>>({});
   const [detailErrors, setDetailErrors] = useState<Record<string, DetailError | undefined>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
-  const listRequest = useRef(0);
+  const latestRequest = useRef(0);
+  const olderRequest = useRef(0);
+  const olderLoaded = useRef(false);
   const detailRequests = useRef(new Set<string>());
   const initialExpanded = useRef(false);
   const workIdRef = useRef(workId);
@@ -526,25 +531,27 @@ export function LlmCallTimeline({ workId }: { workId: string }): ReactNode {
   const revision = state.llmCallRevisionByWorkId[workId] ?? 0;
 
   const loadLatest = useCallback(async () => {
-    const requestId = ++listRequest.current;
+    const requestId = ++latestRequest.current;
     setListLoading(true);
     try {
       const page = await api.workLlmCalls(workId);
-      if (requestId !== listRequest.current || workIdRef.current !== workId) return;
+      if (requestId !== latestRequest.current || workIdRef.current !== workId) return;
       setCalls((current) => mergeSummaries(current, page.items));
-      setNextCursor(page.nextCursor);
+      if (!olderLoaded.current) setNextCursor(page.nextCursor);
       setCaptureHealth(page.captureHealth);
       setListError("");
     } catch (cause) {
-      if (requestId !== listRequest.current || workIdRef.current !== workId) return;
+      if (requestId !== latestRequest.current || workIdRef.current !== workId) return;
       setListError(errorDisplay(cause));
     } finally {
-      if (requestId === listRequest.current && workIdRef.current === workId) setListLoading(false);
+      if (requestId === latestRequest.current && workIdRef.current === workId) setListLoading(false);
     }
   }, [workId]);
 
   useEffect(() => {
-    listRequest.current += 1;
+    latestRequest.current += 1;
+    olderRequest.current += 1;
+    olderLoaded.current = false;
     setCalls([]);
     setNextCursor(undefined);
     setCaptureHealth(undefined);
@@ -598,7 +605,7 @@ export function LlmCallTimeline({ workId }: { workId: string }): ReactNode {
     for (const callId of expanded) {
       const summary = calls.find((call) => call.id === callId);
       if (summary === undefined || detailLoading[callId] === true) continue;
-      if (details[callId]?.revision === summary.revision) continue;
+      if ((details[callId]?.revision ?? -1) >= summary.revision) continue;
       if (detailErrors[callId]?.revision === summary.revision) continue;
       void loadDetail(callId, summary.revision);
     }
@@ -606,20 +613,20 @@ export function LlmCallTimeline({ workId }: { workId: string }): ReactNode {
 
   const loadOlder = async (): Promise<void> => {
     if (nextCursor === undefined || loadingOlder) return;
-    const requestId = ++listRequest.current;
+    const requestId = ++olderRequest.current;
     setLoadingOlder(true);
     try {
       const page = await api.workLlmCalls(workId, nextCursor);
-      if (requestId !== listRequest.current || workIdRef.current !== workId) return;
+      if (requestId !== olderRequest.current || workIdRef.current !== workId) return;
+      olderLoaded.current = true;
       setCalls((current) => mergeSummaries(current, page.items));
       setNextCursor(page.nextCursor);
-      setCaptureHealth(page.captureHealth);
       setListError("");
     } catch (cause) {
-      if (requestId !== listRequest.current || workIdRef.current !== workId) return;
+      if (requestId !== olderRequest.current || workIdRef.current !== workId) return;
       setListError(errorDisplay(cause));
     } finally {
-      if (workIdRef.current === workId) setLoadingOlder(false);
+      if (requestId === olderRequest.current && workIdRef.current === workId) setLoadingOlder(false);
     }
   };
 
@@ -685,7 +692,7 @@ export function LlmCallTimeline({ workId }: { workId: string }): ReactNode {
                 {isExpanded ? (
                   <section className="llm-call-detail" id={`llm-detail-${call.id}`} aria-label={messages.llmCalls.sequence(call.sequence)}>
                     <CallDetail
-                      detail={details[call.id]?.revision === call.revision ? details[call.id] : undefined}
+                      detail={(details[call.id]?.revision ?? -1) >= call.revision ? details[call.id] : undefined}
                       loading={detailLoading[call.id] === true || (details[call.id] === undefined && detailError === undefined)}
                       error={detailError?.revision === call.revision ? detailError.message : undefined}
                       onRetry={() => retryDetail(call)}

@@ -777,5 +777,19 @@ export const LlmCallPayloadDoc = defineDocFamily<LlmCallPayloadRecord, { id: str
   }),
 });
 
+/** Ordered call IDs for paginating one work without scanning workspace history. */
+export type WorkLlmCallIndexRecord = {
+  workId: string;
+  calls: { id: string; sequence: number }[];
+};
+
+export const WorkLlmCallIndexDoc = defineDocFamily<WorkLlmCallIndexRecord, { workId: string }>({
+  kind: "emit.work-llm-call-index",
+  version: 1,
+  scope: "session",
+  family: true,
+  initial: (seed) => ({ workId: seed.workId, calls: [] }),
+});
+
 /** Documents indexed for full scans by the API layer. */
 export const FAMILY_SCAN_LIMIT = 500;

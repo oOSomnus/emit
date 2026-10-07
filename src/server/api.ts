@@ -764,6 +764,7 @@ export async function buildServer(options: ApiOptions): Promise<FastifyInstance>
       return page;
     } catch (error) {
       if (error instanceof LlmCallCursorError) return reply.code(400).send(messageBody(fromError(error)));
+      if (error instanceof LlmCallCorruptError) return reply.code(500).send(messageBody(fromError(error)));
       throw error;
     }
   });
