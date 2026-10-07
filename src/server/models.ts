@@ -37,6 +37,7 @@ import { type AppText } from "./messages.ts";
 import { modelMessages } from "./messages/models.ts";
 import { probeResources } from "./prompts/index.ts";
 import { configureBuiltinLogin, createCustomProviders, normalizeCustomProviders } from "./providers.ts";
+import { createObservedModels, type LlmCallObserver } from "./llm-calls.ts";
 
 /** Reasoning efforts a model accepts, in ascending order, with `off` first. */
 const EFFORT_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -46,18 +47,36 @@ export class ModelCatalog {
   /** Provider ids the native catalog owns; a custom provider may never reuse one. */
   readonly builtinProviderIds: ReadonlySet<string>;
   #credentials: CredentialStore;
+  #llmCallObserver: LlmCallObserver | undefined;
   #customIds = new Set<string>();
 
   constructor(customProviders: readonly CustomProviderConfigDTO[] = [], options?: CreateModelsOptions) {
     this.#credentials = options?.credentials ?? new InMemoryCredentialStore();
-    this.models = builtinModels({ ...options, credentials: this.#credentials });
-    this.builtinProviderIds = new Set(this.models.getProviders().map((provider) => provider.id));
+    const nativeModels = builtinModels({ ...options, credentials: this.#credentials });
+    this.models = createObservedModels(nativeModels, {
+      begin: (request) => this.#llmCallObserver?.begin(request),
+      accepting: () => {
+        const observer = this.#llmCallObserver;
+        return observer !== undefined && (observer.accepting?.() ?? true);
+      },
+      deferredReturned: (handle, response) => {
+        this.#llmCallObserver?.deferredReturned(handle, response);
+      },
+      deferredFailed: (handle, error) => {
+        this.#llmCallObserver?.deferredFailed(handle, error);
+      },
+    });
+    this.builtinProviderIds = new Set(nativeModels.getProviders().map((provider) => provider.id));
     // Azure's native login only collects a key; the endpoint parameters are
     // asked for here, before any custom provider is registered.
     configureBuiltinLogin(this.models);
     this.applyCustomProviders(
       createCustomProviders(normalizeCustomProviders(customProviders, this.builtinProviderIds)),
     );
+  }
+  /** Install or remove the execution-log observer without wrapping the catalog again. */
+  setLlmCallObserver(observer: LlmCallObserver | undefined): void {
+    this.#llmCallObserver = observer;
   }
 
   /** Provider identity, native auth methods, and whether pi-ai can resolve auth. */

@@ -29,7 +29,8 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import lockfile from "proper-lockfile";
-import type { CustomProviderConfigDTO, ServerEvent } from "../shared/contracts.ts";
+import type { CustomProviderConfigDTO, LlmCallPageDTO, ServerEvent } from "../shared/contracts.ts";
+import { createLlmCallRecorder, type LlmCallRecorder } from "./llm-calls.ts";
 import { ModelCatalog } from "./models.ts";
 import { migrateInternalAddresses } from "./workspace.ts";
 import { createCustomProviders, normalizeCustomProviders } from "./providers.ts";
@@ -54,6 +55,7 @@ export class EmitRuntime {
   #releaseLock: () => Promise<void>;
   #listeners = new Set<(event: ServerEvent) => void>();
   #closed = false;
+  #llmCallRecorder: LlmCallRecorder | undefined;
 
   private constructor(init: {
     dataDir: string;
@@ -156,6 +158,10 @@ export class EmitRuntime {
     // is a startup failure: close what was opened and report it.
     try {
       await migrateInternalAddresses(runtime);
+      const recorder = createLlmCallRecorder(runtime);
+      runtime.#llmCallRecorder = recorder;
+      await recorder.initialize();
+      catalog.setLlmCallObserver(recorder.observer);
     } catch (error) {
       await runtime.close().catch(() => undefined);
       throw error;
@@ -305,16 +311,30 @@ export class EmitRuntime {
     return records;
   }
 
+  llmCallCaptureHealth(): LlmCallPageDTO["captureHealth"] {
+    return this.#llmCallRecorder?.health() ?? { failedCount: 0, accepting: false };
+  }
+
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#llmCallRecorder?.stop();
+    this.catalog.setLlmCallObserver(undefined);
+    try {
+      await this.#llmCallRecorder?.flush();
+    } catch {
+      // Capture is best-effort; a failure must not keep the harness or lock open.
+    }
     try {
       // A login owned by the harness's model collection must finish before the
       // store it writes to goes away.
       await this.providerAuth.close();
-      await this.harness.close(this.ctx);
     } finally {
-      await this.#releaseLock().catch(() => undefined);
+      try {
+        await this.harness.close(this.ctx);
+      } finally {
+        await this.#releaseLock().catch(() => undefined);
+      }
     }
   }
 }

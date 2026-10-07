@@ -37,6 +37,8 @@ import type {
   WorkNoteResponseDTO,
   WorkDTO,
   WorkExecutionDTO,
+  LlmCallDetailDTO,
+  LlmCallPageDTO,
 } from "../shared/contracts.ts";
 import { CANONICAL_LOCALE, isLocalizedText, type LocalizedText } from "../shared/i18n.ts";
 import { uiText } from "./messages.ts";
@@ -206,6 +208,16 @@ export const api = {
     request<WorkExecutionDTO>(
       `/api/works/${id}/execution${cursor !== undefined && cursor.length > 0 ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
     ),
+
+  /** One page of an execution's LLM-call timeline. */
+  workLlmCalls: (id: string, cursor?: string) =>
+    request<LlmCallPageDTO>(
+      `/api/works/${id}/llm-calls${cursor !== undefined && cursor.length > 0 ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+    ),
+
+  /** A full, categorized request/response payload fetched on demand. */
+  workLlmCall: (id: string, callId: string) =>
+    request<LlmCallDetailDTO>(`/api/works/${id}/llm-calls/${callId}`),
 
   approvals: () => request<{ approvals: ApprovalDTO[]; policyVersion: number }>("/api/approvals"),
 

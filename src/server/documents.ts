@@ -8,7 +8,15 @@
  */
 
 import { defineDoc, defineDocFamily, defineEntry } from "@earendil-works/pi-durable";
-import type { ReviewOutcome, RiskLevel, UserAuthorizationLevel } from "../shared/contracts.ts";
+import type {
+  LlmCallDetailDTO,
+  LlmCallInputDTO,
+  LlmCallResponseDTO,
+  LlmCallSummaryDTO,
+  ReviewOutcome,
+  RiskLevel,
+  UserAuthorizationLevel,
+} from "../shared/contracts.ts";
 import type { LocalizedText } from "../shared/i18n.ts";
 
 /** The resolved wake set stored on a routed group message. */
@@ -717,6 +725,55 @@ export const ConversationContextDoc = defineDoc<ConversationContextRecord>({
     roomId: "",
     rootWorkId: "",
     depth: 0,
+  }),
+});
+
+/** Indexed metadata for one captured SDK model invocation. */
+export type LlmCallRecord = LlmCallSummaryDTO & { deferredKey?: string };
+
+/** Redacted request and response stages paired with one LLM call header. */
+export type LlmCallPayloadRecord = {
+  id: string;
+  input: LlmCallInputDTO;
+  responses: LlmCallResponseDTO[];
+  omitted: LlmCallDetailDTO["omitted"];
+  recordingError?: string;
+};
+
+export const LlmCallDoc = defineDocFamily<LlmCallRecord, { id: string }>({
+  kind: "emit.llm-call",
+  version: 1,
+  scope: "session",
+  family: true,
+  initial: (seed) => ({
+    id: seed.id,
+    workId: "",
+    sequence: 0,
+    revision: 0,
+    kind: "employee",
+    employeeId: "",
+    model: { providerId: "", modelId: "" },
+    startedAt: 0,
+    status: "running",
+    reasoning: "",
+    inputBytes: 0,
+    messageCount: 0,
+    toolCount: 0,
+    redactionApplied: true,
+    captureBoundary: "models-sdk",
+  }),
+});
+
+export const LlmCallPayloadDoc = defineDocFamily<LlmCallPayloadRecord, { id: string }>({
+  kind: "emit.llm-call-payload",
+  version: 1,
+  scope: "session",
+  family: true,
+  initial: (seed) => ({
+    id: seed.id,
+    input: { systemUpdates: [], messages: [], tools: [] },
+    responses: [],
+    omitted: [],
   }),
 });
 
