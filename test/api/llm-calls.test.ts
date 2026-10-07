@@ -103,8 +103,8 @@ describe("LLM call history HTTP contract", () => {
     const events = await openEventStream(`${http.url}/api/events`);
     cleanup.push(() => events.close());
 
-    // Exercise free-form values after JSON, including a malformed composite
-    // prefix before a later complete composite.
+    // Exercise free-form values after JSON, including malformed composite
+    // prefixes, later complete composites, and a composite with an open quote.
     const userMessage = `${JSON.stringify({
       task: "API_LLM_CALL_GATE",
       visible: "INPUT_VISIBLE_CANARY",
@@ -113,7 +113,8 @@ describe("LLM call history HTTP contract", () => {
       passwords: ["input-array-secret-canary", { note: "brackets ] } inside a string" }],
     })}
 credentials: {note: '}', label: 'input-single-quoted-secret-canary'}
-${"password: { ".repeat(128)}password: {note: '}', label: 'input-later-composite-secret-canary'}`;
+${"password: { ".repeat(128)}password: {note: '}', label: 'input-later-composite-secret-canary'}
+credentials: [the user's key, input-apostrophe-composite-secret-canary]`;
     const firstWorkId = await sendToEmployee(
       http.url,
       workspace.channelId,
@@ -165,6 +166,7 @@ ${"password: { ".repeat(128)}password: {note: '}', label: 'input-later-composite
     expect(JSON.stringify(runningDetail.body)).not.toContain("input-array-secret-canary");
     expect(JSON.stringify(runningDetail.body)).not.toContain("input-single-quoted-secret-canary");
     expect(JSON.stringify(runningDetail.body)).not.toContain("input-later-composite-secret-canary");
+    expect(JSON.stringify(runningDetail.body)).not.toContain("input-apostrophe-composite-secret-canary");
 
     const returnedEventPromise = events.next(
       (event) => event.type === "llm-call" && event.callId === running.id && event.revision > 1,

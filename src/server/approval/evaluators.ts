@@ -181,6 +181,14 @@ function redactSensitiveCompositeValues(value: string): string {
       }
     }
   }
+
+  for (let index = 0; index < stack.length; index += 1) {
+    const frame = stack[index]!;
+    if (frame.redactionStart === undefined) continue;
+    ranges.length = frame.rangeCount;
+    ranges.push({ start: frame.redactionStart, end: value.length });
+    break;
+  }
   SENSITIVE_TEXT_ASSIGNMENT.lastIndex = 0;
 
   if (ranges.length === 0) return value;
