@@ -762,6 +762,8 @@ test("a failed send keeps the draft and recipients until a retry succeeds", asyn
   await composer.fill("@Ali");
   await expect(page.getByRole("option", { name: /Alice/ })).toBeVisible();
   await composer.press("Enter");
+  await expect(composer).toHaveValue("@Alice ");
+  expect(await composer.evaluate((element: HTMLTextAreaElement) => element.selectionStart)).toBe("@Alice ".length);
   await composer.fill(body);
 
   let failures = 0;
